@@ -646,7 +646,7 @@ describe("opencodeSource.read", () => {
 				const seen = [];
 				process.on("warning", (w) => seen.push(w.name + ": " + w.message));
 				const { opencodeSource } = await import(${JSON.stringify(
-					new URL("./opencode.ts", import.meta.url).href,
+					new URL("./opencode.js", import.meta.url).href,
 				)});
 				const rows = await opencodeSource.read({ source: "opencode", path: ${JSON.stringify(path)} });
 				await new Promise((resolve) => setImmediate(resolve));

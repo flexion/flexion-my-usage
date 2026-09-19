@@ -1,0 +1,32 @@
+{
+	"name": "my-usage",
+	"version": "0.0.0",
+	"private": true,
+	"description": "Local, offline dashboard for your own AI coding-agent usage and notional cost.",
+	"license": "MIT",
+	"type": "module",
+	"packageManager": "yarn@4.18.0",
+	"engines": {
+		"node": ">=20"
+	},
+	"bin": "./dist/index.js",
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsx src/index.ts",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"format": "biome format --write .",
+		"test": "vitest run"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.5.14",
+		"@types/node": "^26.6.1",
+		"tsx": "^4.23.13",
+		"typescript": "^7.0.2",
+		"vite": "^8.3.0",
+		"vitest": "^5.0.1"
+	}
+}

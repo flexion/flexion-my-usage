@@ -225,6 +225,22 @@ describe("price table: fetch failures", () => {
 		}
 	});
 
+	it("never throws, even when an option itself blows up", async () => {
+		const warn = vi.fn();
+		const options = {
+			get cacheDir(): string {
+				throw new Error("boom");
+			},
+			fetch: forbiddenFetch(),
+			warn,
+		};
+
+		const [row] = await price([sonnetRow()], options);
+
+		expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
+		expect(warn).toHaveBeenCalledTimes(1);
+	});
+
 	it("gives up on a hung fetch after the timeout instead of hanging", async () => {
 		const hung = vi.fn<typeof fetch>(
 			(_url, init) =>
@@ -247,22 +263,25 @@ describe("price table: fetch failures", () => {
 		expect(warn).toHaveBeenCalledTimes(1);
 	});
 
-	it("rejects a response over the size cap, declared or streamed, and does not cache it", async () => {
+	it("rejects a valid table over the size cap, whether the size is declared or streamed", async () => {
+		const body = JSON.stringify(LITELLM_FIXTURE);
+		const cap = 1000;
+		expect(body.length).toBeGreaterThan(cap * 4);
 		const declared = vi.fn<typeof fetch>(
 			async () =>
-				new Response(JSON.stringify(LITELLM_FIXTURE), {
-					headers: { "content-length": "999999" },
+				new Response(body, {
+					headers: { "content-length": String(body.length) },
 				}),
 		);
+		// A stream carries no content-length, so only counting bytes can catch it.
 		const streamed = vi.fn<typeof fetch>(async () => {
-			const chunk = new TextEncoder().encode(
-				JSON.stringify(LITELLM_FIXTURE).slice(0, 600),
-			);
+			const bytes = new TextEncoder().encode(body);
 			return new Response(
 				new ReadableStream({
 					start(controller) {
-						controller.enqueue(chunk);
-						controller.enqueue(chunk);
+						for (let i = 0; i < bytes.length; i += 300) {
+							controller.enqueue(bytes.slice(i, i + 300));
+						}
 						controller.close();
 					},
 				}),
@@ -275,13 +294,71 @@ describe("price table: fetch failures", () => {
 			const [row] = await price([sonnetRow()], {
 				cacheDir,
 				fetch,
-				maxBytes: 1000,
+				maxBytes: cap,
 				warn,
 			});
 			expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
 			expect(warn).toHaveBeenCalledTimes(1);
 			expect(await readdir(cacheDir)).toEqual([]);
 		}
+	});
+
+	it("does not download a body whose declared size is over the cap", async () => {
+		let pulled = 0;
+		let cancelled = false;
+		const fetch = vi.fn<typeof globalThis.fetch>(
+			async () =>
+				new Response(
+					new ReadableStream({
+						pull(controller) {
+							pulled++;
+							controller.enqueue(new Uint8Array(300));
+						},
+						cancel() {
+							cancelled = true;
+						},
+					}),
+					{ headers: { "content-length": "999999" } },
+				),
+		);
+
+		await price([sonnetRow()], {
+			cacheDir: await newCacheDir(),
+			fetch,
+			maxBytes: 1000,
+			warn: () => {},
+		});
+
+		// The stream primes itself once on construction; any further pull means we read it.
+		expect(pulled).toBeLessThanOrEqual(1);
+		expect(cancelled).toBe(true);
+	});
+
+	it("accepts the same table when it fits under the size cap", async () => {
+		const [row] = await price([sonnetRow()], {
+			cacheDir: await newCacheDir(),
+			fetch: fakeFetch(LITELLM_FIXTURE),
+			maxBytes: JSON.stringify(LITELLM_FIXTURE).length,
+		});
+		expect(row?.notionalCost).toBeCloseTo(3, 9);
+	});
+
+	it("treats a cache file over the size cap as absent", async () => {
+		const cacheDir = await newCacheDir();
+		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });
+		const warn = vi.fn();
+
+		const [row] = await price([sonnetRow()], {
+			cacheDir,
+			fetch: vi.fn<typeof fetch>(async () =>
+				Promise.reject(new TypeError("fetch failed")),
+			),
+			maxBytes: 1000,
+			warn,
+		});
+
+		expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
+		expect(warn).toHaveBeenCalledTimes(1);
 	});
 
 	it("still prices from the network table when the cache cannot be written, with one warning", async () => {

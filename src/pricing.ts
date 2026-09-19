@@ -1,8 +1,10 @@
 import { PROVIDER_RULES, resolveRates } from "./pricing-match.js";
 import {
+	describeError,
 	type LoadOptions,
 	loadPriceTable,
 	type ModelRates,
+	type PriceTable,
 	type Warn,
 } from "./pricing-table.js";
 import type { NormalizedUsageRow } from "./sources/types.js";
@@ -47,6 +49,10 @@ function bucketCost(
  * Each token is therefore billed exactly once. Reasoning uses the entry's dedicated
  * `output_cost_per_reasoning_token` when it has one and the output rate otherwise, which is
  * how both LiteLLM and opencode bill it.
+ *
+ * Caveat: opencode releases before v1.3.17 (fix landed 2026-04-04) stored `output` INCLUDING
+ * reasoning tokens, so their rows overlap the reasoning bucket. Reading those rows correctly
+ * is the source adapter's job; this function trusts the disjoint-bucket contract.
  */
 function notionalCost(
 	tokens: NormalizedUsageRow["tokens"],
@@ -81,9 +87,17 @@ export async function price(
 	const warn = options.warn ?? defaultWarn;
 
 	// Skip the table (and any fetch) when no row's provider could be priced anyway.
-	const table = rows.some((row) => PROVIDER_RULES.has(row.provider))
-		? await loadPriceTable(options, warn)
-		: undefined;
+	let table: PriceTable | undefined;
+	if (rows.some((row) => PROVIDER_RULES.has(row.provider))) {
+		try {
+			table = await loadPriceTable(options, warn);
+		} catch (error) {
+			// loadPriceTable reports its own failures; this is the never-throw backstop.
+			warn(
+				`my-usage: price table unavailable (${describeError(error)}); rows will show as unpriced`,
+			);
+		}
+	}
 
 	const ratesByModel = new Map<string, ModelRates | undefined>();
 	return rows.map((row) => {

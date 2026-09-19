@@ -139,13 +139,13 @@ export function resolveCacheDir(
 }
 
 /** One short, single-line reason suitable for a warning. */
-function describeError(error: unknown): string {
+export function describeError(error: unknown): string {
 	if (error instanceof Error && error.name === "TimeoutError")
 		return "timed out";
 	let message = error instanceof Error ? error.message : String(error);
 	const cause = error instanceof Error ? error.cause : undefined;
 	if (isRecord(cause) && typeof cause.code === "string") {
-		message = `${message} (${cause.code})`;
+		message = `${message}: ${cause.code}`;
 	}
 	return message.replace(/\s+/g, " ").slice(0, 100);
 }

@@ -27,6 +27,8 @@ jobs:
       - run: yarn typecheck
       - run: yarn lint
       - run: yarn test
+      # Builds, then fails if dist/ or the npm package would ship test or fixture files.
+      - run: yarn check:package
 
   # Release runs ONLY on a pushed v* tag. Merging to main never publishes.
   # Flow: bump package.json version in a PR, merge to main, then tag that commit:

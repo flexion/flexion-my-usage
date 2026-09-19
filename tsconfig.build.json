@@ -1,0 +1,8 @@
+{
+	// Build-only config: same compiler options as tsconfig.json, minus test code.
+	// `yarn typecheck` keeps using tsconfig.json so tests are still type-checked.
+	// Convention: *.test.*, *.spec.* and *.fixtures.* are test code or test support
+	// (scripts/check-package.mjs asserts none reach dist/ or the npm package).
+	"extends": "./tsconfig.json",
+	"exclude": ["src/**/*.test.*", "src/**/*.spec.*", "src/**/*.fixtures.*"]
+}

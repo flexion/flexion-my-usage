@@ -3,10 +3,16 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # Cancel superseded runs on branches, but never cancel a tag/release run.
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 jobs:
   verify:
@@ -21,3 +27,40 @@ jobs:
       - run: yarn typecheck
       - run: yarn lint
       - run: yarn test
+
+  # Release runs ONLY on a pushed v* tag. Merging to main never publishes.
+  # Flow: bump package.json version in a PR, merge to main, then tag that commit:
+  #   git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z
+  # npm publish is gated behind the NPM_PUBLISH_ENABLED repo variable (see RELEASING.md).
+  release:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # npm provenance / OIDC Trusted Publishing
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - run: corepack enable
+      - run: yarn install --immutable
+      - name: Verify tag matches package.json version
+        run: |
+          tag_version="${GITHUB_REF#refs/tags/v}"
+          pkg_version="$(node -p "require('./package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::tag v$tag_version does not match package.json version $pkg_version"
+            exit 1
+          fi
+          echo "Releasing v$pkg_version"
+      - run: yarn build
+      - name: Publish to npm (provenance via OIDC Trusted Publishing)
+        if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
+        run: npm publish --provenance --access public
+      - name: Create GitHub Release (auto-generated notes)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF#refs/tags/}" --generate-notes --verify-tag --latest

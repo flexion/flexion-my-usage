@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { price } from "./pricing.js";
 import {
 	fakeFetch,
 	forbiddenFetch,
@@ -7,6 +6,7 @@ import {
 	usageRow,
 	useTempCacheDirs,
 } from "./pricing.fixtures.js";
+import { price } from "./pricing.js";
 
 const newCacheDir = useTempCacheDirs();
 

@@ -9,7 +9,6 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { price } from "./pricing.js";
 import {
 	fakeFetch,
 	forbiddenFetch,
@@ -18,6 +17,7 @@ import {
 	usageRow,
 	useTempCacheDirs,
 } from "./pricing.fixtures.js";
+import { price } from "./pricing.js";
 
 const newCacheDir = useTempCacheDirs();
 

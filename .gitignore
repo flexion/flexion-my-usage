@@ -22,3 +22,6 @@ dist/
 
 # Test / coverage
 coverage/
+
+# IP-leak guardrail: internal-term denylist stays local, never committed (myusage-6d9)
+.guardrail/

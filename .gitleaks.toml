@@ -1,0 +1,12 @@
+# gitleaks config for the IP-leak guardrail (myusage-6d9).
+# Extends the default ruleset; allowlists generated files whose integrity hashes
+# would otherwise read as high-entropy secrets.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Generated lockfiles - integrity hashes, not secrets"
+paths = [
+  '''yarn\.lock$''',
+]

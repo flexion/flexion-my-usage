@@ -17,6 +17,7 @@
 		"build": "tsc",
 		"dev": "tsx src/index.ts",
 		"typecheck": "tsc --noEmit",
+		"check:package": "yarn build && node scripts/check-package.mjs",
 		"lint": "biome check .",
 		"format": "biome format --write .",
 		"test": "vitest run"

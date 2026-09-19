@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -585,6 +585,38 @@ describe("opencodeSource.read", () => {
 				"msg_fixture_b",
 				"msg_fixture_c",
 			]);
+		});
+
+		it("reads committed rows from an orphaned WAL without checkpointing it", async () => {
+			const dir = await sandbox();
+			const liveDir = join(dir, "live");
+			const orphanDir = join(dir, "orphan");
+			await mkdir(liveDir);
+			await mkdir(orphanDir);
+			const writer = createDb(join(liveDir, "opencode.db"));
+			writer.exec("PRAGMA wal_autocheckpoint = 0");
+			insertMessage(writer, "msg_fixture_a", assistantData());
+			insertMessage(writer, "msg_fixture_b", assistantData());
+
+			// Snapshot what an app killed mid-run leaves behind: committed frames in the WAL,
+			// no live connection, no shared-memory file. A read-write open would checkpoint
+			// this into the main file on close; a read-only open must not.
+			const path = join(orphanDir, "opencode.db");
+			const walPath = `${path}-wal`;
+			copyFileSync(join(liveDir, "opencode.db"), path);
+			copyFileSync(join(liveDir, "opencode.db-wal"), walPath);
+			const dbBefore = sha256(path);
+			const walBefore = sha256(walPath);
+
+			const rows = await opencodeSource.read(handleFor(path));
+
+			expect(rows.map((r) => r.messageId)).toEqual([
+				"msg_fixture_a",
+				"msg_fixture_b",
+			]);
+			expect(sha256(path)).toBe(dbBefore);
+			expect(existsSync(walPath)).toBe(true);
+			expect(sha256(walPath)).toBe(walBefore);
 		});
 
 		it("leaves a cleanly closed database file byte-identical", async () => {

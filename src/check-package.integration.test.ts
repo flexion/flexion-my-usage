@@ -3,10 +3,15 @@
 //
 // src/package-rules.test.ts pins the pure decision logic with plain data, but nothing there
 // proves check-package.mjs actually calls it. These tests close that gap: they run the
-// unmodified script exactly as `yarn check:package` does - minus the `tsc` build, which is
-// orthogonal to this guard's decisions, so each fixture supplies its own already-built
-// dist/ - so a change that leaves the script's real behavior unfixed fails here even if
-// every pure-function test in isolation passes.
+// unmodified script exactly as `yarn check:package` does - via tsx, minus the `tsc` build
+// step, which is orthogonal to this guard's decisions, so each fixture supplies its own
+// already-built dist/ - so a change that leaves the script's real behavior unfixed fails here
+// even if every pure-function test in isolation passes.
+//
+// Spawned via tsx, not a bare `node`: check-package.mjs imports src/package-rules.ts
+// directly (see that script's header comment for why), so plain `node` cannot run it without
+// relying on Node's experimental, version-dependent type stripping - the same thing
+// package.json's check:package script avoids. This mirrors the real invocation exactly.
 //
 // Fixtures live under node_modules/.cache/ (never the real home or the system temp dir) and
 // are removed afterward. `npm pack --dry-run --json --ignore-scripts` never touches the
@@ -20,6 +25,8 @@ import { afterAll, describe, expect, it } from "vitest";
 const SCRIPT = fileURLToPath(
 	new URL("../scripts/check-package.mjs", import.meta.url),
 );
+
+const TSX = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 
 const FIXTURE_BASE = fileURLToPath(
 	new URL(
@@ -65,7 +72,7 @@ function runCheckPackage(cwd: string) {
 	// the subprocess never resolves the real home, matching every other test in this repo
 	// that could touch a home or XDG path.
 	const fakeHome = `${cwd}/.fake-home`;
-	return spawnSync(process.execPath, [SCRIPT], {
+	return spawnSync(TSX, [SCRIPT], {
 		cwd,
 		encoding: "utf8",
 		env: {

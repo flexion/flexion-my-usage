@@ -1,7 +1,7 @@
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { withoutSqliteWarning } from "./sqlite-warning.js";
+import { withSqliteWarningSuppressed } from "./sqlite-warning.js";
 import type { NormalizedUsageRow, SourceHandle, UsageSource } from "./types.js";
 
 // opencode adapter: reads the local opencode SQLite database read-only (WAL-aware).
@@ -52,15 +52,7 @@ type SqliteModule = typeof import("node:sqlite");
 let sqlite: Promise<SqliteModule> | undefined;
 
 function loadSqlite(): Promise<SqliteModule> {
-	sqlite ??= (async () => {
-		const original = process.emitWarning;
-		process.emitWarning = withoutSqliteWarning(original);
-		try {
-			return await import("node:sqlite");
-		} finally {
-			process.emitWarning = original;
-		}
-	})();
+	sqlite ??= withSqliteWarningSuppressed(() => import("node:sqlite"));
 	return sqlite;
 }
 

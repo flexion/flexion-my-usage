@@ -654,10 +654,67 @@ describe("opencodeSource.read", () => {
 	});
 
 	describe("node:sqlite ExperimentalWarning", () => {
+		const SQLITE_WARNING =
+			"SQLite is an experimental feature and might change at any time";
+
+		// Point every path that opencode or the OS could resolve at throwaway fixtures, so
+		// nothing here can reach the real home or the real database. opencode itself lets
+		// OPENCODE_DB override the database path (anomalyco/opencode v1.18.31,
+		// packages/core/src/database/database.ts), so an ambient value must not leak in either.
+		function sandboxEnv(dir: string, dbPath: string): Record<string, string> {
+			return {
+				HOME: dir,
+				USERPROFILE: dir,
+				XDG_DATA_HOME: dir,
+				XDG_CACHE_HOME: dir,
+				OPENCODE_DB: dbPath,
+			};
+		}
+
+		it("drops the SQLite warning while it loads node:sqlite, forwards the rest and restores emitWarning", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			for (const [name, value] of Object.entries(sandboxEnv(dir, path))) {
+				vi.stubEnv(name, value);
+			}
+			const db = createDb(path);
+			insertMessage(db, "msg_fixture_a", assistantData());
+			db.close();
+			// A fresh module instance, so its lazy node:sqlite import happens inside this test
+			// instead of being cached by an earlier one. Node 24.15+ and 25.7+ never emit the
+			// warning, so the test raises it itself, inside the window in which the reader has
+			// started loading node:sqlite (read() installs the suppressor before it first awaits).
+			vi.resetModules();
+			const { opencodeSource: fresh } = await import("./opencode.js");
+			const realEmitWarning = process.emitWarning;
+			const seen: unknown[][] = [];
+			const recorder = ((...args: unknown[]) => {
+				seen.push(args);
+			}) as unknown as typeof process.emitWarning;
+			process.emitWarning = recorder;
+			let rows: NormalizedUsageRow[];
+			let restored: typeof process.emitWarning;
+			try {
+				const pending = fresh.read(handleFor(path));
+				process.emitWarning(SQLITE_WARNING, "ExperimentalWarning");
+				process.emitWarning("unrelated", "DeprecationWarning", "DEP0001");
+				rows = await pending;
+				restored = process.emitWarning;
+			} finally {
+				process.emitWarning = realEmitWarning;
+			}
+
+			expect(rows).toHaveLength(1);
+			expect(seen).toEqual([["unrelated", "DeprecationWarning", "DEP0001"]]);
+			expect(restored).toBe(recorder);
+		});
+
 		// Node removed this warning in v24.15.0 and v25.7.0 (nodejs/node, lib/sqlite.js);
-		// v22.x still emits it. Ask the runtime instead of hard-coding a version, so the test
-		// runs exactly where the suppression has something to suppress and is skipped, with a
-		// reason, everywhere else instead of passing vacuously.
+		// v22.x still emits it. Ask the runtime instead of hard-coding a version, so this check
+		// runs exactly where the import really emits the warning and is skipped, with a reason,
+		// everywhere else instead of passing vacuously. The in-process test above and
+		// sqlite-warning.test.ts hold the contract on every runtime; this proves the real import
+		// stays quiet in a fresh process.
 		function runtimeWarnsOnSqliteImport(env: NodeJS.ProcessEnv): boolean {
 			const probe = spawnSync(
 				process.execPath,
@@ -670,21 +727,21 @@ describe("opencodeSource.read", () => {
 
 		it("does not leak the warning from a fresh process", async (ctx) => {
 			const dir = await sandbox();
-			// The child never resolves a home or data path, but give it throwaway ones anyway.
+			const path = join(dir, "opencode.db");
+			// NODE_OPTIONS=--no-warnings or NODE_NO_WARNINGS=1 in the ambient environment would
+			// hide the warning from the probe and skip this check. Undefined values are not
+			// passed to the child.
 			const env = {
 				...process.env,
-				HOME: dir,
-				USERPROFILE: dir,
-				XDG_DATA_HOME: dir,
-				XDG_CACHE_HOME: dir,
-				OPENCODE_DB: "",
+				...sandboxEnv(dir, path),
+				NODE_OPTIONS: undefined,
+				NODE_NO_WARNINGS: undefined,
 			};
 			if (!runtimeWarnsOnSqliteImport(env)) {
 				ctx.skip(
 					"this Node version does not emit the node:sqlite ExperimentalWarning, so there is nothing to suppress",
 				);
 			}
-			const path = join(dir, "opencode.db");
 			const db = createDb(path);
 			insertMessage(db, "msg_fixture_a", assistantData());
 			db.close();

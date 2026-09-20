@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	isSqliteExperimentalWarning,
 	withoutSqliteWarning,
+	withSqliteWarningSuppressed,
 } from "./sqlite-warning.js";
 
 const MESSAGE =
@@ -49,15 +50,15 @@ describe("isSqliteExperimentalWarning", () => {
 	});
 });
 
-describe("withoutSqliteWarning", () => {
-	function recorder() {
-		const calls: { self: unknown; args: unknown[] }[] = [];
-		const original = function (this: unknown, ...args: unknown[]) {
-			calls.push({ self: this, args });
-		} as unknown as typeof process.emitWarning;
-		return { calls, original };
-	}
+function recorder() {
+	const calls: { self: unknown; args: unknown[] }[] = [];
+	const original = function (this: unknown, ...args: unknown[]) {
+		calls.push({ self: this, args });
+	} as unknown as typeof process.emitWarning;
+	return { calls, original };
+}
 
+describe("withoutSqliteWarning", () => {
 	it("drops the SQLite experimental warning", () => {
 		const { calls, original } = recorder();
 
@@ -82,5 +83,64 @@ describe("withoutSqliteWarning", () => {
 			"DeprecationWarning",
 			"DEP0001",
 		]);
+	});
+});
+
+describe("withSqliteWarningSuppressed", () => {
+	// Stand a recorder in for process.emitWarning, so nothing a test emits reaches the real
+	// process, and always put the real one back.
+	const realEmitWarning = process.emitWarning;
+	let calls: { self: unknown; args: unknown[] }[];
+	let installed: typeof process.emitWarning;
+
+	beforeEach(() => {
+		const { calls: recorded, original } = recorder();
+		calls = recorded;
+		installed = original;
+		process.emitWarning = installed;
+	});
+
+	afterEach(() => {
+		process.emitWarning = realEmitWarning;
+	});
+
+	it("drops the SQLite warning raised while loading and forwards every other warning", async () => {
+		const loaded = await withSqliteWarningSuppressed(async () => {
+			process.emitWarning(MESSAGE, "ExperimentalWarning");
+			process.emitWarning("something else", "DeprecationWarning", "DEP0001");
+			return "module";
+		});
+
+		expect(loaded).toBe("module");
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.self).toBe(process);
+		expect(calls[0]?.args).toEqual([
+			"something else",
+			"DeprecationWarning",
+			"DEP0001",
+		]);
+	});
+
+	it("hands the original emitWarning back once the load resolves", async () => {
+		let during: typeof process.emitWarning | undefined;
+
+		await withSqliteWarningSuppressed(async () => {
+			during = process.emitWarning;
+		});
+
+		expect(during).not.toBe(installed);
+		expect(process.emitWarning).toBe(installed);
+	});
+
+	it("hands the original emitWarning back and rethrows when the load rejects", async () => {
+		const failure = new Error("import failed");
+
+		await expect(
+			withSqliteWarningSuppressed(async () => {
+				throw failure;
+			}),
+		).rejects.toBe(failure);
+
+		expect(process.emitWarning).toBe(installed);
 	});
 });

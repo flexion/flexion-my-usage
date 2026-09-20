@@ -156,9 +156,14 @@ function sha256(path: string): string {
 describe("opencodeSource.discover", () => {
 	async function isolatedHome(): Promise<string> {
 		const home = await sandbox();
-		// Point every home lookup at the sandbox so a bug can never reach the real home.
+		// Point every home lookup at the sandbox so a bug can never reach the real home. This
+		// includes OPENCODE_DB: once discover() honors it, an ambient value on the developer's
+		// or CI's own machine would otherwise leak into every scan test here and point discover()
+		// at a real opencode database (the same leak sandboxEnv() below already guards against
+		// explicitly). Tests that exercise the override stub OPENCODE_DB again afterward.
 		vi.stubEnv("HOME", home);
 		vi.stubEnv("USERPROFILE", home);
+		vi.stubEnv("OPENCODE_DB", undefined);
 		return home;
 	}
 
@@ -281,25 +286,6 @@ describe("opencodeSource.discover", () => {
 	});
 
 	describe("multiple database files", () => {
-		it("discovers a channel-suffixed database alongside the default one, as two handles", async () => {
-			const home = await isolatedHome();
-			const dataDir = join(home, "xdg");
-			const opencodeDir = join(dataDir, "opencode");
-			await mkdir(opencodeDir, { recursive: true });
-			const defaultPath = join(opencodeDir, "opencode.db");
-			const channelPath = join(opencodeDir, "opencode-nightly.db");
-			await writeFile(defaultPath, "");
-			await writeFile(channelPath, "");
-			vi.stubEnv("XDG_DATA_HOME", dataDir);
-
-			expect(sortByPath(await opencodeSource.discover())).toEqual(
-				sortByPath([
-					{ source: "opencode", path: defaultPath },
-					{ source: "opencode", path: channelPath },
-				]),
-			);
-		});
-
 		it("discovers a channel-suffixed database when no default opencode.db is present", async () => {
 			const home = await isolatedHome();
 			const dataDir = join(home, "xdg");
@@ -314,7 +300,12 @@ describe("opencodeSource.discover", () => {
 			]);
 		});
 
-		it("does not mistake a database's own WAL/SHM sidecar files, or unrelated files, for separate databases", async () => {
+		// This is also the bead's "alongside the default one" acceptance criterion: the fixture
+		// here is a superset of that narrower case (same two files, plus sidecars and decoys that
+		// must NOT be discovered), and the expectation is identical, so a separate test asserting
+		// only the narrower fixture would fail exactly when this one does and pass whenever this
+		// one does. No implementation can tell them apart, so they are not both kept.
+		it("discovers the default and channel databases as two handles, ignoring WAL/SHM sidecars and lookalike files", async () => {
 			const home = await isolatedHome();
 			const dataDir = join(home, "xdg");
 			const opencodeDir = join(dataDir, "opencode");
@@ -326,9 +317,13 @@ describe("opencodeSource.discover", () => {
 			await writeFile(`${defaultPath}-wal`, "");
 			await writeFile(`${defaultPath}-shm`, "");
 			await writeFile(channelPath, "");
-			// Decoys: contain "opencode" and ".db" but are neither name discover() should match.
+			// Decoys, each missing the match on exactly one axis. opencode.db.backup and
+			// opencode.sqlite have the right prefix but the wrong extension (".db.backup" and
+			// ".sqlite" are not ".db"); myopencode.db has the right extension but the wrong
+			// prefix (it doesn't start with "opencode"). None is a name discover() should match.
 			await writeFile(join(opencodeDir, "opencode.db.backup"), "");
-			await writeFile(join(opencodeDir, "storage.json"), "");
+			await writeFile(join(opencodeDir, "opencode.sqlite"), "");
+			await writeFile(join(opencodeDir, "myopencode.db"), "");
 			vi.stubEnv("XDG_DATA_HOME", dataDir);
 
 			expect(sortByPath(await opencodeSource.discover())).toEqual(

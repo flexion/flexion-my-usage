@@ -140,6 +140,15 @@ function handleFor(path: string) {
 	return { source: "opencode", path };
 }
 
+// Discovery order across multiple files is not part of the contract (it can depend on the
+// filesystem's directory-entry order), so multi-handle assertions below sort both sides by
+// path before comparing.
+function sortByPath<T extends { path: string }>(handles: T[]): T[] {
+	return [...handles].sort((a, b) =>
+		a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+	);
+}
+
 function sha256(path: string): string {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -269,6 +278,123 @@ describe("opencodeSource.discover", () => {
 		await expect(
 			opencodeSource.discover({ stat: injectedStat }),
 		).rejects.toThrow(error);
+	});
+
+	describe("multiple database files", () => {
+		it("discovers a channel-suffixed database alongside the default one, as two handles", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const defaultPath = join(opencodeDir, "opencode.db");
+			const channelPath = join(opencodeDir, "opencode-nightly.db");
+			await writeFile(defaultPath, "");
+			await writeFile(channelPath, "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			expect(sortByPath(await opencodeSource.discover())).toEqual(
+				sortByPath([
+					{ source: "opencode", path: defaultPath },
+					{ source: "opencode", path: channelPath },
+				]),
+			);
+		});
+
+		it("discovers a channel-suffixed database when no default opencode.db is present", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const channelPath = join(opencodeDir, "opencode-beta-canary.db");
+			await writeFile(channelPath, "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			expect(await opencodeSource.discover()).toEqual([
+				{ source: "opencode", path: channelPath },
+			]);
+		});
+
+		it("does not mistake a database's own WAL/SHM sidecar files, or unrelated files, for separate databases", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const defaultPath = join(opencodeDir, "opencode.db");
+			const channelPath = join(opencodeDir, "opencode-nightly.db");
+			await writeFile(defaultPath, "");
+			// SQLite's own sidecars for the default database - never separate handles.
+			await writeFile(`${defaultPath}-wal`, "");
+			await writeFile(`${defaultPath}-shm`, "");
+			await writeFile(channelPath, "");
+			// Decoys: contain "opencode" and ".db" but are neither name discover() should match.
+			await writeFile(join(opencodeDir, "opencode.db.backup"), "");
+			await writeFile(join(opencodeDir, "storage.json"), "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			expect(sortByPath(await opencodeSource.discover())).toEqual(
+				sortByPath([
+					{ source: "opencode", path: defaultPath },
+					{ source: "opencode", path: channelPath },
+				]),
+			);
+		});
+	});
+
+	// Upstream semantics (public repo, released tag v1.18.31, commit 014614d35b39,
+	// packages/core/src/database/database.ts, function `path()`):
+	//
+	//   export function path() {
+	//     if (Flag.OPENCODE_DB) {
+	//       if (Flag.OPENCODE_DB === ":memory:" || isAbsolute(Flag.OPENCODE_DB)) return Flag.OPENCODE_DB
+	//       return join(Global.Path.data, Flag.OPENCODE_DB)
+	//     }
+	//     ...channel-based default...
+	//   }
+	//
+	// `Flag.OPENCODE_DB` is a direct, unprocessed `process.env["OPENCODE_DB"]` read
+	// (packages/core/src/flag/flag.ts) and `Global.Path.data` is opencode's own data directory -
+	// the same directory this reader already calls the "data directory" (XDG_DATA_HOME, or
+	// ~/.local/share, plus "opencode"). So: ":memory:" or an absolute path is used as-is; any
+	// other value is resolved against that data directory, never the process's cwd. The check is
+	// an early return upstream, so a set OPENCODE_DB replaces the channel-file scan entirely
+	// rather than adding to it. (":memory:" itself is out of scope for this bead - no behavioral
+	// test here needs it.)
+	describe("OPENCODE_DB override", () => {
+		it("uses an absolute OPENCODE_DB path as-is, instead of scanning the data directory", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			// Present in the data directory and would normally be discovered - proves the
+			// override replaces the scan instead of adding to it.
+			await writeFile(join(opencodeDir, "opencode.db"), "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			const elsewhere = await sandbox();
+			const overridePath = join(elsewhere, "override.db");
+			await writeFile(overridePath, "");
+			vi.stubEnv("OPENCODE_DB", overridePath);
+
+			expect(await opencodeSource.discover()).toEqual([
+				{ source: "opencode", path: overridePath },
+			]);
+		});
+
+		it("resolves a relative OPENCODE_DB path against the data directory, not the process cwd", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const relativePath = "custom-channel.db";
+			const resolvedPath = join(opencodeDir, relativePath);
+			await writeFile(resolvedPath, "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+			vi.stubEnv("OPENCODE_DB", relativePath);
+
+			expect(await opencodeSource.discover()).toEqual([
+				{ source: "opencode", path: resolvedPath },
+			]);
+		});
 	});
 });
 

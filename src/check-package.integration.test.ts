@@ -8,7 +8,7 @@
 // already-built dist/ - so a change that leaves the script's real behavior unfixed fails here
 // even if every pure-function test in isolation passes.
 //
-// Spawned via tsx, not a bare `node`: check-package.mjs imports src/package-rules.ts
+// Spawned via tsx, not a bare `node`: check-package.mjs imports scripts/package-rules.ts
 // directly (see that script's header comment for why), so plain `node` cannot run it without
 // relying on Node's experimental, version-dependent type stripping - the same thing
 // package.json's check:package script avoids. This mirrors the real invocation exactly.
@@ -103,7 +103,13 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 
 		const result = runCheckPackage(dir);
 
+		// Exit 2 is emitted from four distinct spots in check-package.mjs (npm pack
+		// failure, dist/ missing, dist/ empty, and this pack-list-vacuity guard), so a bare
+		// status check alone does not prove THIS guard is what fired - a regression that
+		// broke this check but let a different exit-2 path fire earlier would still pass.
+		// Pin the message this guard specifically emits.
 		expect(result.status).toBe(2);
+		expect(result.stderr).toMatch(/lists only \d+ of \d+ dist\/ files/);
 	});
 
 	it("passes when the pack list covers every real dist/ file", async () => {
@@ -128,5 +134,26 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		const result = runCheckPackage(dir);
 
 		expect(result.status).toBe(1);
+	});
+
+	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {
+		// npm never packs .DS_Store - it is on npm's own always-ignored list, regardless of
+		// `files`. Reproduced directly against the pre-fix script: with a correct
+		// `files: ["dist"]` and this exact fixture, it exited 2, falsely claiming `files`
+		// excludes dist/, because the raw on-disk dist/ count (3, including the junk file)
+		// never matched npm's pack-list count (2, since npm dropped the junk on its own).
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(`${dir}/dist/lib.js`, "console.log(2);\n");
+		await writeFile(
+			`${dir}/dist/.DS_Store`,
+			"not a real .DS_Store, just junk\n",
+		);
+		await writeFixturePackageJson(dir, ["dist"]);
+
+		const result = runCheckPackage(dir);
+
+		expect(result.status).toBe(0);
 	});
 });

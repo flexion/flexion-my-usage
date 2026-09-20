@@ -2,22 +2,26 @@
 // test-support files.
 //
 // The pack-list vacuity check, the separator-safe dist-prefix check, and the test-or-support
-// name pattern live in src/package-rules.ts (bead myusage-4xu.19), not here, so that logic is
-// type-checked by `yarn typecheck` and covered at 100% by `yarn test`, like every other file
-// under src/ - scripts/ sits outside tsconfig.json's `include` and is only linted. This
-// script wires that pure logic to real I/O: a real dist/ tree and a real `npm pack --dry-run`.
+// name pattern live in scripts/package-rules.ts (bead myusage-4xu.19), next to this script,
+// not under src/: this is build-time-only tooling, and anything under src/ is what `yarn
+// build` emits into dist/ - a checker that lived under src/ would ship itself inside the
+// package it checks (round-2 review caught exactly that). scripts/package-rules.ts is still
+// type-checked by `yarn typecheck` and covered at 100% by `yarn test` - see its header comment
+// for how, given it now sits outside src/'s rootDir. This script wires that pure logic to real
+// I/O: a real dist/ tree and a real `npm pack --dry-run`.
 //
 // `yarn check:package` runs it as `yarn build && tsx scripts/check-package.mjs`: tsx (not a
-// bare `node`, and not Node's --experimental-strip-types - see src/package-rules.test.ts for
-// why) lets this script import src/package-rules.ts directly, without needing `yarn build` to
-// run first for THIS import. The build still runs first because the checks below assert
-// against real build output, not because the import needs it.
+// bare `node`, and not Node's --experimental-strip-types - see package-rules.test.ts for why)
+// lets this script import package-rules.ts directly, without needing `yarn build` to run first
+// for THIS import. The build still runs first because the checks below assert against real
+// build output, not because the import needs it.
 //
 // Asserts:
 //   1. dist/ exists and is non-empty, so the checks below cannot pass vacuously.
 //   2. The npm pack file list accounts for at least as many dist/ entries as dist/ actually
-//      holds, so a `files` list that excludes dist/ cannot pass just because npm always packs
-//      the `bin` target regardless of `files`.
+//      holds (after discounting npm's own always-ignored junk, e.g. .DS_Store - see
+//      package-rules.ts's NPM_ALWAYS_IGNORED), so a `files` list that excludes dist/ cannot
+//      pass just because npm always packs the `bin` target regardless of `files`.
 //   3. No test or support file exists anywhere under dist/.
 //   4. No test or support file appears in the `npm pack --dry-run` file list.
 
@@ -27,9 +31,8 @@ import { join } from "node:path";
 import {
 	DIST,
 	filterTestOrSupportPaths,
-	isUnderDir,
 	packListCoversDist,
-} from "../src/package-rules.ts";
+} from "./package-rules.ts";
 
 function listFiles(dir) {
 	const found = [];
@@ -70,10 +73,10 @@ if (distFiles.length === 0) {
 }
 
 const packed = packedFiles();
-if (!packListCoversDist(distFiles, packed)) {
-	const packedDistCount = packed.filter((p) => isUnderDir(p, DIST)).length;
+const coverage = packListCoversDist(distFiles, packed);
+if (!coverage.covered) {
 	console.error(
-		`check-package: npm pack lists only ${packedDistCount} of ${distFiles.length} ${DIST}/ files - package.json's "files" probably excludes ${DIST}/`,
+		`check-package: npm pack lists only ${coverage.packedDistCount} of ${coverage.expectedDistCount} ${DIST}/ files - package.json's "files" probably excludes ${DIST}/`,
 	);
 	process.exit(2);
 }

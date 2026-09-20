@@ -15,8 +15,8 @@ import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
-	classifyDiscoverError,
 	compareRows,
+	handleDiscoverError,
 	opencodeSource,
 } from "./opencode.js";
 import type { NormalizedUsageRow } from "./types.js";
@@ -239,9 +239,13 @@ describe("opencodeSource.discover", () => {
 
 	// Skipped for root: root ignores the permission bits chmod removes below, so the stat()
 	// this test relies on would succeed instead of failing with EACCES, and the test would
-	// prove nothing. classifyDiscoverError's own tests below cover the decision for EACCES
-	// without depending on which user runs the suite.
-	it.skipIf(process.getuid?.() === 0)(
+	// prove nothing. Skipped on Windows too: Node's chmod there only toggles the read-only
+	// flag, not directory search permission, so stat() would still succeed and the test would
+	// fail rather than skip. handleDiscoverError's own tests below cover the EACCES decision
+	// directly and without depending on the OS or which user runs the suite; this test is not
+	// load-bearing for coverage (the ELOOP test above already exercises the same ignorable arm
+	// end to end) but is kept as a real-world proof of the bead's own EACCES scenario.
+	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
 		"returns no handles when the data directory's permissions deny access (EACCES)",
 		async () => {
 			const home = await isolatedHome();
@@ -261,47 +265,44 @@ describe("opencodeSource.discover", () => {
 			}
 		},
 	);
-
-	it("rethrows a genuinely unexpected filesystem error (ENAMETOOLONG) instead of swallowing it", async () => {
-		const home = await isolatedHome();
-		// EIO (the bead's own example of "genuinely unexpected") cannot be produced from a
-		// real filesystem without mocking node:fs/promises, which the coverage policy
-		// forbids. A path component past the filesystem's NAME_MAX is a real, portable
-		// stand-in: it fails stat() with an errno that is not ENOENT/ENOTDIR/EACCES/EPERM/
-		// ELOOP, on the real filesystem, with no special permissions and regardless of which
-		// user runs the suite. Verified locally: stat() on such a path raises ENAMETOOLONG.
-		const longComponent = "a".repeat(300);
-		vi.stubEnv("XDG_DATA_HOME", join(home, longComponent));
-
-		await expect(opencodeSource.discover()).rejects.toMatchObject({
-			code: "ENAMETOOLONG",
-		});
-	});
 });
 
-describe("classifyDiscoverError", () => {
-	// Plain error objects, not a real stat() failure: classification is pure logic (an
-	// errno string in, a decision out) and must be provable without depending on which
-	// errno the OS or the calling user's permissions actually produce.
+describe("handleDiscoverError", () => {
+	// Plain error objects, not a real stat() failure: the ignore-or-surface decision is pure
+	// logic (an errno in, a return-or-throw out) and must be provable without depending on
+	// which errno the OS or the calling user's permissions actually produce. discover()'s catch
+	// delegates the whole decision to this function (`return handleDiscoverError(error)`), so
+	// these are the only tests the decision needs — no filesystem test has to reach the
+	// "unexpected" arm, and none of these errnos need to come from a real, portable filesystem
+	// failure the way ENAMETOOLONG would.
 	function errnoError(code: string): NodeJS.ErrnoException {
 		const error = new Error(code) as NodeJS.ErrnoException;
 		error.code = code;
 		return error;
 	}
 
-	it.each(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"])(
+	// ENAMETOOLONG is a path-resolution failure, the same family as ENOENT/ENOTDIR/ELOOP: it
+	// means "this path cannot name a file", not "the disk is broken", so it belongs with the
+	// ignorable codes rather than standing in for "genuinely unexpected".
+	it.each(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "ENAMETOOLONG"])(
 		"treats %s as ignorable: no readable opencode data at this path",
 		(code) => {
-			expect(classifyDiscoverError(errnoError(code))).toBe("ignorable");
+			expect(handleDiscoverError(errnoError(code))).toEqual([]);
 		},
 	);
 
-	it.each(["EIO", "ENAMETOOLONG"])(
-		"treats %s as unexpected, so discover() still surfaces it",
-		(code) => {
-			expect(classifyDiscoverError(errnoError(code))).toBe("unexpected");
-		},
-	);
+	it("treats EIO as unexpected, so discover() still surfaces it", () => {
+		const error = errnoError("EIO");
+		expect(() => handleDiscoverError(error)).toThrow(error);
+	});
+
+	// No .code at all (a bare Error, or a throw that never went through Node's fs/promises
+	// layer) must land on the same side as EIO, not be swallowed just because the lookup found
+	// nothing to match.
+	it("treats an error with no .code as unexpected, so discover() still surfaces it", () => {
+		const error = new Error("boom") as NodeJS.ErrnoException;
+		expect(() => handleDiscoverError(error)).toThrow(error);
+	});
 });
 
 describe("opencodeSource.read", () => {

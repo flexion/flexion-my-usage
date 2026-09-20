@@ -335,6 +335,44 @@ describe("aggregateDaily: totals", () => {
 		expect(day?.notionalCost).toBe(1);
 	});
 
+	// Two responses to the same unpriced model on the same day (an ordinary shape: several calls to
+	// one unpriced model in a session). unpricedTokens must be the SUM of both rows' tokens; a series
+	// that assigns instead of accumulating (`series.unpricedTokens = tokens`) would report only the
+	// second row's 200, not both rows' 500, and every other unpriced fixture in this file has at most
+	// one unpriced row per (provider, model) per day, so only this case can catch that mutant.
+	it("sums unpricedTokens across multiple unpriced rows for the same model on the same day", () => {
+		const [day] = aggregateDaily(
+			[
+				pricedRow({
+					provider: "example-gateway",
+					model: "example-model",
+					tokens: { input: 300 },
+					notionalCost: 0,
+					unpriced: true,
+				}),
+				pricedRow({
+					provider: "example-gateway",
+					model: "example-model",
+					tokens: { output: 200 },
+					notionalCost: 0,
+					unpriced: true,
+				}),
+			],
+			1,
+			now(),
+		);
+
+		expect(seriesOf(day)).toEqual([
+			{
+				provider: "example-gateway",
+				model: "example-model",
+				notionalCost: 0,
+				tokens: 500,
+				unpricedTokens: 500,
+			},
+		]);
+	});
+
 	it("adds costs without rounding them", () => {
 		const [day] = aggregateDaily(
 			[

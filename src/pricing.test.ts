@@ -395,13 +395,24 @@ describe("price: first-party fallback for providers without a rule", () => {
 	);
 
 	// github-copilot spells Claude versions with a dot; Anthropic and LiteLLM's `anthropic` keys
-	// use a dash. Each pair is a github-copilot model id and the first-party key that models.dev
-	// gives as its base_model. The table holds only the target key, so a row prices only if the
-	// alias points at exactly that key. Two pairs stand for the mechanism; the full list, with
-	// its models.dev and LiteLLM evidence, is documented on the alias table in pricing-match.ts.
+	// use a dash. Each row is one MODEL_ALIASES entry: a github-copilot model id and the
+	// first-party key that models.dev gives as its base_model. The table holds only the target
+	// key, so a row prices only if the alias points at exactly that key. The models.dev and
+	// LiteLLM evidence for each mapping is documented on the alias table in pricing-match.ts.
+	//
+	// One row per alias-table entry (not a couple standing in for the mechanism) is deliberate:
+	// the table is evidence-backed data, acceptance criterion 4 on myusage-4xu.21 requires every
+	// entry independently verified, and a silently wrong price from a retargeted or deleted
+	// entry is worse than a flagged-unpriced row.
 	const aliased: [string, string, number][] = [
-		["claude-opus-4.7", "claude-opus-4-7", 5],
 		["claude-fable-5.1", "claude-fable-5-1", 10],
+		["claude-haiku-4.5", "claude-haiku-4-5", 1],
+		["claude-opus-4.5", "claude-opus-4-5", 5],
+		["claude-opus-4.6", "claude-opus-4-6", 5],
+		["claude-opus-4.7", "claude-opus-4-7", 5],
+		["claude-opus-4.8", "claude-opus-4-8", 5],
+		["claude-sonnet-4.5", "claude-sonnet-4-5", 3],
+		["claude-sonnet-4.6", "claude-sonnet-4-6", 3],
 	];
 
 	it.each(aliased)(

@@ -30,6 +30,25 @@ jobs:
       # Builds, then fails if dist/ or the npm package would ship test or fixture files.
       - run: yarn check:package
 
+  # Runs the engines.node floor from package.json, which the Node 22 above never reaches.
+  # Keep node-version equal to engines.node.
+  # A separate job on purpose, NOT a matrix on verify: main requires checks named exactly
+  # "verify" and "leak-scan", and a matrix would rename verify to "verify (22)" and block every PR.
+  # Install and test only. tsc and biome are native binaries behind a Node launcher, and
+  # check:package only builds and lists the package, so those steps give the same result on any
+  # Node and verify already covers them. The tests are what run on the floor.
+  verify-node-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22.13.0"
+      - run: corepack enable
+      - run: yarn install --immutable
+      # The coverage gate, on the floor. node:sqlite needs no flag from 22.13.0.
+      - run: yarn test
+
   # Release runs ONLY on a pushed v* tag. Merging to main never publishes.
   # Flow: bump package.json version in a PR, merge to main, then tag that commit:
   #   git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z

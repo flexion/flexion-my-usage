@@ -1,4 +1,4 @@
-import { PROVIDER_RULES, resolveRates } from "./pricing-match.js";
+import { type Resolution, resolveRates } from "./pricing-match.js";
 import {
 	describeError,
 	type LoadOptions,
@@ -9,11 +9,25 @@ import {
 } from "./pricing-table.js";
 import type { NormalizedUsageRow } from "./sources/types.js";
 
+/**
+ * The exact text to show beside a cost that came from the first-party fallback (see
+ * `PricedRow.priceLabel`). A string literal type on purpose: consumers compare against this
+ * constant instead of matching on prose.
+ */
+export const FIRST_PARTY_FALLBACK_LABEL = "notional at first-party list price";
+
 export interface PricedRow extends NormalizedUsageRow {
 	/** Notional cost in USD; 0 when the model is unpriced (see `unpriced`). */
 	notionalCost: number;
 	/** True when no published rate was found for (provider, model). */
 	unpriced: boolean;
+	/**
+	 * Set only when the row's provider has no explicit pricing rule and the cost is the model
+	 * maker's list price found by model id. That figure is approximate: it can be off by 10
+	 * percent or more where a gateway adds markup or uses regional or discounted price lists.
+	 * Absent on rows priced through their own provider's rule and on unpriced rows.
+	 */
+	priceLabel?: typeof FIRST_PARTY_FALLBACK_LABEL;
 }
 
 export interface PriceOptions extends LoadOptions {
@@ -78,6 +92,11 @@ function notionalCost(
  * with cache-read and cache-write priced at their own rates. The table is fetched once and
  * cached; with a usable cache this makes no network call. Rows whose model has no published
  * rate keep their tokens, cost 0 and are flagged `unpriced`.
+ *
+ * A row from a provider with no explicit rule (a gateway, subscription plan or custom
+ * endpoint) is priced at the model maker's list price when its bare model id matches exactly
+ * one first-party rate set, and carries `priceLabel`; see `resolveRates` for the rules and the
+ * accuracy limit. Every provider can therefore be priced, so any row needs the table.
  */
 export async function price(
 	rows: NormalizedUsageRow[],
@@ -86,30 +105,33 @@ export async function price(
 	if (rows.length === 0) return [];
 	const warn = options.warn ?? defaultWarn;
 
-	// Skip the table (and any fetch) when no row's provider could be priced anyway.
 	let table: PriceTable | undefined;
-	if (rows.some((row) => PROVIDER_RULES.has(row.provider))) {
-		try {
-			table = await loadPriceTable(options, warn);
-		} catch (error) {
-			// loadPriceTable reports its own failures; this is the never-throw backstop.
-			warn(
-				`my-usage: price table unavailable (${describeError(error)}); rows will show as unpriced`,
-			);
-		}
+	try {
+		table = await loadPriceTable(options, warn);
+	} catch (error) {
+		// loadPriceTable reports its own failures; this is the never-throw backstop.
+		warn(
+			`my-usage: price table unavailable (${describeError(error)}); rows will show as unpriced`,
+		);
 	}
 
-	const ratesByModel = new Map<string, ModelRates | undefined>();
+	const resolutionByModel = new Map<string, Resolution | undefined>();
 	return rows.map((row) => {
 		const id = `${row.provider}\u0000${row.model}`;
-		if (!ratesByModel.has(id)) {
-			const resolution = table && resolveRates(table, row.provider, row.model);
-			ratesByModel.set(id, resolution?.ok ? resolution.rates : undefined);
+		if (!resolutionByModel.has(id)) {
+			resolutionByModel.set(
+				id,
+				table && resolveRates(table, row.provider, row.model),
+			);
 		}
-		const rates = ratesByModel.get(id);
-		const cost = rates && notionalCost(row.tokens, rates);
-		return cost === undefined
-			? { ...row, notionalCost: 0, unpriced: true }
-			: { ...row, notionalCost: cost, unpriced: false };
+		const unpriced = { ...row, notionalCost: 0, unpriced: true };
+		const resolution = resolutionByModel.get(id);
+		if (!resolution?.ok) return unpriced;
+		const cost = notionalCost(row.tokens, resolution.rates);
+		if (cost === undefined) return unpriced;
+		const priced = { ...row, notionalCost: cost, unpriced: false };
+		return resolution.fallback
+			? { ...priced, priceLabel: FIRST_PARTY_FALLBACK_LABEL }
+			: priced;
 	});
 }

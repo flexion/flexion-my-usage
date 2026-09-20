@@ -169,6 +169,8 @@ describe("price: (provider, model) -> LiteLLM key", () => {
 			]);
 			expect(row?.unpriced).toBe(false);
 			expect(row?.notionalCost).toBeCloseTo(perM, 9);
+			// Only fallback-priced rows carry a label.
+			expect(row).not.toHaveProperty("priceLabel");
 		},
 	);
 
@@ -187,20 +189,17 @@ describe("price: (provider, model) -> LiteLLM key", () => {
 			"claude-sonnet-4-5-20250929-v1:0",
 			"bare key owned by another provider",
 		],
-		// The bare key exists but belongs to the Gemini API, not Vertex.
+		// The bare key belongs to the Gemini API, not Vertex. gemini/gemini-flash-latest is a
+		// first-party key too, but a provider that has a rule never falls back to one.
 		[
 			"google-vertex",
 			"gemini-flash-latest",
-			"bare key owned by another provider",
+			"bare key owned by another provider, and no fallback for a provider with a rule",
 		],
-		// Gateways and subscription providers have no rule: the same-named first-party key
-		// would be a different vendor's price list.
-		["github-copilot", "claude-opus-5", "gateway without a rule"],
-		["opencode", "gpt-5.1", "gateway without a rule"],
-		["some-custom-provider", "gpt-5", "unknown provider"],
+		// Alias spellings are part of that fallback: they do not apply to a provider with a rule.
+		["anthropic", "claude-opus-4.7", "a dotted id is not aliased here"],
 		["anthropic", "", "empty model id"],
 		["constructor", "__proto__", "prototype-ish ids are just unknown"],
-		["anthropic", "sample_spec", "non-model entry"],
 	];
 
 	it.each(unpriced)("%s / %s is unpriced (%s)", async (provider, model) => {
@@ -208,6 +207,7 @@ describe("price: (provider, model) -> LiteLLM key", () => {
 		const [row] = await priceWith([usageRow({ provider, model, tokens })]);
 		expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
 		expect(row?.tokens).toMatchObject(tokens);
+		expect(row).not.toHaveProperty("priceLabel");
 	});
 
 	it("skips the table's non-model entries even when they look priceable", async () => {
@@ -251,6 +251,209 @@ describe("price: (provider, model) -> LiteLLM key", () => {
 		);
 		expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
 	});
+});
+
+describe("price: first-party fallback for providers without a rule", () => {
+	// A row from a gateway, subscription or custom provider is priced by its bare model id
+	// against first-party keys only, and says so.
+	const LABEL = "notional at first-party list price";
+
+	// Real (providerID, modelID) pairs; the rate in USD per M input tokens identifies the key.
+	const priced: [string, string, number][] = [
+		["github-copilot", "claude-opus-5", 5],
+		// opencode Zen lists this id at 1.07 USD per M; the first-party list price is 1.25.
+		["opencode", "gpt-5.1", 1.25],
+		// The Gemini API's key lives under gemini/.
+		["github-copilot", "gemini-3.6-flash", 0.75],
+		["some-custom-provider", "grok-4", 1.25],
+		["some-custom-provider", "deepseek-chat", 0.28],
+		// Resellers are not first party: Azure also lists this id (azure/gpt-4o-mini at 0.165), and
+		// if it counted, the two rate sets would disagree and the row would go unpriced.
+		["some-custom-provider", "gpt-4o-mini", 0.15],
+	];
+
+	it.each(priced)(
+		"%s / %s is priced at the first-party %d USD per M input tokens and labeled",
+		async (provider, model, perM) => {
+			const [row] = await priceWith([
+				usageRow({ provider, model, tokens: { input: M } }),
+			]);
+			expect(row?.unpriced).toBe(false);
+			expect(row?.notionalCost).toBeCloseTo(perM, 9);
+			expect(row?.priceLabel).toBe(LABEL);
+		},
+	);
+
+	// A model id the table has no first-party key for stays unpriced, exactly like a provider
+	// the code has never heard of did before the fallback existed.
+	const unmatched: [string, string, string][] = [
+		["github-copilot", "kimi-k3", "no first-party key in the table"],
+		[
+			"some-custom-provider",
+			"claude-sonnet-4-5-20250929-v1:0",
+			"the bare key belongs to Bedrock, which is not first party",
+		],
+		[
+			"some-custom-provider",
+			"llama-3.3-70b-versatile",
+			"only a host (Groq) lists it",
+		],
+		[
+			"some-custom-provider",
+			"mistral-large-latest",
+			"Mistral's namespace also lists other vendors' models, so it is not consulted",
+		],
+		[
+			"some-custom-provider",
+			"anthropic/claude-sonnet-4.5",
+			"only a gateway (OpenRouter) lists it",
+		],
+		[
+			"some-custom-provider",
+			"claude-sonnet-4-5@20250929",
+			"only a cloud (Vertex) lists it",
+		],
+	];
+
+	it.each(unmatched)("%s / %s stays unpriced (%s)", async (provider, model) => {
+		const tokens = { input: 123, output: 45 };
+		const [row] = await priceWith([usageRow({ provider, model, tokens })]);
+		expect(row).toMatchObject({ notionalCost: 0, unpriced: true, tokens });
+		expect(row).not.toHaveProperty("priceLabel");
+	});
+
+	it("leaves the row unpriced and unlabeled when a bucket with tokens has no first-party rate", async () => {
+		// The id matches a first-party key, but xAI publishes no cache-write rate for it.
+		const [row] = await priceWith([
+			usageRow({
+				provider: "some-custom-provider",
+				model: "grok-4",
+				tokens: { input: 1000, cacheWrite: 500 },
+			}),
+		]);
+		expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
+		expect(row).not.toHaveProperty("priceLabel");
+	});
+
+	it("labels each row by its own provider when a rule provider and a ruleless one share a model id", async () => {
+		const row = (provider: string) =>
+			usageRow({ provider, model: "claude-opus-5", tokens: { input: M } });
+		const [own, gateway, ownAgain] = await priceWith([
+			row("anthropic"),
+			row("github-copilot"),
+			row("anthropic"),
+		]);
+		expect(own).not.toHaveProperty("priceLabel");
+		expect(gateway?.priceLabel).toBe(LABEL);
+		expect(ownAgain).not.toHaveProperty("priceLabel");
+	});
+
+	// Two first-party vendors listing the same bare id count as one answer only when every
+	// rate the cost calculation uses agrees.
+	// Doctored: xAI also lists `gpt-5` (the real OpenAI entry), changed one rate at a time.
+	const twoVendors = (change: Record<string, unknown>) => ({
+		...LITELLM_FIXTURE,
+		"xai/gpt-5": {
+			...LITELLM_FIXTURE["gpt-5"],
+			litellm_provider: "xai",
+			...change,
+		},
+	});
+	const gpt5Row = () =>
+		usageRow({
+			provider: "github-copilot",
+			model: "gpt-5",
+			tokens: { input: M },
+		});
+
+	it("prices the row when every first-party key for the id lists the same rates", async () => {
+		const [row] = await priceWith([gpt5Row()], twoVendors({}));
+		expect(row?.notionalCost).toBeCloseTo(1.25, 9);
+		expect(row?.priceLabel).toBe(LABEL);
+	});
+
+	it.each<[string, Record<string, unknown>]>([
+		["input", { input_cost_per_token: 2e-6 }],
+		// The reasoning rate is held equal to the other key's, so only output differs.
+		[
+			"output",
+			{
+				output_cost_per_token: 2e-5,
+				output_cost_per_reasoning_token: 1e-5,
+			},
+		],
+		["cache read", { cache_read_input_token_cost: 2e-7 }],
+		["cache write", { cache_creation_input_token_cost: 1.5e-6 }],
+		["reasoning", { output_cost_per_reasoning_token: 2e-5 }],
+	])(
+		"leaves the row unpriced when first-party keys differ in the %s rate",
+		async (_rate, change) => {
+			const [row] = await priceWith([gpt5Row()], twoVendors(change));
+			expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
+			expect(row).not.toHaveProperty("priceLabel");
+		},
+	);
+
+	// github-copilot spells Claude versions with a dot; Anthropic and LiteLLM's `anthropic` keys
+	// use a dash. Each row is one MODEL_ALIASES entry: a github-copilot model id and the
+	// first-party key that models.dev gives as its base_model. The table holds only the target
+	// key, so a row prices only if the alias points at exactly that key. The models.dev and
+	// LiteLLM evidence for each mapping is documented on the alias table in pricing-match.ts.
+	//
+	// One row per alias-table entry (not a couple standing in for the mechanism) is deliberate:
+	// the table is evidence-backed data, acceptance criterion 4 on myusage-4xu.21 requires every
+	// entry independently verified, and a silently wrong price from a retargeted or deleted
+	// entry is worse than a flagged-unpriced row.
+	const aliased: [string, string, number][] = [
+		["claude-fable-5.1", "claude-fable-5-1", 10],
+		["claude-haiku-4.5", "claude-haiku-4-5", 1],
+		["claude-opus-4.5", "claude-opus-4-5", 5],
+		["claude-opus-4.6", "claude-opus-4-6", 5],
+		["claude-opus-4.7", "claude-opus-4-7", 5],
+		["claude-opus-4.8", "claude-opus-4-8", 5],
+		["claude-sonnet-4.5", "claude-sonnet-4-5", 3],
+		["claude-sonnet-4.6", "claude-sonnet-4-6", 3],
+	];
+
+	it.each(aliased)(
+		"github-copilot / %s resolves to the LiteLLM key %s",
+		async (spelling, key, perM) => {
+			const [row] = await priceWith(
+				[
+					usageRow({
+						provider: "github-copilot",
+						model: spelling,
+						tokens: { input: M },
+					}),
+				],
+				{ [key]: LITELLM_FIXTURE[key] as Record<string, unknown> },
+			);
+			expect(row?.notionalCost).toBeCloseTo(perM, 9);
+			expect(row?.priceLabel).toBe(LABEL);
+		},
+	);
+
+	// Ids are never rewritten: a spelling resolves only if the table has it or the alias table
+	// lists it. Both ids below are real gateway ids whose twin key exists in the table.
+	const notRewritten: [string, string, string][] = [
+		[
+			"github-copilot",
+			"claude-opus-4.1",
+			"dotted, but claude-opus-4-1 is not aliased",
+		],
+		["neon", "gpt-5-1", "dashed, but the first-party key is gpt-5.1"],
+	];
+
+	it.each(notRewritten)(
+		"%s / %s stays unpriced (%s)",
+		async (provider, model) => {
+			const [row] = await priceWith([
+				usageRow({ provider, model, tokens: { input: M } }),
+			]);
+			expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
+			expect(row).not.toHaveProperty("priceLabel");
+		},
+	);
 });
 
 describe("price: buckets without a published rate", () => {

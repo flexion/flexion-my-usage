@@ -1,9 +1,10 @@
 // Shared fixtures for the pricing tests.
 //
 // LITELLM_FIXTURE holds real entries copied from LiteLLM's model_prices_and_context_window.json
-// (BerriAI/litellm @ 38b310b7510ec78059fab6666d87c2fb6a7f76c9). Only the fields the pricing
-// code reads are kept; keys and rates are unmodified. Tests that need a doctored entry spread
-// a real one and say so.
+// (BerriAI/litellm @ 38b310b7510ec78059fab6666d87c2fb6a7f76c9; the entries added for the
+// model-id fallback tests were copied at b652aaad4a8100e8e0e8b27ce4c9e6bf4aa51465, where the
+// older entries carry the same rates). Only the fields the pricing code reads are kept; keys
+// and rates are unmodified. Tests that need a doctored entry spread a real one and say so.
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, vi } from "vitest";
@@ -47,6 +48,74 @@ export const LITELLM_FIXTURE: Record<string, Record<string, unknown>> = {
 		output_cost_per_token: 0.000025,
 		cache_read_input_token_cost: 5e-7,
 		cache_creation_input_token_cost: 0.00000625,
+	},
+	// The dashed first-party keys that github-copilot's dotted Claude ids (claude-opus-4.7 and
+	// friends) stand for; models.dev names each one as the gateway id's `base_model`.
+	"claude-haiku-4-5": {
+		litellm_provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 0.000001,
+		output_cost_per_token: 0.000005,
+		cache_read_input_token_cost: 1e-7,
+		cache_creation_input_token_cost: 0.00000125,
+	},
+	"claude-opus-4-5": {
+		litellm_provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 0.000005,
+		output_cost_per_token: 0.000025,
+		cache_read_input_token_cost: 5e-7,
+		cache_creation_input_token_cost: 0.00000625,
+	},
+	"claude-opus-4-6": {
+		litellm_provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 0.000005,
+		output_cost_per_token: 0.000025,
+		cache_read_input_token_cost: 5e-7,
+		cache_creation_input_token_cost: 0.00000625,
+	},
+	"claude-opus-4-7": {
+		litellm_provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 0.000005,
+		output_cost_per_token: 0.000025,
+		cache_read_input_token_cost: 5e-7,
+		cache_creation_input_token_cost: 0.00000625,
+	},
+	"claude-opus-4-8": {
+		litellm_provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 0.000005,
+		output_cost_per_token: 0.000025,
+		cache_read_input_token_cost: 5e-7,
+		cache_creation_input_token_cost: 0.00000625,
+	},
+	"claude-sonnet-4-6": {
+		litellm_provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 0.000003,
+		output_cost_per_token: 0.000015,
+		cache_read_input_token_cost: 3e-7,
+		cache_creation_input_token_cost: 0.00000375,
+	},
+	"claude-fable-5-1": {
+		litellm_provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 0.00001,
+		output_cost_per_token: 0.00005,
+		cache_read_input_token_cost: 2.5e-7,
+		cache_creation_input_token_cost: 0.0000125,
+	},
+	// Has a dashed key, but github-copilot's dotted spelling of it is not in the alias table:
+	// used to show that ids are never rewritten.
+	"claude-opus-4-1": {
+		litellm_provider: "anthropic",
+		mode: "chat",
+		input_cost_per_token: 0.000015,
+		output_cost_per_token: 0.000075,
+		cache_read_input_token_cost: 0.0000015,
+		cache_creation_input_token_cost: 0.00001875,
 	},
 	// A bare key that belongs to Bedrock, not Anthropic.
 	"claude-sonnet-4-5-20250929-v1:0": {
@@ -210,6 +279,15 @@ export const LITELLM_FIXTURE: Record<string, Record<string, unknown>> = {
 
 	// google (Gemini API)
 	"gemini/gemini-flash-latest": {
+		litellm_provider: "gemini",
+		mode: "chat",
+		input_cost_per_token: 7.5e-7,
+		output_cost_per_token: 0.00000375,
+		cache_read_input_token_cost: 7.5e-8,
+		output_cost_per_reasoning_token: 0.00000375,
+	},
+	// The Gemini API key behind github-copilot's (and other gateways') gemini-3.6-flash.
+	"gemini/gemini-3.6-flash": {
 		litellm_provider: "gemini",
 		mode: "chat",
 		input_cost_per_token: 7.5e-7,

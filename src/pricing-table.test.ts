@@ -55,8 +55,8 @@ describe("parsePriceTable: the rate ceiling", () => {
 	// pinned nothing the realistic-corruption case doesn't already pin.
 	it.each([
 		[
-			"excludes an entry whose output rate is absurdly large (bead example: 1e300)",
-			{ output_cost_per_token: 1e300 },
+			"excludes an entry whose output rate is a realistic corruption, not just an extreme like 1e300 (a per-million-vs-per-token unit slip: 3 USD/token, still comfortably above the bead's 1 USD/token ceiling)",
+			{ output_cost_per_token: 3 },
 			false,
 		],
 		[
@@ -86,14 +86,14 @@ describe("parsePriceTable: the rate ceiling", () => {
 		["cache_creation_input_token_cost"],
 		["output_cost_per_reasoning_token"],
 	])(
-		"excludes an entry whose absurd rate (1e300) sits on the optional field %s, not just input or output",
+		"excludes an entry whose realistic-corruption rate (3 USD/token), not just an extreme like 1e300, sits on the optional field %s, not just input or output",
 		(field) => {
 			const table = parsePriceTable({
 				"ceiling/optional": {
 					litellm_provider: "ceiling",
 					input_cost_per_token: 0.000003,
 					output_cost_per_token: 0.000015,
-					[field]: 1e300,
+					[field]: 3,
 				},
 			});
 			expect(table.has("ceiling/optional")).toBe(false);

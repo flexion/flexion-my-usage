@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	fakeFetch,
 	forbiddenFetch,
@@ -112,6 +112,71 @@ describe("price: cost model", () => {
 		]);
 		expect(row?.unpriced).toBe(false);
 		expect(row?.notionalCost).toBeCloseTo(15, 9);
+	});
+
+	it("leaves the row unpriced instead of an absurd notional cost when the table entry has an absurd rate (bead example: 1e300)", async () => {
+		const corrupted = {
+			...LITELLM_FIXTURE,
+			"claude-sonnet-4-5": {
+				...LITELLM_FIXTURE["claude-sonnet-4-5"],
+				input_cost_per_token: 1e300,
+			},
+		};
+		const [row] = await priceWith(
+			[
+				usageRow({
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					tokens: { input: M },
+				}),
+			],
+			corrupted,
+		);
+		expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
+	});
+});
+
+describe("price: warn never throws", () => {
+	it("resolves normally even when the injected warn function throws", async () => {
+		// A fetch failure with no cache is the path that reports through warn.
+		const brokenFetch = vi.fn<typeof fetch>(
+			async () => new Response("unavailable", { status: 503 }),
+		);
+		const throwingWarn = () => {
+			throw new Error("warn blew up");
+		};
+
+		const out = await price([usageRow({ tokens: { input: 5 } })], {
+			cacheDir: await newCacheDir(),
+			fetch: brokenFetch,
+			warn: throwingWarn,
+		});
+
+		expect(out).toMatchObject([{ notionalCost: 0, unpriced: true }]);
+	});
+
+	it("resolves normally even when the default warn's write to stderr fails (as a closed pipe does with EPIPE)", async () => {
+		const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+		const writeSpy = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation(() => {
+				throw epipe;
+			});
+		try {
+			const brokenFetch = vi.fn<typeof fetch>(
+				async () => new Response("unavailable", { status: 503 }),
+			);
+
+			const out = await price([usageRow({ tokens: { input: 5 } })], {
+				cacheDir: await newCacheDir(),
+				fetch: brokenFetch,
+				// No warn injected: exercises the default warn, which writes to process.stderr.
+			});
+
+			expect(out).toMatchObject([{ notionalCost: 0, unpriced: true }]);
+		} finally {
+			writeSpy.mockRestore();
+		}
 	});
 });
 

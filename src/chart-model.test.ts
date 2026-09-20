@@ -537,6 +537,19 @@ describe("shareByModel", () => {
 			slices: [],
 		});
 	});
+
+	it("treats a day whose segments don't cover a series as 0 for that series", () => {
+		// A hand-built StackedDay shorter than `series`, the way a caller reconstructing a
+		// partial day (rather than passing one straight through from stackByModel) might.
+		const alpha = model("anthropic", "model-alpha", "model-alpha", 5);
+		const beta = model("anthropic", "model-beta", "model-beta", 3);
+		const shortDay: StackedDay = { day: "2026-09-19", segments: [5], total: 5 };
+
+		const shares = shareByModel([alpha, beta], [shortDay]);
+
+		expect(shares.total).toBe(5);
+		expect(shares.ranked).toEqual([{ series: alpha, value: 5, pct: 100 }]);
+	});
 });
 
 describe("windowTotals", () => {

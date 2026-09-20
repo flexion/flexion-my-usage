@@ -11,24 +11,30 @@
 // These tests run that real command against a real, on-disk variant of vitest.config.ts. This
 // spec deliberately pins the typecheck seam (`tsc -p tsconfig.config.json`) as the enforcement
 // boundary, not `yarn lint`: every assertion below only ever runs tsc, so a guard implemented
-// purely as a lint rule would not turn this file green. Within that seam, the guard is free to
-// take any TypeScript shape - a per-element branded type, a typed helper function, or a value
-// pinned with `satisfies` (mirroring the existing `CoverageGate` pattern below) - so every
-// anchor here finds `exclude:`/`include:` plus the first balanced `[...]` that follows, never a
-// literal `key: [` string: a value wrapped in a helper call (`exclude: explicitPaths([...])`)
-// or an `as const` cast mutates the same way a bare array literal does. This guard is scoped to
-// a single file (`vitest.config.ts` alone, no sibling module it imports); a guard split across
-// files is out of scope for this fixture.
+// purely as a lint rule would not turn this file green. That is a scope decision, not an
+// oversight: the bead's acceptance criteria reads "fails yarn typecheck OR yarn lint", and this
+// suite exercises only the typecheck half on purpose, because it is the stronger seam - it
+// rejects a bad shape at compile time, before any test or lint step runs - and a hollowing this
+// narrow (one glob character in one array entry) needs no separate lint rule once the type-level
+// guard exists. Within that seam, the guard is free to take any TypeScript shape - a per-element
+// branded type, a typed helper function, or a value pinned with `satisfies` (mirroring the
+// existing `CoverageGate` pattern below) - so every anchor here finds `exclude:`/`include:` plus
+// the first balanced `[...]` that follows, never a literal `key: [` string: a value wrapped in a
+// helper call (`exclude: explicitPaths([...])`) or an `as const` cast mutates the same way a bare
+// array literal does. This guard is scoped to a single file (`vitest.config.ts` alone, no sibling
+// module it imports); a guard split across files is out of scope for this fixture.
 //
 // A passing "fails typecheck" assertion needs more than a non-zero exit status: tsc also fails
 // loudly on an unrelated problem (a typo elsewhere in the file, say), and a check that only
 // looks at the exit code cannot tell that apart from the real, intended failure. Every such
-// assertion below also requires the diagnostic text to name the value the guard should be
-// reacting to, so a spurious failure for the wrong reason no longer reads as a passing test. It
-// deliberately does not also pin a line number: verified against a real, throwaway
-// implementation that either entry's guard may report the mismatch at a `satisfies` expression
-// elsewhere in the file (mirroring the CoverageGate pattern below) rather than inside the array
-// literal itself, and that shape is just as valid.
+// assertion below also ties the failure back to the specific value the guard should be reacting
+// to - either by requiring the diagnostic text to name it, or by requiring the diagnostic to
+// land on the mutated entry's own line - so a spurious failure for the wrong reason no longer
+// reads as a passing test. Verified against real, throwaway implementations that a guard may
+// equally validly report the mismatch at a `satisfies` expression elsewhere in the file
+// (mirroring the CoverageGate pattern below, quoting the entry but not its line) or as a
+// type error pointing straight at the mutated line (naming no text at all) - both are treated as
+// equally valid evidence, and neither is required in isolation.
 import { spawnSync } from "node:child_process";
 import { copyFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -37,6 +43,11 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 const REPO_ROOT = fileURLToPath(new URL("../", import.meta.url));
+// Must stay under the repo's own node_modules: Node's upward module resolution from here is
+// what lets each sandboxed tsc project find "vitest/config" and @types/node without a
+// package.json or node_modules of its own. Moving this to os.tmpdir() breaks every case in this
+// file uniformly with "error TS2688: Cannot find type definition file for 'node'" - a diagnostic
+// that looks like a real failure but is really a broken fixture, not a broken guard.
 const FIXTURE_ROOT = join(
 	REPO_ROOT,
 	"node_modules",
@@ -147,8 +158,14 @@ function findCoverageBlock(source: string): number {
 /** Appends a new entry as the array's last element, right before its closing `]` - where a
  * new humble-object path actually gets added in practice, and, unlike inserting at the front,
  * never lands among the three pre-existing, intentionally-glob test-support entries (AGENTS.md:
- * only the humble-object entries have to be explicit paths, not the whole array). */
-function graftIntoExcludeArray(source: string, entry: string): string {
+ * only the humble-object entries have to be explicit paths, not the whole array). Also returns
+ * the grafted entry's own 1-indexed line number in the mutated source, so a caller can tell a
+ * diagnostic reported there apart from one reported for an unrelated reason - the guard is free
+ * to point tsc at that line instead of quoting the entry's text (see `expectDiagnosticNaming`). */
+function graftIntoExcludeArray(
+	source: string,
+	entry: string,
+): { source: string; entryLine: number } {
 	const { arrayEnd } = findKeyedArray(
 		source,
 		"exclude",
@@ -160,17 +177,46 @@ function graftIntoExcludeArray(source: string, entry: string): string {
 	const prefix = indentMatch
 		? beforeBracket.slice(0, beforeBracket.length - indentMatch[0].length)
 		: beforeBracket;
-	return `${prefix}\n${indent}\t${entry},\n${indent}${source.slice(arrayEnd)}`;
+	const entryLine = prefix.split("\n").length + 1;
+	return {
+		source: `${prefix}\n${indent}\t${entry},\n${indent}${source.slice(arrayEnd)}`,
+		entryLine,
+	};
 }
 
-/** Replaces the whole coverage.exclude array with `[]`. */
+/** Replaces coverage.exclude's own array literal with `[]`, leaving whatever wraps it
+ * untouched - the same slice shape `narrowCoverageInclude` uses below. Replacing from
+ * `keyStart` (the old approach) deleted the "exclude: " text but, for a wrapped value such as
+ * `exclude: explicitPaths([...])`, left the wrapper's own trailing `)` behind with nothing to
+ * close, producing a syntax error (TS1005/TS1136) instead of the intended clean typecheck. */
 function emptyCoverageExclude(source: string): string {
+	const { arrayStart, arrayEnd } = findKeyedArray(
+		source,
+		"exclude",
+		findCoverageBlock(source),
+	);
+	return `${source.slice(0, arrayStart)}[]${source.slice(arrayEnd + 1)}`;
+}
+
+/** Deletes the whole `exclude: ...` entry (key, value and its own trailing comma) from the
+ * coverage block, mirroring `removeCoverageInclude` below - the same key-removal shape, but for
+ * the entry whose removal is stricter rather than a hollowing (see the "removed entirely" test
+ * for coverage.exclude): with nothing excluded, every src file, including test files, would have
+ * to hit 100% on its own. */
+function removeCoverageExclude(source: string): string {
 	const { keyStart, arrayEnd } = findKeyedArray(
 		source,
 		"exclude",
 		findCoverageBlock(source),
 	);
-	return `${source.slice(0, keyStart)}exclude: []${source.slice(arrayEnd + 1)}`;
+	const commaIndex = source.indexOf(",", arrayEnd);
+	expect(
+		commaIndex,
+		"expected a trailing comma after coverage.exclude (fixture anchor stale?)",
+	).toBeGreaterThan(-1);
+	const lineEnd = source.indexOf("\n", commaIndex);
+	const end = lineEnd === -1 ? source.length : lineEnd + 1;
+	return source.slice(0, keyStart) + source.slice(end);
 }
 
 /** Replaces coverage.include's own array literal with `replacementArray` (just the `[...]`
@@ -209,18 +255,24 @@ function removeCoverageInclude(source: string): string {
 }
 
 /** Confirms a typecheck failure is the real thing, not a spurious failure for an unrelated
- * reason: tsc must exit non-zero, emit a genuine diagnostic against vitest.config.ts, and that
- * diagnostic must reference `requiredText` - the one value the mutation put in question.
+ * reason: tsc must exit non-zero and emit a genuine diagnostic against vitest.config.ts, and
+ * that diagnostic must tie back to `requiredText` - the one value the mutation put in question
+ * - EITHER by quoting it directly OR by pointing at `entryLine`, the grafted entry's own line
+ * (from `graftIntoExcludeArray`).
  *
- * Verified against a real, throwaway two-case implementation (a per-element branded type for
- * coverage.exclude, a `satisfies`-pinned literal tuple for coverage.include, mirroring the
- * file's existing `CoverageGate` pattern): tsc's TS1360 "does not satisfy the expected type"
- * quotes the offending literal on both sides of the comparison, but reports the diagnostic at
- * the `satisfies` expression, not inside the array literal being checked - so this
- * deliberately does not also assert a line number or location, only content. */
+ * Verified against four real, throwaway guard shapes: a per-element branded type and a
+ * conditional-type parameter both point tsc at the grafted line (`vitest.config.ts(N,5)`)
+ * without quoting the entry anywhere in the message; a `satisfies`-pinned literal tuple quotes
+ * the entry but reports it at the `satisfies` expression elsewhere in the file; a
+ * message-engineered type quotes the entry but at a worse, misleading location. Requiring the
+ * text alone rejects the first two correct guards; requiring the line alone would accept a
+ * guard that never actually explains itself. Either is real, human-verifiable evidence the
+ * diagnostic is about this entry, so this deliberately does not also assert a line number for
+ * the quoting shape or text for the line-pointing shape. */
 function expectDiagnosticNaming(
 	result: ReturnType<typeof runTypecheck>,
 	requiredText: string,
+	entryLine: number,
 	context: string,
 ): void {
 	expect(
@@ -228,14 +280,18 @@ function expectDiagnosticNaming(
 		`expected typecheck to fail for ${context}; got status 0 with:\n${result.stdout}`,
 	).not.toBe(0);
 	const output = result.stdout + result.stderr;
+	const diagnostic = output.match(TSC_DIAGNOSTIC);
 	expect(
-		output,
+		diagnostic,
 		`expected a tsc diagnostic against vitest.config.ts; got:\n${output}`,
-	).toMatch(TSC_DIAGNOSTIC);
+	).not.toBeNull();
+	const diagnosticLine = diagnostic ? Number(diagnostic[1]) : -1;
+	const namesTheOffender =
+		output.includes(requiredText) || diagnosticLine === entryLine;
 	expect(
-		output,
-		`expected the diagnostic to reference ${requiredText}; got:\n${output}`,
-	).toContain(requiredText);
+		namesTheOffender,
+		`expected the diagnostic to either quote ${requiredText} or be reported on the grafted entry's own line (${entryLine}, got ${diagnosticLine}); got:\n${output}`,
+	).toBe(true);
 }
 
 // Verified against the same throwaway implementation: narrowing coverage.include to one file
@@ -246,12 +302,15 @@ function expectDiagnosticNaming(
 // third throwaway implementation (`config.test.coverage.include satisfies IncludeGate` mirroring
 // the file's `CoverageGate` pattern) that an object literal missing the property entirely trips
 // TS2339 "Property 'include' does not exist on type ..." at the `satisfies` reference, since the
-// literal's own inferred type never had that key to begin with. All three are real, tsc-standard
-// wording for "this shape is wrong", and none would appear in an unrelated failure (a typo
-// elsewhere in the file, say), so any of the three is accepted here instead of requiring one
+// literal's own inferred type never had that key to begin with. A fourth, equally standard shape
+// for the same "key missing" case - an excess/missing-property check against a structural type
+// rather than a `satisfies` reference - reports it instead as "Property 'include' is missing in
+// type ... but required in type ...", so that wording is accepted too. All four are real,
+// tsc-standard wording for "this shape is wrong", and none would appear in an unrelated failure
+// (a typo elsewhere in the file, say), so any of them is accepted here instead of requiring one
 // golden pattern's literal text specifically.
 const COVERAGE_INCLUDE_MISMATCH =
-	/"src\/\*\*\/\*\.ts"|element\(s\)|Property ['"]include['"] does not exist/;
+	/"src\/\*\*\/\*\.ts"|element\(s\)|Property ['"]include['"] (does not exist|is missing in type)/;
 
 function expectIncludeShapeMismatch(
 	result: ReturnType<typeof runTypecheck>,
@@ -294,7 +353,10 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 			"fails typecheck when %s lands in an entry",
 			async (label, entry) => {
 				const real = await realConfigSource();
-				const mutated = graftIntoExcludeArray(real, entry);
+				const { source: mutated, entryLine } = graftIntoExcludeArray(
+					real,
+					entry,
+				);
 				const dir = await typecheckProjectWith(mutated);
 
 				const result = runTypecheck(dir);
@@ -302,6 +364,7 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 				expectDiagnosticNaming(
 					result,
 					entry,
+					entryLine,
 					`coverage.exclude gaining ${label}`,
 				);
 			},
@@ -309,7 +372,10 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 
 		it("still typechecks when a new, legitimate humble-object path is added", async () => {
 			const real = await realConfigSource();
-			const mutated = graftIntoExcludeArray(real, '"src/cli-entry.ts"');
+			const { source: mutated } = graftIntoExcludeArray(
+				real,
+				'"src/cli-entry.ts"',
+			);
 			const dir = await typecheckProjectWith(mutated);
 
 			const result = runTypecheck(dir);
@@ -332,8 +398,33 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 				`expected an empty coverage.exclude to typecheck cleanly - it excludes nothing, which is stricter than today, not a hollowing; got:\n${result.stdout}${result.stderr}`,
 			).toBe(0);
 		});
+
+		// Distinct from the `[]` case above: this drops the `exclude` key itself, not just its
+		// value. A guard that only inspects the array's elements (e.g. a helper-call whose
+		// argument type does the checking) would have nothing left to inspect once the key -
+		// and the call - are gone, so this pins the key's absence too, not just an empty value.
+		it("still typechecks when the exclude key is removed entirely", async () => {
+			const real = await realConfigSource();
+			const mutated = removeCoverageExclude(real);
+			const dir = await typecheckProjectWith(mutated);
+
+			const result = runTypecheck(dir);
+
+			expect(
+				result.status,
+				`expected coverage.exclude removed entirely to typecheck cleanly - like the empty-array case, this excludes nothing (stricter, not a hollowing); got:\n${result.stdout}${result.stderr}`,
+			).toBe(0);
+		});
 	});
 
+	// coverage.include broadened to add an unrelated pattern (e.g. adding "lib/**/*.ts" alongside
+	// the required "src/**/*.ts") is deliberately left unpinned here. Unlike narrowing or
+	// deleting the key, broadening cannot hollow the gate: every file the policy requires
+	// (AGENTS.md: "every file under src/ counts") stays included either way, and the bead's own
+	// acceptance criteria names only "narrowed to one file", not broadening. A guard that
+	// tuple-pins the exact array and one that only requires the presence of the needed pattern
+	// are both legitimate readings of that criteria, and picking one here would encode a
+	// preference the bug report and AGENTS.md do not state.
 	describe("coverage.include", () => {
 		it("fails typecheck when narrowed to a single file", async () => {
 			const real = await realConfigSource();

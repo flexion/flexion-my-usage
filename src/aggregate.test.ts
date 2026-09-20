@@ -1,9 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { aggregateDaily, unpricedModels } from "./aggregate.js";
 import type { PricedRow } from "./pricing.js";
 
 // Fixtures are LOCAL wall-clock times (never epoch ms or UTC strings), so a fixture names the
-// same calendar day on any machine timezone. Run the suite under several TZ values.
+// same calendar day on any machine timezone. The daylight-saving cases pin their own zone.
 
 /** A local wall-clock time; `month` is 1-based. */
 function at(
@@ -243,16 +243,33 @@ describe("aggregateDaily: totals", () => {
 		expect(day?.tokens).toBe(1150);
 		expect(day?.notionalCost).toBe(1);
 	});
+
+	it("adds costs as plain numbers, without rounding", () => {
+		const [day] = aggregateDaily(
+			[pricedRow({ notionalCost: 0.1 }), pricedRow({ notionalCost: 0.2 })],
+			1,
+			NOW,
+		);
+
+		// 0.1 + 0.2 drifts under float addition (0.30000000000000004), so a bucket that rounds its
+		// cost, whether per model or per day, cannot match it. Rounding is the renderer's job.
+		const sum = 0.1 + 0.2;
+		expect(day?.notionalCost).toBe(sum);
+		expect(day?.byModel["anthropic/claude-sonnet-4-5"]?.notionalCost).toBe(sum);
+	});
 });
 
 describe("aggregateDaily: daylight-saving changes", () => {
-	// On the day a zone's clocks change, that day is 23 or 25 hours long. Each case is a real
-	// 2026 change date; the fixtures are local wall-clock times, so a case bites on machines set
-	// to a zone that changes that day and is an ordinary day anywhere else.
-	// `days` is [change day - 2, - 1, change day, + 1].
+	// On the day a zone's clocks change, that day is 23 or 25 hours long. Each case runs under its
+	// own zone, so it bites on every machine, a UTC CI runner included. Node applies a new
+	// process.env.TZ to Date straight away; the value is process-global, so it is restored after
+	// each case and the cases stay sequential (vitest runs a file's tests one at a time).
+	// `days` is [change day - 2, - 1, change day, + 1]; `hours` is the length of the change day.
 	const changes = [
 		{
 			name: "US spring forward",
+			tz: "America/New_York",
+			hours: 23,
 			year: 2026,
 			month: 3,
 			day: 8,
@@ -260,6 +277,8 @@ describe("aggregateDaily: daylight-saving changes", () => {
 		},
 		{
 			name: "US fall back",
+			tz: "America/New_York",
+			hours: 25,
 			year: 2026,
 			month: 11,
 			day: 1,
@@ -267,6 +286,8 @@ describe("aggregateDaily: daylight-saving changes", () => {
 		},
 		{
 			name: "EU spring forward",
+			tz: "Europe/Berlin",
+			hours: 23,
 			year: 2026,
 			month: 3,
 			day: 29,
@@ -274,6 +295,8 @@ describe("aggregateDaily: daylight-saving changes", () => {
 		},
 		{
 			name: "EU fall back",
+			tz: "Europe/Berlin",
+			hours: 25,
 			year: 2026,
 			month: 10,
 			day: 25,
@@ -281,6 +304,8 @@ describe("aggregateDaily: daylight-saving changes", () => {
 		},
 		{
 			name: "AU fall back",
+			tz: "Australia/Sydney",
+			hours: 25,
 			year: 2026,
 			month: 4,
 			day: 5,
@@ -288,6 +313,8 @@ describe("aggregateDaily: daylight-saving changes", () => {
 		},
 		{
 			name: "AU spring forward",
+			tz: "Australia/Sydney",
+			hours: 23,
 			year: 2026,
 			month: 10,
 			day: 4,
@@ -295,9 +322,26 @@ describe("aggregateDaily: daylight-saving changes", () => {
 		},
 	];
 
+	let ambientTz: string | undefined;
+	beforeEach(() => {
+		ambientTz = process.env.TZ;
+	});
+	afterEach(() => {
+		if (ambientTz === undefined) delete process.env.TZ;
+		else process.env.TZ = ambientTz;
+	});
+
 	it.each(changes)(
 		"neither skips nor repeats a day across the $name",
-		({ year, month, day, days }) => {
+		({ tz, hours, year, month, day, days }) => {
+			process.env.TZ = tz;
+
+			// The zone must really change its clocks on this day, or the case would pass vacuously.
+			const dayLength =
+				new Date(year, month - 1, day + 1).getTime() -
+				new Date(year, month - 1, day).getTime();
+			expect(dayLength / 3_600_000).toBe(hours);
+
 			const rows = [
 				pricedRow({
 					timestamp: at(year, month, day, 0, 30),
@@ -377,6 +421,32 @@ describe("unpricedModels", () => {
 		expect(unpricedModels(days)).toEqual([
 			{ model: "example-provider/new-model", tokens: 700 },
 			{ model: "example-gateway/example-model", tokens: 500 },
+		]);
+	});
+
+	it("orders models with equal unpriced tokens by model id, whatever order the rows arrived in", () => {
+		const days = aggregateDaily(
+			[
+				pricedRow({
+					provider: "example-gateway",
+					model: "zeta-model",
+					tokens: { input: 100 },
+					unpriced: true,
+				}),
+				pricedRow({
+					provider: "example-gateway",
+					model: "alpha-model",
+					tokens: { input: 100 },
+					unpriced: true,
+				}),
+			],
+			1,
+			NOW,
+		);
+
+		expect(unpricedModels(days)).toEqual([
+			{ model: "example-gateway/alpha-model", tokens: 100 },
+			{ model: "example-gateway/zeta-model", tokens: 100 },
 		]);
 	});
 });

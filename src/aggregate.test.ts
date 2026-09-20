@@ -19,6 +19,10 @@ const ZONE = "America/New_York";
 // next test and nothing relies on the runner isolating files. It only takes effect in a process
 // that owns its environment (vitest's default forks pool; worker threads ignore it). The guard
 // turns a runner that ignores it into a failure in every test, not a vacuous pass.
+//
+// Reviewed: this guard is the fix that belongs here. Pinning `pool: "forks"` so a misconfigured
+// runner can never reach the wrong pool in the first place is a vitest.config.ts change, out of
+// this file's scope (tracked separately as myusage-40s).
 let ambientTz: string | undefined;
 beforeEach(() => {
 	ambientTz = process.env.TZ;
@@ -188,6 +192,10 @@ describe("aggregateDaily: window", () => {
 });
 
 describe("aggregateDaily: totals", () => {
+	// `responses` counts rows, not tokens: every matching row is one response, even a row whose
+	// priced tokens are all zero. Reviewed: implement this as a plain `+= 1` per row with no
+	// `tokens > 0` guard; that guard would still pass every case below, so it is an implementation
+	// instruction for this bead rather than something to add another test for.
 	it("sums cost, tokens (all five buckets) and responses per day, split by provider and model", () => {
 		const [day] = aggregateDaily(
 			[

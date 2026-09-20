@@ -334,16 +334,23 @@ describe("price: first-party fallback for providers without a rule", () => {
 		expect(row?.priceLabel).toBe(LABEL);
 	});
 
-	it.each([
-		["input_cost_per_token", 2e-6],
-		["output_cost_per_token", 2e-5],
-		["cache_read_input_token_cost", 2e-7],
-		["cache_creation_input_token_cost", 1.5e-6],
-		["output_cost_per_reasoning_token", 2e-5],
+	it.each<[string, Record<string, unknown>]>([
+		["input", { input_cost_per_token: 2e-6 }],
+		// The reasoning rate is held equal to the other key's, so only output differs.
+		[
+			"output",
+			{
+				output_cost_per_token: 2e-5,
+				output_cost_per_reasoning_token: 1e-5,
+			},
+		],
+		["cache read", { cache_read_input_token_cost: 2e-7 }],
+		["cache write", { cache_creation_input_token_cost: 1.5e-6 }],
+		["reasoning", { output_cost_per_reasoning_token: 2e-5 }],
 	])(
-		"leaves the row unpriced when first-party keys differ in %s",
-		async (field, rate) => {
-			const [row] = await priceWith([gpt5Row()], twoVendors({ [field]: rate }));
+		"leaves the row unpriced when first-party keys differ in the %s rate",
+		async (_rate, change) => {
+			const [row] = await priceWith([gpt5Row()], twoVendors(change));
 			expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
 			expect(row).not.toHaveProperty("priceLabel");
 		},

@@ -228,7 +228,8 @@ async function writeCache(
 		await writeFile(temp, text, { mode: 0o600 });
 		await rename(temp, path);
 	} catch (error) {
-		await rm(temp, { force: true }).catch(() => {});
+		// Best effort: a failed cleanup must not mask the write error.
+		await Promise.allSettled([rm(temp, { force: true })]);
 		throw error;
 	}
 }

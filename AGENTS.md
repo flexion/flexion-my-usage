@@ -1,5 +1,60 @@
 
 
+## Testing & coverage policy
+
+`yarn test` enforces **100% statements, branches, functions and lines, per file**. Below that, it fails. There's no baseline and no ratchet.
+
+| Command | Use |
+| --- | --- |
+| `yarn test` | The gate. All tests plus coverage. CI runs this. |
+| `yarn vitest run <path>` | Fast loop on one file. No coverage, so it doesn't gate. |
+| `yarn lint` | Biome plus the inline-pragma guard. |
+
+`yarn test <path>` fails on purpose: every file you didn't run counts as uncovered. Use `yarn vitest run <path>` to iterate.
+
+### Rules
+
+- Every file under `src/` counts, tested or not (`coverage.include`). An untested file fails the gate.
+- Exclusions live in `coverage.exclude` in `vitest.config.ts`. Humble objects are listed as explicit paths, never globs.
+- Test code and test support are excluded by naming: `*.test.*`, `*.spec.*`, `*.fixtures.*` (the same convention `tsconfig.build.json` uses). Don't give production code those names.
+- Inline `v8 ignore`, `c8 ignore` and `istanbul ignore` comments fail `yarn lint`.
+- Don't lower thresholds, add an exclusion to turn a build green, or write a test that asserts nothing just to touch lines.
+- Don't reach 100% by mocking a vendor module (`vi.mock` on a driver, `fs`, `fetch`). Use a real local fixture (a throwaway SQLite file, a temp directory) or a small fake behind a seam we own, like the injected `fetch` in the price table. If neither works, extract the logic.
+- Coverage must not depend on the runtime. If a line only runs on some Node versions (for example, the `node:sqlite` warning), move the decision into a pure function and test it directly.
+
+### The invasive-species rule
+
+- Control third-party dependencies to avoid entangling them with core business logic
+- Humble objects or adapters SHALL be used to ensure the majority of code depends on things under our control
+- Isolate third-party components to protect application logic
+- Focus on keeping application logic independent of tactical dependencies
+
+Why this gets us to 100%: logic that depends only on things we control takes plain data in and returns plain data out, so it needs no mocks. What's left is a thin seam to the outside world, and that seam is too simple to test.
+
+### What counts as a humble object
+
+A file may be excluded only if **all** of these hold:
+
+1. **Zero business logic.** No decisions, transforms, parsing, or rules. Passing a value along is fine. Choosing or reshaping one is not.
+2. **A test would exercise a vendor or the runtime, not our code.**
+3. **Correct by inspection.** If you'd need to run it to trust it, it has logic.
+
+| Excluded file | Why it's humble |
+| --- | --- |
+| `src/index.ts` | Composition root. Wires the pipeline and touches `process` and `console`. |
+| `src/sources/types.ts` | Type-only. Compiles to no runtime code. |
+
+Not humble, so covered: anything that parses, maps, normalizes, prices, aggregates, formats or decides. That includes turning a raw DB row into a `NormalizedUsageRow`.
+
+The opencode reader (`src/sources/opencode.ts`) and the price table (`src/pricing-table.ts`) sit next to vendors but are **not** excluded. They hold real logic (row validation, size caps, cache fallback), so they stay covered and are tested against real fixtures.
+
+### Keeping vendors out of application logic
+
+- Application logic (pricing math, aggregation, rendering) doesn't import vendors. Adapters do, and stay thin.
+- If an adapter needs a decision or a data transform, move it out. The adapter fetches raw data and calls a pure function (raw shape in, domain shape out). Test that function with plain objects.
+- If logic needs I/O (for example, cache-then-fetch with an offline fallback), take the dependency as an option we own (the price table takes `fetch`, `cacheDir`, `env`). Tests pass a fake or a temp directory.
+- A humble file stays excluded only while it stays logic-free. If it grows a branch or a transform, split it or remove it from `coverage.exclude` and cover it.
+
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:1105d646 -->
 ## Beads Issue Tracker
 

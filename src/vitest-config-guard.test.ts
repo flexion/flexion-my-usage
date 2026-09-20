@@ -36,7 +36,7 @@
 // type error pointing straight at the mutated line (naming no text at all) - both are treated as
 // equally valid evidence, and neither is required in isolation.
 import { spawnSync } from "node:child_process";
-import { copyFileSync } from "node:fs";
+import { copyFileSync, readFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -161,7 +161,15 @@ function findCoverageBlock(source: string): number {
  * only the humble-object entries have to be explicit paths, not the whole array). Also returns
  * the grafted entry's own 1-indexed line number in the mutated source, so a caller can tell a
  * diagnostic reported there apart from one reported for an unrelated reason - the guard is free
- * to point tsc at that line instead of quoting the entry's text (see `expectDiagnosticNaming`). */
+ * to point tsc at that line instead of quoting the entry's text (see `expectDiagnosticNaming`).
+ *
+ * This, and every other mutation above and below, only ever appends a new entry or restructures
+ * the array as a whole (emptying it, deleting the key) - none of them rewrite an *existing*
+ * entry's own value in place. That was never a scope decision, just an untested gap (myusage-c2a
+ * round 3): a guard built to validate only newly-appended entries, or only a tail slice of the
+ * array, would pass every test in this file while missing the more common real-world edit -
+ * narrowing a line already in the config, in place. `replaceEntryInPlace` below closes that gap,
+ * exercised by the `it.each` over every entry the array currently has. */
 function graftIntoExcludeArray(
 	source: string,
 	entry: string,
@@ -182,6 +190,83 @@ function graftIntoExcludeArray(
 		source: `${prefix}\n${indent}\t${entry},\n${indent}${source.slice(arrayEnd)}`,
 		entryLine,
 	};
+}
+
+/** Finds every top-level string-literal element within `[start, end)` of `source` - the same
+ * span `findKeyedArray` returns for coverage.exclude's own array literal - in source order.
+ * `replaceEntryInPlace` and `findExcludeEntryIndex` use this to locate an entry by its position
+ * in the array rather than by its (mutable) text, so replacing entry 0's value doesn't require
+ * already knowing what entry 0 currently says. Deliberately naive (a plain `"..."` regex, no
+ * comment-awareness): safe here because every comment inside this specific array is prose, never
+ * a quoted string, so it cannot produce a false match; a general-purpose source parser would need
+ * to be more careful. */
+function findStringLiteralsInRange(
+	source: string,
+	start: number,
+	end: number,
+): { start: number; end: number }[] {
+	const literals: { start: number; end: number }[] = [];
+	const pattern = /"(?:[^"\\]|\\.)*"/g;
+	pattern.lastIndex = start;
+	let match = pattern.exec(source);
+	while (match !== null && match.index < end) {
+		literals.push({ start: match.index, end: match.index + match[0].length });
+		match = pattern.exec(source);
+	}
+	return literals;
+}
+
+/** Replaces the Nth (0-indexed) string-literal entry of coverage.exclude's array in place -
+ * unlike `graftIntoExcludeArray` above (which only ever appends past the array's end), this
+ * rewrites an *existing* entry's own text, leaving every other entry, and the array's structure,
+ * untouched. Asserts the index actually exists first, so a stale anchor (the array shrinking
+ * without whoever calls this being updated) fails loudly right here, instead of silently matching
+ * nothing and the mutation quietly no-op'ing into a false pass. Also returns the replaced entry's
+ * own 1-indexed line number in the mutated source, for `expectDiagnosticNaming` the same way
+ * `graftIntoExcludeArray` does. */
+function replaceEntryInPlace(
+	source: string,
+	index: number,
+	entry: string,
+): { source: string; entryLine: number } {
+	const { arrayStart, arrayEnd } = findKeyedArray(
+		source,
+		"exclude",
+		findCoverageBlock(source),
+	);
+	const literals = findStringLiteralsInRange(source, arrayStart, arrayEnd);
+	expect(
+		literals[index],
+		`expected coverage.exclude to have an entry at index ${index}; found ${literals.length} (stale anchor - did the array's entry count change?)`,
+	).toBeDefined();
+	const target = literals[index] ?? { start: -1, end: -1 };
+	const entryLine = source.slice(0, target.start).split("\n").length;
+	return {
+		source: source.slice(0, target.start) + entry + source.slice(target.end),
+		entryLine,
+	};
+}
+
+/** Finds the index of the coverage.exclude entry whose literal text is exactly `literalText`
+ * (e.g. `'"src/index.ts"'`, quotes included) - lets the positive-control test below locate an
+ * existing entry by its current value instead of a hardcoded index, so it keeps working if the
+ * array is ever reordered. Asserts the entry is actually found, for the same stale-anchor reason
+ * as `replaceEntryInPlace`. */
+function findExcludeEntryIndex(source: string, literalText: string): number {
+	const { arrayStart, arrayEnd } = findKeyedArray(
+		source,
+		"exclude",
+		findCoverageBlock(source),
+	);
+	const literals = findStringLiteralsInRange(source, arrayStart, arrayEnd);
+	const index = literals.findIndex(
+		(literal) => source.slice(literal.start, literal.end) === literalText,
+	);
+	expect(
+		index,
+		`expected to find ${literalText} among coverage.exclude's entries (fixture anchor stale - was it renamed?)`,
+	).toBeGreaterThan(-1);
+	return index;
 }
 
 /** Replaces coverage.exclude's own array literal with `[]`, leaving whatever wraps it
@@ -339,6 +424,27 @@ const GLOB_FORMS = [
 	["a `!` negation", '"!src/sources/opencode.ts"'],
 ] as const;
 
+// Every existing coverage.exclude entry's index, derived from the real array's current length -
+// not hardcoded - so the it.each below tracks the array automatically: it grows the moment a
+// sixth entry is added, and shrinks if one is removed, with nobody touching this file. Read
+// synchronously and once, at module load, because it.each needs its case list before any test
+// body runs; the async, per-test `realConfigSource()` used inside each case still re-reads the
+// file fresh at test time, same as every other test in this file.
+const REAL_CONFIG_SOURCE_AT_LOAD = readFileSync(
+	join(REPO_ROOT, "vitest.config.ts"),
+	"utf8",
+);
+const REAL_EXCLUDE_ARRAY_AT_LOAD = findKeyedArray(
+	REAL_CONFIG_SOURCE_AT_LOAD,
+	"exclude",
+	findCoverageBlock(REAL_CONFIG_SOURCE_AT_LOAD),
+);
+const EXISTING_EXCLUDE_ENTRY_INDEXES = findStringLiteralsInRange(
+	REAL_CONFIG_SOURCE_AT_LOAD,
+	REAL_EXCLUDE_ARRAY_AT_LOAD.arrayStart,
+	REAL_EXCLUDE_ARRAY_AT_LOAD.arrayEnd,
+).map((_, index) => index);
+
 describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", () => {
 	it("lets the real, unmodified config through cleanly", async () => {
 		const dir = await typecheckProjectWith(await realConfigSource());
@@ -413,6 +519,61 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 			expect(
 				result.status,
 				`expected coverage.exclude removed entirely to typecheck cleanly - like the empty-array case, this excludes nothing (stricter, not a hollowing); got:\n${result.stdout}${result.stderr}`,
+			).toBe(0);
+		});
+
+		// The GLOB_FORMS cases above only ever graft a brand-new sixth entry onto the array - they
+		// never touch an entry that was already there. That leaves the far more common real-world
+		// edit unproven: narrowing a line already in the config, in place, rather than adding a new
+		// one. Verified by mutation (myusage-c2a round 3): a guard that validates only a tail slice
+		// of the array - skipping the first few positions entirely - passes every test above, and
+		// editing the real config's entry 0 from a legitimate test-support pattern to the exact
+		// hollowing wildcard the bug report names ("src/**/*.ts") still typechecks clean, silently
+		// dropping the coverage gate to 0/0/0/0. This drives that same in-place edit across every
+		// index the array currently has, not just one demonstrated position.
+		it.each(EXISTING_EXCLUDE_ENTRY_INDEXES)(
+			"fails typecheck when existing entry %i is rewritten to a wildcard in place",
+			async (index) => {
+				const real = await realConfigSource();
+				const { source: mutated, entryLine } = replaceEntryInPlace(
+					real,
+					index,
+					'"src/**/*.ts"',
+				);
+				const dir = await typecheckProjectWith(mutated);
+
+				const result = runTypecheck(dir);
+
+				expectDiagnosticNaming(
+					result,
+					'"src/**/*.ts"',
+					entryLine,
+					`coverage.exclude entry ${index} rewritten in place to a wildcard`,
+				);
+			},
+		);
+
+		// A guard could satisfy every case above just by pinning the exact five-entry tuple
+		// (reject anything that isn't byte-for-byte the original array) rather than actually
+		// validating each entry's shape. That would be too strict in a way nobody wants: adding a
+		// future humble object by editing an existing line (not just appending one) would then also
+		// fail. This proves the suite doesn't reward that shortcut: rewriting the src/index.ts entry
+		// in place to a different, equally legitimate explicit path must still typecheck cleanly.
+		it("still typechecks when an existing humble-object entry is replaced in place with a different legitimate humble-object path", async () => {
+			const real = await realConfigSource();
+			const index = findExcludeEntryIndex(real, '"src/index.ts"');
+			const { source: mutated } = replaceEntryInPlace(
+				real,
+				index,
+				'"src/cli-entry.ts"',
+			);
+			const dir = await typecheckProjectWith(mutated);
+
+			const result = runTypecheck(dir);
+
+			expect(
+				result.status,
+				`expected an existing entry rewritten in place to a different, equally legitimate explicit path to typecheck cleanly - a guard that instead pins the exact original tuple would wrongly reject this too; got:\n${result.stdout}${result.stderr}`,
 			).toBe(0);
 		});
 	});

@@ -2,6 +2,7 @@ import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	failingFetch,
 	fakeFetch,
 	LITELLM_FIXTURE,
 	useTempCacheDirs,
@@ -13,13 +14,6 @@ import {
 } from "./pricing-table.js";
 
 const newCacheDir = useTempCacheDirs();
-
-/** A fetch that fails every call with a server error, for tests that must reach the network. */
-function failingFetch() {
-	return vi.fn<typeof fetch>(
-		async () => new Response("unavailable", { status: 503 }),
-	);
-}
 
 /**
  * A parseable JSON price-table body whose UTF-16 code-unit length equals exactly
@@ -60,51 +54,56 @@ describe("describeError", () => {
 	});
 });
 
-describe("parsePriceTable: rejects absurd rates", () => {
-	it("excludes an entry whose input rate is absurdly large (bead example: 1e300)", () => {
+describe("parsePriceTable: the rate ceiling", () => {
+	// The 1e300 input-rate case that used to live here was dropped: for any ceiling c, it
+	// fails only when c >= 1e300, which implies the 3-USD/token case below also fails, so it
+	// pinned nothing the realistic-corruption case doesn't already pin.
+	it.each([
+		[
+			"excludes an entry whose output rate is absurdly large (bead example: 1e300)",
+			{ output_cost_per_token: 1e300 },
+			false,
+		],
+		[
+			"excludes an entry whose input rate is a realistic corruption, not just an extreme like 1e300 (a per-million-vs-per-token unit slip: 3 USD/token, still comfortably above the bead's 1 USD/token ceiling)",
+			{ input_cost_per_token: 3 },
+			false,
+		],
+		[
+			"accepts an entry whose input rate sits exactly at the ceiling (1 USD/token)",
+			{ input_cost_per_token: 1 },
+			true,
+		],
+	])("%s", (_name, overrides, accepted) => {
 		const table = parsePriceTable({
-			"absurd/input": {
-				litellm_provider: "absurd",
-				input_cost_per_token: 1e300,
-				output_cost_per_token: 0.000015,
-			},
-		});
-		expect(table.has("absurd/input")).toBe(false);
-	});
-
-	it("excludes an entry whose output rate is absurdly large", () => {
-		const table = parsePriceTable({
-			"absurd/output": {
-				litellm_provider: "absurd",
-				input_cost_per_token: 0.000003,
-				output_cost_per_token: 1e300,
-			},
-		});
-		expect(table.has("absurd/output")).toBe(false);
-	});
-
-	it("excludes an entry whose input rate is a realistic corruption, not just an extreme like 1e300 (a per-million-vs-per-token unit slip: 3 USD/token, still comfortably above the bead's 1 USD/token ceiling)", () => {
-		const table = parsePriceTable({
-			"unit-error/input": {
-				litellm_provider: "unit-error",
-				input_cost_per_token: 3,
-				output_cost_per_token: 0.000015,
-			},
-		});
-		expect(table.has("unit-error/input")).toBe(false);
-	});
-
-	it("excludes an entry whose absurd rate sits on an optional field (cache_read_input_token_cost), not just input or output", () => {
-		const table = parsePriceTable({
-			"absurd/cache-read": {
-				litellm_provider: "absurd",
+			"ceiling/entry": {
+				litellm_provider: "ceiling",
 				input_cost_per_token: 0.000003,
 				output_cost_per_token: 0.000015,
-				cache_read_input_token_cost: 1e300,
+				...overrides,
 			},
 		});
-		expect(table.has("absurd/cache-read")).toBe(false);
+		expect(table.has("ceiling/entry")).toBe(accepted);
 	});
+
+	it.each([
+		["cache_read_input_token_cost"],
+		["cache_creation_input_token_cost"],
+		["output_cost_per_reasoning_token"],
+	])(
+		"excludes an entry whose absurd rate (1e300) sits on the optional field %s, not just input or output",
+		(field) => {
+			const table = parsePriceTable({
+				"ceiling/optional": {
+					litellm_provider: "ceiling",
+					input_cost_per_token: 0.000003,
+					output_cost_per_token: 0.000015,
+					[field]: 1e300,
+				},
+			});
+			expect(table.has("ceiling/optional")).toBe(false);
+		},
+	);
 });
 
 afterEach(() => {
@@ -237,6 +236,14 @@ describe("loadPriceTable: cache directory permissions", () => {
 	it("creates a brand-new cache directory as 0700 (owner-only), not the default umask", async () => {
 		const parent = await newCacheDir();
 		const cacheDir = join(parent, "brand-new-cache-dir");
+		// A control directory made the plain way, under the same parent and the same ambient
+		// umask, so the assertion below is self-checking: if the umask itself already produces
+		// 0700 (a restrictive `umask 077`), this control proves it and the real assertion would
+		// pass vacuously. Only a control that is NOT 0700 shows the mode came from the code.
+		const control = join(parent, "plain-mkdir-control-dir");
+		await mkdir(control);
+		const controlInfo = await stat(control);
+		expect(controlInfo.mode & 0o777).not.toBe(0o700);
 
 		await loadPriceTable(
 			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },

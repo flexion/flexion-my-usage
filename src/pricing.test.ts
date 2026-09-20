@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+	failingFetch,
 	fakeFetch,
 	forbiddenFetch,
 	LITELLM_FIXTURE,
@@ -139,16 +140,13 @@ describe("price: cost model", () => {
 describe("price: warn never throws", () => {
 	it("resolves normally even when the injected warn function throws", async () => {
 		// A fetch failure with no cache is the path that reports through warn.
-		const brokenFetch = vi.fn<typeof fetch>(
-			async () => new Response("unavailable", { status: 503 }),
-		);
 		const throwingWarn = () => {
 			throw new Error("warn blew up");
 		};
 
 		const out = await price([usageRow({ tokens: { input: 5 } })], {
 			cacheDir: await newCacheDir(),
-			fetch: brokenFetch,
+			fetch: failingFetch(),
 			warn: throwingWarn,
 		});
 
@@ -163,13 +161,9 @@ describe("price: warn never throws", () => {
 				throw epipe;
 			});
 		try {
-			const brokenFetch = vi.fn<typeof fetch>(
-				async () => new Response("unavailable", { status: 503 }),
-			);
-
 			const out = await price([usageRow({ tokens: { input: 5 } })], {
 				cacheDir: await newCacheDir(),
-				fetch: brokenFetch,
+				fetch: failingFetch(),
 				// No warn injected: exercises the default warn, which writes to process.stderr.
 			});
 
@@ -207,16 +201,13 @@ describe("price: warn never throws", () => {
 			warn: () => {},
 		});
 
-		const brokenFetch = vi.fn<typeof fetch>(
-			async () => new Response("unavailable", { status: 503 }),
-		);
 		const throwingWarn = () => {
 			throw new Error("warn blew up");
 		};
 
 		const [row] = await price([usageRow({ tokens: { input: M } })], {
 			cacheDir,
-			fetch: brokenFetch,
+			fetch: failingFetch(),
 			refresh: true,
 			warn: throwingWarn,
 		});

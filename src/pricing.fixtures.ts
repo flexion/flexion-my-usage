@@ -389,6 +389,13 @@ export function forbiddenFetch() {
 	});
 }
 
+/** A fake fetch that answers every call with a 503, for tests that must reach the network. */
+export function failingFetch() {
+	return vi.fn<typeof fetch>(
+		async () => new Response("unavailable", { status: 503 }),
+	);
+}
+
 // Test cache directories live under node_modules/.cache/, never the user's real cache.
 const CACHE_BASE = fileURLToPath(
 	new URL("../node_modules/.cache/my-usage-tests/", import.meta.url),

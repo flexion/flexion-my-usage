@@ -78,12 +78,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 const MAX_RATE_PER_TOKEN = 1;
 
 function isRate(value: unknown): value is number {
-	return (
-		typeof value === "number" &&
-		Number.isFinite(value) &&
-		value >= 0 &&
-		value <= MAX_RATE_PER_TOKEN
-	);
+	// No separate Number.isFinite check: NaN fails >= 0, +Infinity fails <= MAX_RATE_PER_TOKEN,
+	// and -Infinity fails >= 0, so the range check below already excludes every non-finite value.
+	return typeof value === "number" && value >= 0 && value <= MAX_RATE_PER_TOKEN;
 }
 
 /** Reads an optional rate: absent is fine, present-but-invalid rejects the whole entry. */

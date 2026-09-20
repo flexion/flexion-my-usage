@@ -83,12 +83,27 @@ describe("parsePriceTable: rejects absurd rates", () => {
 		expect(table.has("absurd/output")).toBe(false);
 	});
 
-	it("still accepts real, published rates (no false rejection)", () => {
+	it("excludes an entry whose input rate is a realistic corruption, not just an extreme like 1e300 (a per-million-vs-per-token unit slip: 3 USD/token, still comfortably above the bead's 1 USD/token ceiling)", () => {
 		const table = parsePriceTable({
-			"claude-sonnet-4-5": LITELLM_FIXTURE["claude-sonnet-4-5"],
+			"unit-error/input": {
+				litellm_provider: "unit-error",
+				input_cost_per_token: 3,
+				output_cost_per_token: 0.000015,
+			},
 		});
-		expect(table.has("claude-sonnet-4-5")).toBe(true);
-		expect(table.get("claude-sonnet-4-5")?.input).toBe(0.000003);
+		expect(table.has("unit-error/input")).toBe(false);
+	});
+
+	it("excludes an entry whose absurd rate sits on an optional field (cache_read_input_token_cost), not just input or output", () => {
+		const table = parsePriceTable({
+			"absurd/cache-read": {
+				litellm_provider: "absurd",
+				input_cost_per_token: 0.000003,
+				output_cost_per_token: 0.000015,
+				cache_read_input_token_cost: 1e300,
+			},
+		});
+		expect(table.has("absurd/cache-read")).toBe(false);
 	});
 });
 

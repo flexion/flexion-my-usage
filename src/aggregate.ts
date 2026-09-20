@@ -119,6 +119,7 @@ export function unpricedModels(days: DayBucket[]): UnpricedModel[] {
 	const totals = new Map<string, UnpricedModel>();
 	for (const day of days) {
 		for (const series of Object.values(day.byModel)) {
+			if (series.unpricedTokens === 0) continue;
 			const key = seriesKey(series.provider, series.model);
 			const existing = totals.get(key);
 			if (existing) {

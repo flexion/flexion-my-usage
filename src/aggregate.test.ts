@@ -446,6 +446,20 @@ describe("unpricedModels", () => {
 					tokens: { cacheWrite: 50 },
 					unpriced: true,
 				}),
+				// Reviewed (F7): same series as above, but this row lands on the earlier day and is
+				// itself unpriced. It makes the anthropic series span both days with nonzero unpriced
+				// tokens on each, so the second day hits the totals map's *accumulate* arm rather than
+				// creating a fresh entry (unlike a wholly priced earlier row, which the F8 skip drops
+				// before an entry ever exists, leaving the second day to hit the fresh arm instead and
+				// masking this exact mutant). Summing `series.tokens` instead of `series.unpricedTokens`
+				// on that accumulate step would report 975 (25 + 950), not 75 (25 + 50).
+				pricedRow({
+					timestamp: at(2026, 9, 18),
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					tokens: { cacheRead: 25 },
+					unpriced: true,
+				}),
 			],
 			2,
 			now(),
@@ -458,8 +472,28 @@ describe("unpricedModels", () => {
 				tokens: 700,
 			},
 			{ provider: "example-gateway", model: "example-model", tokens: 500 },
-			{ provider: "anthropic", model: "claude-sonnet-4-5", tokens: 50 },
+			{ provider: "anthropic", model: "claude-sonnet-4-5", tokens: 75 },
 		]);
+	});
+
+	// Reviewed (F8): a model can appear in `days` with no unpriced usage at all (every row priced).
+	// unpricedModels reports models with unpriced usage, not every model that was ever seen, so a
+	// wholly priced series must not show up as a false alarm at `tokens: 0`.
+	it("omits models whose usage was entirely priced", () => {
+		const days = aggregateDaily(
+			[
+				pricedRow({
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					tokens: { input: 100 },
+					notionalCost: 1,
+				}),
+			],
+			1,
+			now(),
+		);
+
+		expect(unpricedModels(days)).toEqual([]);
 	});
 
 	// Equal tokens tie-break on model id, then provider (the same model id can come through two

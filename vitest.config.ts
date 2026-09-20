@@ -25,6 +25,14 @@ const config = {
 		// in-flight work as if it were ours.
 		include: ["src/**/*.test.ts"],
 
+		// Pinned, not left to vitest's default. src/aggregate.test.ts's beforeEach mutates
+		// process.env.TZ to exercise daylight-saving edge cases, then asserts a known
+		// UTC offset before every test runs; that mutation only reaches Date's timezone
+		// lookups in a process pool.forks owns, so pool: "threads" makes the assertion
+		// fail loudly instead of silently skipping TZ isolation. Pinning here means a
+		// future vitest default change can't move that failure from loud to silent.
+		pool: "forks",
+
 		coverage: {
 			provider: "v8",
 

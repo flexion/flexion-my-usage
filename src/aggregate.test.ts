@@ -160,24 +160,7 @@ describe("aggregateDaily: window", () => {
 		expect([before, after]).toContain(days.at(-1)?.day);
 	});
 
-	it("assigns a response to the local calendar day it completed on, either side of midnight", () => {
-		const days = aggregateDaily(
-			[
-				pricedRow({ timestamp: at(2026, 9, 18, 23, 30), tokens: { input: 1 } }),
-				pricedRow({ timestamp: at(2026, 9, 19, 0, 30), tokens: { input: 10 } }),
-			],
-			3,
-			now(),
-		);
-
-		expect(days.map((d) => [d.day, d.tokens])).toEqual([
-			["2026-09-17", 0],
-			["2026-09-18", 1],
-			["2026-09-19", 10],
-		]);
-	});
-
-	it("counts whole calendar days: nothing before the first day, nothing after today", () => {
+	it("assigns each response to the local calendar day it completed on, and counts whole calendar days: nothing before the first day, nothing after today", () => {
 		const days = aggregateDaily(
 			[
 				// Last millisecond before the window (a rolling 3 x 24h window would keep it).

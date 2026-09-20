@@ -1,0 +1,11 @@
+{
+	// Type-checks vitest.config.ts, which tsconfig.json cannot include: its rootDir is src.
+	// Run by `yarn typecheck`. Without it, a misspelled or unknown coverage option in the
+	// config compiles fine and silently drops that gate setting.
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"rootDir": ".",
+		"noEmit": true
+	},
+	"include": ["vitest.config.ts"]
+}

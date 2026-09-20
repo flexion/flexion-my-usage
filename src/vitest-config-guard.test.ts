@@ -55,8 +55,19 @@ const FIXTURE_ROOT = join(
 	"my-usage-tests",
 );
 const TSC_BIN = join(REPO_ROOT, "node_modules", "typescript", "bin", "tsc");
-const TSC_DIAGNOSTIC = /vitest\.config\.ts\((\d+),\d+\): error TS\d+:/;
+const TSC_DIAGNOSTIC = /vitest\.config\.ts\((\d+),\d+\): error (TS\d+):/;
 const REQUIRED_COVERAGE_INCLUDE = '"src/**/*.ts"';
+
+// Pure syntax/parse errors - the array literal's own grammar breaking (a graft landing
+// without a separating comma, say), not a guard rejecting a shape. Verified end to end
+// (myusage-c2a critical round 4): hoisting coverage.exclude into a same-file
+// `const COVERAGE_EXCLUDE = [...]` with NO guard at all makes `findKeyedArray`'s anchor
+// silently misfire onto coverage.reporter's array (see `assertLooksLikeCoveragePathArray`
+// below, which closes that half of the gap), and the resulting missing-comma graft trips
+// only TS1005 - proof the mutated source doesn't parse, not that any guard fired. Excluding
+// these codes from "the guard's diagnostic" keeps a syntax accident from being accepted as
+// guard evidence.
+const SYNTAX_DIAGNOSTIC_CODES = new Set(["TS1005", "TS1109", "TS1136"]);
 
 let sandboxes: string[] = [];
 
@@ -108,7 +119,18 @@ async function realConfigSource(): Promise<string> {
  * replace just the array, or drop the whole `key: ...` entry - regardless of what wraps the
  * array (a bare literal, an `as const` cast, or a typed helper function call). Throws (via
  * `expect`) if the key or a balanced array can't be found, so a stale anchor fails loudly
- * instead of silently matching the wrong text. */
+ * instead of silently matching the wrong text.
+ *
+ * `source.indexOf("[", keyStart)` assumes the array literal sits inline right after the key -
+ * true for every wrapping shape the header comment above promises to support, but not for a
+ * same-file hoist (`const COVERAGE_EXCLUDE = [...]` above the config, `exclude:
+ * COVERAGE_EXCLUDE,` inline). Verified (myusage-c2a critical round 4): that shape puts an
+ * identifier after the key, not a bracket, so the scan walks past it to the next real array
+ * literal in the file - coverage.reporter's `["text", "html"]` - and returns it with a
+ * perfectly balanced bracket pair, no thrown assertion. `assertLooksLikeCoveragePathArray`
+ * closes that gap below: every coverage.exclude/coverage.include entry is, by this file's own
+ * convention, an explicit `src/`-rooted path or negation, so an anchor that lands on anything
+ * else fails loudly here instead of returning a plausible-looking wrong span. */
 function findKeyedArray(
 	source: string,
 	key: "exclude" | "include",
@@ -143,6 +165,7 @@ function findKeyedArray(
 		arrayEnd,
 		`expected a balanced array literal after "${key}:" in vitest.config.ts (fixture anchor stale?)`,
 	).toBeGreaterThan(-1);
+	assertLooksLikeCoveragePathArray(source, key, arrayStart, arrayEnd);
 	return { keyStart, arrayStart, arrayEnd };
 }
 
@@ -214,6 +237,36 @@ function findStringLiteralsInRange(
 		match = pattern.exec(source);
 	}
 	return literals;
+}
+
+/** Guards `findKeyedArray` against silently binding to the wrong array (myusage-c2a critical
+ * round 4). Every entry coverage.exclude/coverage.include ever holds is, by this repo's own
+ * convention (AGENTS.md), an explicit `src/`-rooted path or negation - never bare text like
+ * `"text"` or `"html"`, which is exactly what coverage.reporter's own array holds and exactly
+ * what a misfired anchor would return instead. Called from within `findKeyedArray` itself
+ * (forward reference; `function` declarations hoist), so every caller gets this for free
+ * without having to remember to call it. An array that fails this - including an empty one,
+ * since an anchor bound to nothing valid is exactly as stale as one bound to the wrong thing
+ * entirely - fails loudly right here instead of quietly handing back a plausible-looking wrong
+ * span for every later mutation to build on. */
+function assertLooksLikeCoveragePathArray(
+	source: string,
+	key: "exclude" | "include",
+	arrayStart: number,
+	arrayEnd: number,
+): void {
+	const literals = findStringLiteralsInRange(source, arrayStart, arrayEnd);
+	expect(
+		literals.length,
+		`expected coverage.${key}'s array to contain at least one string literal (fixture anchor stale - bound to the wrong array?)`,
+	).toBeGreaterThan(0);
+	for (const literal of literals) {
+		const text = source.slice(literal.start, literal.end);
+		expect(
+			text.startsWith('"src/') || text.startsWith('"!src/'),
+			`expected every coverage.${key} entry to look like a src/ path, got ${text} (fixture anchor stale - bound to the wrong array?)`,
+		).toBe(true);
+	}
 }
 
 /** Replaces the Nth (0-indexed) string-literal entry of coverage.exclude's array in place -
@@ -353,7 +406,12 @@ function removeCoverageInclude(source: string): string {
  * text alone rejects the first two correct guards; requiring the line alone would accept a
  * guard that never actually explains itself. Either is real, human-verifiable evidence the
  * diagnostic is about this entry, so this deliberately does not also assert a line number for
- * the quoting shape or text for the line-pointing shape. */
+ * the quoting shape or text for the line-pointing shape.
+ *
+ * A tsc failure alone isn't enough either: a mutation can corrupt the source's own grammar
+ * (see `SYNTAX_DIAGNOSTIC_CODES`) without any guard ever evaluating the shape. This only draws
+ * evidence from diagnostics whose code isn't a bare syntax/parse error, so a syntax accident
+ * can't be mistaken for a guard firing (myusage-c2a critical round 4). */
 function expectDiagnosticNaming(
 	result: ReturnType<typeof runTypecheck>,
 	requiredText: string,
@@ -365,17 +423,27 @@ function expectDiagnosticNaming(
 		`expected typecheck to fail for ${context}; got status 0 with:\n${result.stdout}`,
 	).not.toBe(0);
 	const output = result.stdout + result.stderr;
-	const diagnostic = output.match(TSC_DIAGNOSTIC);
+	const diagnostics = [...output.matchAll(new RegExp(TSC_DIAGNOSTIC, "g"))];
 	expect(
-		diagnostic,
+		diagnostics.length,
 		`expected a tsc diagnostic against vitest.config.ts; got:\n${output}`,
-	).not.toBeNull();
-	const diagnosticLine = diagnostic ? Number(diagnostic[1]) : -1;
+	).toBeGreaterThan(0);
+	const semanticDiagnostics = diagnostics.filter(
+		(diagnostic) => !SYNTAX_DIAGNOSTIC_CODES.has(diagnostic[2] ?? ""),
+	);
+	expect(
+		semanticDiagnostics.length,
+		`expected a semantic tsc diagnostic against vitest.config.ts, not just a syntax error (${[...SYNTAX_DIAGNOSTIC_CODES].join(", ")}) - a syntax error only proves the mutated source doesn't parse, not that a guard rejected the shape; got:\n${output}`,
+	).toBeGreaterThan(0);
+	const semanticDiagnosticLines = semanticDiagnostics.map((diagnostic) =>
+		Number(diagnostic[1] ?? "-1"),
+	);
 	const namesTheOffender =
-		output.includes(requiredText) || diagnosticLine === entryLine;
+		output.includes(requiredText) ||
+		semanticDiagnosticLines.includes(entryLine);
 	expect(
 		namesTheOffender,
-		`expected the diagnostic to either quote ${requiredText} or be reported on the grafted entry's own line (${entryLine}, got ${diagnosticLine}); got:\n${output}`,
+		`expected a semantic diagnostic to either quote ${requiredText} or be reported on the grafted entry's own line (${entryLine}, got ${semanticDiagnosticLines.join(", ")}); got:\n${output}`,
 	).toBe(true);
 }
 
@@ -406,10 +474,17 @@ function expectIncludeShapeMismatch(
 		`expected typecheck to fail for ${context}; got status 0 with:\n${result.stdout}`,
 	).not.toBe(0);
 	const output = result.stdout + result.stderr;
+	const diagnostics = [...output.matchAll(new RegExp(TSC_DIAGNOSTIC, "g"))];
+	const semanticDiagnostics = diagnostics.filter(
+		(diagnostic) => !SYNTAX_DIAGNOSTIC_CODES.has(diagnostic[2] ?? ""),
+	);
+	// Same reasoning as expectDiagnosticNaming: a bare syntax error (SYNTAX_DIAGNOSTIC_CODES)
+	// proves only that the mutated source doesn't parse, not that a guard rejected the shape
+	// (myusage-c2a critical round 4).
 	expect(
-		output,
-		`expected a tsc diagnostic against vitest.config.ts; got:\n${output}`,
-	).toMatch(TSC_DIAGNOSTIC);
+		semanticDiagnostics.length,
+		`expected a semantic tsc diagnostic against vitest.config.ts, not just a syntax error (${[...SYNTAX_DIAGNOSTIC_CODES].join(", ")}); got:\n${output}`,
+	).toBeGreaterThan(0);
 	expect(
 		output,
 		`expected the diagnostic to reference coverage.include's required pattern (${REQUIRED_COVERAGE_INCLUDE}), a tuple-arity mismatch, or a missing-property error - a spurious failure for an unrelated reason would show none of these; got:\n${output}`,
@@ -423,6 +498,17 @@ const GLOB_FORMS = [
 	["a `[...]` character class", '"src/sources/opencode[12].ts"'],
 	["a `!` negation", '"!src/sources/opencode.ts"'],
 ] as const;
+
+// Distinct from GLOB_FORMS's own `"src/**/*.ts"` on purpose (myusage-c2a critical round 4,
+// N5): that exact literal is byte-identical to REQUIRED_COVERAGE_INCLUDE, coverage.include's
+// own required entry. Six of the it.each cases below would otherwise plant that same text into
+// coverage.exclude, and expectDiagnosticNaming's `output.includes(requiredText)` branch could
+// then no longer tell "the guard named this mutated entry" apart from "tsc's message happened
+// to mention coverage.include for an unrelated reason". This sentinel still carries a `*`
+// wildcard - the same hollowing shape the bug report names - but cannot appear anywhere else in
+// the config, so a match on it is unambiguous. GLOB_FORMS keeps the original literal for its
+// one headline case, matching the bug report's own example.
+const IN_PLACE_WILDCARD_SENTINEL = '"src/**/zzz-guard-probe-*.ts"';
 
 // Every existing coverage.exclude entry's index, derived from the real array's current length -
 // not hardcoded - so the it.each below tracks the array automatically: it grows the moment a
@@ -444,6 +530,21 @@ const EXISTING_EXCLUDE_ENTRY_INDEXES = findStringLiteralsInRange(
 	REAL_EXCLUDE_ARRAY_AT_LOAD.arrayStart,
 	REAL_EXCLUDE_ARRAY_AT_LOAD.arrayEnd,
 ).map((_, index) => index);
+
+// Belt-and-suspenders on top of `assertLooksLikeCoveragePathArray` (myusage-c2a critical round
+// 4, N2): that check already runs inside `findKeyedArray` above, on the exact span this list is
+// derived from, so a retargeted anchor already fails loudly there. This asserts the derived
+// case list itself directly, at module load, so a reader of *this* list doesn't have to trust
+// that the earlier check ran and trace back to it: in the round-4 experiment (an unguarded
+// same-file hoist), this list silently shrank from 5 cases to 2 - it picked up "text" and
+// "html" from coverage.reporter - and the run reported 15 tests instead of 18 with nobody
+// noticing. A list that's empty, or holds anything that isn't a `src/`-rooted path or negation,
+// means the anchor bound to the wrong array; fail here, at collection, instead of quietly
+// dropping coverage of the it.each below.
+expect(
+	EXISTING_EXCLUDE_ENTRY_INDEXES.length,
+	`expected coverage.exclude to have at least one entry at module load (fixture anchor stale - bound to the wrong array?); found ${EXISTING_EXCLUDE_ENTRY_INDEXES.length}`,
+).toBeGreaterThan(0);
 
 describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", () => {
 	it("lets the real, unmodified config through cleanly", async () => {
@@ -509,6 +610,20 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 		// value. A guard that only inspects the array's elements (e.g. a helper-call whose
 		// argument type does the checking) would have nothing left to inspect once the key -
 		// and the call - are gone, so this pins the key's absence too, not just an empty value.
+		//
+		// This deliberately rules out one otherwise-legitimate guard shape (myusage-c2a N1,
+		// flagged in review): a post-hoc `config.test.coverage.exclude satisfies ExcludeGate<...>`
+		// line, the direct mirror of this file's own existing `thresholds satisfies CoverageGate`
+		// pattern above, also passes every other case in this describe block but fails this one -
+		// removing the key turns that reference into TS2339, the same error shape
+		// coverage.include's "removed entirely" test below requires as PASSING evidence of a
+		// hollowing. That's not a bug in either test: exclude's key-removed and include's
+		// key-removed cases have opposite correct outcomes (removing exclude is stricter, not a
+		// hollowing; removing include is the simplest possible hollowing), so no single mechanism
+		// can be reused for both halves unchanged. A conforming guard reaches for a different
+		// shape here - e.g. a typed helper call (`exclude: explicitPaths([...])`) whose own
+		// argument type does the checking, so there's nothing left to fail once the call is gone -
+		// rather than the reference `satisfies` this file already uses for include.
 		it("still typechecks when the exclude key is removed entirely", async () => {
 			const real = await realConfigSource();
 			const mutated = removeCoverageExclude(real);
@@ -538,7 +653,7 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 				const { source: mutated, entryLine } = replaceEntryInPlace(
 					real,
 					index,
-					'"src/**/*.ts"',
+					IN_PLACE_WILDCARD_SENTINEL,
 				);
 				const dir = await typecheckProjectWith(mutated);
 
@@ -546,7 +661,7 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 
 				expectDiagnosticNaming(
 					result,
-					'"src/**/*.ts"',
+					IN_PLACE_WILDCARD_SENTINEL,
 					entryLine,
 					`coverage.exclude entry ${index} rewritten in place to a wildcard`,
 				);
@@ -610,6 +725,16 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 			expectIncludeShapeMismatch(result, "coverage.include emptied to `[]`");
 		});
 
+		// Note for whoever writes the production guard (myusage-c2a N6): the only shape that
+		// satisfies both this test and "narrowed to a single file" above is a post-hoc reference
+		// (`config.test.coverage.include satisfies IncludeGate<...>`, or similar) - a helper-call
+		// argument type can't fail *this* case, because once `include` and its call are both gone
+		// there's no argument left to type-check. Verified: `satisfies ViteUserConfig` widens
+		// `include` to plain `string[]` at the access site even with `as const` on the array, so
+		// the shape check itself has to live in a separate helper, leaving a second, semantically
+		// empty `config.test.coverage.include satisfies string[]` line whose only job is to exist
+		// and go missing when the key does. Don't delete that line as dead code later - it's the
+		// only thing this test actually depends on.
 		it("fails typecheck when the include key is removed entirely", async () => {
 			const real = await realConfigSource();
 			const mutated = removeCoverageInclude(real);

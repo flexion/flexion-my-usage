@@ -262,29 +262,6 @@ describe("opencodeSource.discover", () => {
 	// below cover the EACCES decision directly, without depending on the OS or which user runs
 	// the suite.
 
-	// Proves discover()'s catch is actually wired to handleDiscoverError, not just that the
-	// pure function decides correctly in isolation: the `stat` seam is injected (see
-	// `DiscoverOptions`) so this reaches the real path end to end with no vendor mock (no
-	// `vi.mock` on node:fs/promises), no chmod, and no platform dependence. Decision record:
-	// bead myusage-pqm.
-	it("propagates a genuinely unexpected stat error through the real discover() path (injected stat, EIO)", async () => {
-		// Sandboxed like every other test here even though the injected stat should make the
-		// real filesystem irrelevant: if a future regression stops discover() from honoring the
-		// injected dependency, the fallback must land on a throwaway path, never the real home
-		// or opencode database.
-		const home = await isolatedHome();
-		vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
-
-		const error = Object.assign(new Error("EIO"), {
-			code: "EIO",
-		}) as NodeJS.ErrnoException;
-		const injectedStat = vi.fn().mockRejectedValue(error);
-
-		await expect(
-			opencodeSource.discover({ stat: injectedStat }),
-		).rejects.toThrow(error);
-	});
-
 	describe("multiple database files", () => {
 		it("discovers a channel-suffixed database when no default opencode.db is present", async () => {
 			const home = await isolatedHome();
@@ -354,6 +331,18 @@ describe("opencodeSource.discover", () => {
 	// an early return upstream, so a set OPENCODE_DB replaces the channel-file scan entirely
 	// rather than adding to it. (":memory:" itself is out of scope for this bead - no behavioral
 	// test here needs it.)
+	//
+	// Upstream's guard is `if (Flag.OPENCODE_DB)`, not an undefined check, so an empty string is
+	// falsy and falls through to the channel-based default exactly like an unset variable -
+	// mirrored below the same way the sibling XDG_DATA_HOME variable already is (see "treats an
+	// empty XDG_DATA_HOME as unset" above).
+	//
+	// Decision recorded here rather than left for the coverage gate to pick: upstream's path()
+	// returns the override string unconditionally, with no existence check, and a bad value only
+	// surfaces later as a read() failure. This reader instead holds OPENCODE_DB to the same
+	// contract as every other discover() result - a handle names a real, readable file - so a
+	// missing path or a directory returns no handles, exactly like the scan arm's own "no
+	// handles when the database is absent" case.
 	describe("OPENCODE_DB override", () => {
 		it("uses an absolute OPENCODE_DB path as-is, instead of scanning the data directory", async () => {
 			const home = await isolatedHome();
@@ -389,6 +378,80 @@ describe("opencodeSource.discover", () => {
 			expect(await opencodeSource.discover()).toEqual([
 				{ source: "opencode", path: resolvedPath },
 			]);
+		});
+
+		it("treats an empty OPENCODE_DB as unset", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const dbPath = join(opencodeDir, "opencode.db");
+			await writeFile(dbPath, "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+			vi.stubEnv("OPENCODE_DB", "");
+
+			expect(await opencodeSource.discover()).toEqual([
+				{ source: "opencode", path: dbPath },
+			]);
+		});
+
+		it("returns no handles when OPENCODE_DB points at a path that does not exist", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			// Present in the data directory and would normally be discovered - proves a missing
+			// override returns no handles instead of silently falling back to the scan.
+			await writeFile(join(opencodeDir, "opencode.db"), "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			const elsewhere = await sandbox();
+			vi.stubEnv("OPENCODE_DB", join(elsewhere, "missing.db"));
+
+			expect(await opencodeSource.discover()).toEqual([]);
+		});
+
+		it("returns no handles when OPENCODE_DB points at a directory", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			await writeFile(join(opencodeDir, "opencode.db"), "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			const elsewhere = await sandbox();
+			const overrideDir = join(elsewhere, "override.db");
+			await mkdir(overrideDir, { recursive: true });
+			vi.stubEnv("OPENCODE_DB", overrideDir);
+
+			expect(await opencodeSource.discover()).toEqual([]);
+		});
+
+		// Proves discover()'s catch is actually wired to handleDiscoverError, not just that the
+		// pure function decides correctly in isolation: the `stat` seam is injected (see
+		// `DiscoverOptions`) so this reaches the real path end to end with no vendor mock (no
+		// `vi.mock` on node:fs/promises), no chmod, and no platform dependence. Anchored on the
+		// override arm, not a bare scan: finding every opencode*.db file is naturally a directory
+		// listing, which never calls `stat`, so the override arm's own existence check (see the
+		// two "returns no handles" tests above) is the one place the injected seam is actually
+		// exercised end to end. Decision record: bead myusage-pqm.
+		it("propagates a genuinely unexpected stat error through the real discover() path (injected stat, EIO)", async () => {
+			// Sandboxed like every other test here even though the injected stat should make the
+			// real filesystem irrelevant: if a future regression stops discover() from honoring the
+			// injected dependency, the fallback must land on a throwaway path, never the real home
+			// or opencode database.
+			await isolatedHome();
+			const elsewhere = await sandbox();
+			vi.stubEnv("OPENCODE_DB", join(elsewhere, "override.db"));
+
+			const error = Object.assign(new Error("EIO"), {
+				code: "EIO",
+			}) as NodeJS.ErrnoException;
+			const injectedStat = vi.fn().mockRejectedValue(error);
+
+			await expect(
+				opencodeSource.discover({ stat: injectedStat }),
+			).rejects.toThrow(error);
 		});
 	});
 });

@@ -19,14 +19,17 @@ describe("resolveRates", () => {
 			ok: true,
 			key: "m",
 			rates: entry,
+			fallback: false,
 		});
 	});
 
-	it("says unknown-provider for a provider with no rule", () => {
-		const table = tableOf([["m", rates()]]);
-		expect(resolveRates(table, "some-gateway", "m")).toEqual({
-			ok: false,
-			reason: "unknown-provider",
+	it("falls back to a first-party key for a provider with no rule", () => {
+		const entry = rates();
+		expect(resolveRates(tableOf([["m", entry]]), "some-gateway", "m")).toEqual({
+			ok: true,
+			key: "m",
+			rates: entry,
+			fallback: true,
 		});
 	});
 

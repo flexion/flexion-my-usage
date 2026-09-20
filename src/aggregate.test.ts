@@ -427,6 +427,19 @@ describe("unpricedModels", () => {
 					tokens: { output: 700 },
 					unpriced: true,
 				}),
+				// Reviewed (F9): same day, same series as the row above, but this response's tokens
+				// were fully priced. The series is now mixed (700 unpriced + 40 priced = 740 total
+				// tokens), so on the totals map's *fresh*-entry arm, summing `series.tokens` instead of
+				// `series.unpricedTokens` would report 740, not 700. Every other series in this fixture
+				// that creates a fresh entry is wholly unpriced (tokens === unpricedTokens there), so
+				// without this row that substitution passes unnoticed.
+				pricedRow({
+					timestamp: at(2026, 9, 19),
+					provider: "openrouter",
+					model: "anthropic/claude-sonnet-4.5",
+					tokens: { input: 40 },
+					notionalCost: 0.3,
+				}),
 				pricedRow({
 					timestamp: at(2026, 9, 19),
 					provider: "anthropic",

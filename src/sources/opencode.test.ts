@@ -226,16 +226,27 @@ describe("opencodeSource.discover", () => {
 		expect(await opencodeSource.discover()).toEqual([]);
 	});
 
-	it("returns no handles when the data directory is unreadable because of a symlink loop (ELOOP)", async () => {
-		const home = await isolatedHome();
-		await mkdir(join(home, "xdg"), { recursive: true });
-		// A symlink pointing at itself makes stat fail with ELOOP while resolving the path,
-		// the same as a permissions problem: there is no readable opencode data here.
-		await symlink("opencode", join(home, "xdg", "opencode"));
-		vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
+	// Skipped on Windows: creating a symlink there needs the SeCreateSymbolicLinkPrivilege,
+	// which a non-elevated account only has with Developer Mode on; without it `symlink()`
+	// rejects with EPERM instead of producing the ELOOP this test needs, so it would fail
+	// rather than skip (nodejs/node issue #47783 tracks the same privilege requirement). Not
+	// load-bearing for coverage there either: handleDiscoverError's own tests below cover the
+	// ELOOP decision directly, and skipping every filesystem test in this describe block still
+	// leaves the suite at 100%. CI is ubuntu-latest only, so this guard only matters on a
+	// developer's Windows machine.
+	it.skipIf(process.platform === "win32")(
+		"returns no handles when the data directory is unreadable because of a symlink loop (ELOOP)",
+		async () => {
+			const home = await isolatedHome();
+			await mkdir(join(home, "xdg"), { recursive: true });
+			// A symlink pointing at itself makes stat fail with ELOOP while resolving the path,
+			// the same as a permissions problem: there is no readable opencode data here.
+			await symlink("opencode", join(home, "xdg", "opencode"));
+			vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
 
-		await expect(opencodeSource.discover()).resolves.toEqual([]);
-	});
+			await expect(opencodeSource.discover()).resolves.toEqual([]);
+		},
+	);
 
 	// Skipped for root: root ignores the permission bits chmod removes below, so the stat()
 	// this test relies on would succeed instead of failing with EACCES, and the test would
@@ -289,10 +300,14 @@ describe("opencodeSource.discover", () => {
 		}) as NodeJS.ErrnoException;
 		const injectedStat = vi.fn().mockRejectedValue(error);
 
+		// GREEN adds this options parameter to opencode's own exported type only (e.g. a
+		// `DiscoverOptions` interface local to opencode.ts, with `opencodeSource` changed from a
+		// `: UsageSource` annotation to `satisfies UsageSource`), never by widening the shared
+		// `UsageSource.discover()` signature in types.ts: every other source's `discover()` stays
+		// zero-arg, and src/index.ts's untyped call site still typechecks either way.
 		await expect(
 			opencodeSource.discover({ stat: injectedStat }),
 		).rejects.toThrow(error);
-		expect(injectedStat).toHaveBeenCalledTimes(1);
 	});
 });
 

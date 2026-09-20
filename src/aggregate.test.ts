@@ -134,12 +134,14 @@ describe("aggregateDaily: window", () => {
 			now(),
 		);
 
-		expect(days.map((d) => [d.day, d.responses, d.tokens])).toEqual([
-			["2026-09-15", 1, 100],
-			["2026-09-16", 0, 0],
-			["2026-09-17", 0, 0],
-			["2026-09-18", 0, 0],
-			["2026-09-19", 1, 40],
+		expect(
+			days.map((d) => [d.day, d.responses, d.tokens, d.notionalCost]),
+		).toEqual([
+			["2026-09-15", 1, 100, 0.5],
+			["2026-09-16", 0, 0, 0],
+			["2026-09-17", 0, 0, 0],
+			["2026-09-18", 0, 0, 0],
+			["2026-09-19", 1, 40, 0.25],
 		]);
 		expect(days[2]).toEqual({
 			day: "2026-09-17",
@@ -148,6 +150,28 @@ describe("aggregateDaily: window", () => {
 			tokens: 0,
 			responses: 0,
 		});
+
+		// F10/F11: cost and per-model series must land on the day the row completed on, not pile
+		// onto one end of the window. Two distinct non-quiet days pin that a mutant routing every
+		// row's cost or series through the first or last bucket cannot pass unnoticed.
+		expect(seriesOf(days[0])).toEqual([
+			{
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				notionalCost: 0.5,
+				tokens: 100,
+				unpricedTokens: 0,
+			},
+		]);
+		expect(seriesOf(days[4])).toEqual([
+			{
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				notionalCost: 0.25,
+				tokens: 40,
+				unpricedTokens: 0,
+			},
+		]);
 	});
 
 	it("defaults to the 30 days ending today", () => {

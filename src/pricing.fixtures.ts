@@ -434,7 +434,16 @@ export function startRecordingProxy(): Promise<RecordingProxy> {
 		let waiter: ((target: string) => void) | undefined;
 		const server = createServer();
 		server.on("connect", (req, socket) => {
-			const target = req.url ?? "";
+			// Node's http.Server always sets req.url to the CONNECT target (see the class doc
+			// comment above); an undefined value here would mean Node's own contract changed
+			// under us, so this blows up loudly rather than silently recording an empty string
+			// that would turn into a confusing assertion failure downstream.
+			if (req.url === undefined) {
+				throw new Error(
+					"recording proxy fixture: CONNECT request carried no url",
+				);
+			}
+			const target = req.url;
 			connects.push(target);
 			waiter?.(target);
 			waiter = undefined;

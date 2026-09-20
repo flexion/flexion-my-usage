@@ -11,6 +11,7 @@ import {
 import {
 	describeError,
 	loadPriceTable,
+	PRICE_TABLE_URL,
 	parsePriceTable,
 } from "./pricing-table.js";
 
@@ -166,24 +167,74 @@ describe("loadPriceTable: defaults for what the caller does not inject", () => {
 	});
 });
 
-// These two tests exercise the real, unmocked global fetch (no `fetch` override) against a
-// real local proxy server, per myusage-4xu.15: the point is to prove the actual network
-// stack honors HTTPS_PROXY/NO_PROXY, which a fake `fetch` cannot show. Today's implementation
-// ignores both, so it always goes direct to the real raw.githubusercontent.com host - reached
-// over the real network, not this fixture. A short `timeoutMs` bounds how long that takes;
-// once this bead is implemented, a correctly-routed request never leaves the proxy fixture at
-// all (it answers 502 and closes, forwarding nothing), so no real network is touched.
+// These three tests exercise the real, unmocked global fetch (no `fetch` override) against a
+// real local proxy server, per myusage-4xu.15: the point is to prove the actual network stack
+// honors HTTPS_PROXY/NO_PROXY, which a fake `fetch` cannot show. Proxy configuration goes
+// through `options.env` - the same seam `loadPriceTable` already uses to resolve the cache
+// directory - rather than `vi.stubEnv`/`process.env`, so a machine's own ambient HTTPS_PROXY
+// can never leak into a test and the three tests never share mutable global state (this suite
+// runs `pool: "forks"`, so all three share one process).
+//
+// The two "the proxy is used" cases (HTTPS_PROXY alone, and HTTPS_PROXY with a NO_PROXY entry
+// that does not match the target host) are fully local once myusage-4xu.15 lands: a
+// correctly-routed request never reaches past this fixture, which answers every CONNECT with
+// 502 and closes the socket, forwarding nothing. Today's implementation ignores the proxy
+// entirely, so pre-implementation these two go direct to the real PRICE_TABLE_URL host instead;
+// REAL_FETCH_TIMEOUT_MS bounds how long that takes.
+//
+// The third case - NO_PROXY matching the target host, so the request must go direct - has no
+// local target to assert against without an injectable price-table endpoint: LoadOptions
+// carries `fetch`, `cacheDir`, `env` and `homeDir`, but no `url`, and PRICE_TABLE_URL is a
+// module constant `fetchTable` always uses. Adding that seam is a source change, out of scope
+// for this test-only pass (see myusage-4xu.15's FIX-round notes), so both before and after
+// implementation this one case still reaches the real host; it is pinned only negatively (the
+// proxy never sees a CONNECT), with the two positive cases above carrying the decisive,
+// real-stack proof that HTTPS_PROXY/NO_PROXY are actually honored.
 describe("loadPriceTable: HTTPS_PROXY and NO_PROXY (real fetch, local proxy fixture)", () => {
+	// Loopback CONNECT + 502 + socket close is sub-10ms in practice, so 500ms leaves ample
+	// margin for a correctly-proxied request while bounding how long an unproxied request
+	// (today's unimplemented state, or a future regression) spends reaching the real host
+	// before its own AbortSignal cancels it.
+	const REAL_FETCH_TIMEOUT_MS = 500;
+
 	it("routes the request through HTTPS_PROXY when it is set", async () => {
 		const proxy = await startRecordingProxy();
-		vi.stubEnv("HTTPS_PROXY", proxy.url);
-		const connectSeen = proxy.waitForConnect(1500);
+		const connectSeen = proxy.waitForConnect(REAL_FETCH_TIMEOUT_MS);
 		const load = loadPriceTable(
-			{ cacheDir: await newCacheDir(), timeoutMs: 1500 },
+			{
+				cacheDir: await newCacheDir(),
+				timeoutMs: REAL_FETCH_TIMEOUT_MS,
+				env: { HTTPS_PROXY: proxy.url },
+			},
 			vi.fn(),
 		);
 		try {
-			await expect(connectSeen).resolves.toBe("raw.githubusercontent.com:443");
+			const { hostname } = new URL(PRICE_TABLE_URL);
+			await expect(connectSeen).resolves.toBe(`${hostname}:443`);
+		} finally {
+			await load.catch(() => {});
+			await proxy.close();
+		}
+	});
+
+	it("still routes through the proxy when NO_PROXY is set but does not match the target host", async () => {
+		const proxy = await startRecordingProxy();
+		const connectSeen = proxy.waitForConnect(REAL_FETCH_TIMEOUT_MS);
+		const load = loadPriceTable(
+			{
+				cacheDir: await newCacheDir(),
+				timeoutMs: REAL_FETCH_TIMEOUT_MS,
+				// A neutral, RFC 2606 documentation domain: unrelated to the real target host,
+				// so this pins the branch a naive "any NO_PROXY means skip the proxy" bug would
+				// get wrong, which the matching-host case alone cannot pin (it would pass for
+				// that same broken implementation, or for one with no proxy support at all).
+				env: { HTTPS_PROXY: proxy.url, NO_PROXY: "example.com" },
+			},
+			vi.fn(),
+		);
+		try {
+			const { hostname } = new URL(PRICE_TABLE_URL);
+			await expect(connectSeen).resolves.toBe(`${hostname}:443`);
 		} finally {
 			await load.catch(() => {});
 			await proxy.close();
@@ -192,10 +243,15 @@ describe("loadPriceTable: HTTPS_PROXY and NO_PROXY (real fetch, local proxy fixt
 
 	it("does not use the proxy when NO_PROXY matches the target host", async () => {
 		const proxy = await startRecordingProxy();
-		vi.stubEnv("HTTPS_PROXY", proxy.url);
-		vi.stubEnv("NO_PROXY", "raw.githubusercontent.com");
 		const load = loadPriceTable(
-			{ cacheDir: await newCacheDir(), timeoutMs: 500 },
+			{
+				cacheDir: await newCacheDir(),
+				timeoutMs: REAL_FETCH_TIMEOUT_MS,
+				env: {
+					HTTPS_PROXY: proxy.url,
+					NO_PROXY: new URL(PRICE_TABLE_URL).hostname,
+				},
+			},
 			vi.fn(),
 		);
 		try {
@@ -302,6 +358,11 @@ describe("loadPriceTable: cached file size cap is byte-accurate", () => {
 });
 
 describe("loadPriceTable: cache directory permissions", () => {
+	// POSIX-only, and an accepted contract: both CI jobs in .github/workflows/ci.yml
+	// (`verify` and `verify-node-floor`) pin `runs-on: ubuntu-latest`, so the resulting inode
+	// mode is decisive there. Windows ignores POSIX mode bits on mkdir, so if a Windows
+	// checkout ever needs to run this suite, assert the mode argument handed to the
+	// directory-creation seam instead of the resulting `stat().mode`.
 	it("creates a brand-new cache directory as 0700 (owner-only), not the default umask", async () => {
 		const parent = await newCacheDir();
 		const cacheDir = join(parent, "brand-new-cache-dir");

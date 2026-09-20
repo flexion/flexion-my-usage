@@ -126,14 +126,20 @@ describe("price table: fetch once, then stay offline", () => {
 		expect(next?.notionalCost).toBeCloseTo(4, 9);
 	});
 
-	it("does not fetch when no row's provider can be priced", async () => {
-		const fetch = forbiddenFetch();
+	it("fetches the table for rows from a provider without a rule, since the fallback prices them", async () => {
+		const fetch = fakeFetch(LITELLM_FIXTURE);
 		const [row] = await price(
-			[usageRow({ provider: "github-copilot", model: "claude-opus-5" })],
+			[
+				usageRow({
+					provider: "github-copilot",
+					model: "claude-opus-5",
+					tokens: { input: M },
+				}),
+			],
 			{ cacheDir: await newCacheDir(), fetch },
 		);
-		expect(fetch).not.toHaveBeenCalled();
-		expect(row?.unpriced).toBe(true);
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(row?.notionalCost).toBeCloseTo(5, 9);
 	});
 });
 

@@ -60,12 +60,12 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+yarn install --immutable   # install
+yarn typecheck             # tsc --noEmit
+yarn lint                  # Biome + inline coverage-pragma guard
+yarn test                  # the gate: all tests + 100% coverage (see below)
+yarn vitest run <path>     # fast loop on one file, no coverage
 ```
 
 ## Architecture Overview
@@ -74,4 +74,13 @@ _Add a brief overview of your project architecture_
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+### Coverage: 100% lines, branches, functions, statements (per file)
+
+Full policy is in `AGENTS.md` under "Testing & coverage policy". That file is the source of truth. The short version:
+
+- `yarn test` fails below 100%. Every file under `src/` counts, tested or not.
+- Exclude only **humble objects** (zero logic, I/O or wiring only), in `coverage.exclude` in `vitest.config.ts`, as explicit paths. No globs. Test code is excluded by name: `*.test.*`, `*.spec.*`, `*.fixtures.*`.
+- Inline `v8`/`c8`/`istanbul ignore` comments fail `yarn lint`.
+- Invasive-species rule: keep application logic free of vendor imports. Adapters stay thin, and one with real logic is covered, not excluded.
+- Don't `vi.mock` a vendor to reach a line. Use a real local fixture or a fake behind a seam we own, or extract the logic.
+- Coverage must not depend on the Node version. Test a version-specific decision as a pure function.

@@ -1,6 +1,6 @@
 # Slice 1 - opencode usage, over time
 
-First vertical slice. One local command produces a self-contained web page showing your opencode usage over time, with a notional cost.
+First vertical slice. One local command scans your opencode usage, starts a local server, and opens a page showing that usage over time, with a notional cost.
 
 ## Goal
 
@@ -8,9 +8,9 @@ Over-time visibility into your own AI coding-agent usage, plus a cost figure eve
 
 ## Non-goals (this slice)
 
-- No server or daemon - a static page, generated on demand.
 - No sources beyond opencode (the adapter seam exists; other agents come later).
 - No write-back anywhere, no network egress beyond a one-time price-table fetch.
+- No central deployment or hosted service - the server runs on your machine for this invocation only.
 
 ## Data source
 
@@ -30,7 +30,7 @@ Over-time visibility into your own AI coding-agent usage, plus a cost figure eve
 
 - **read**: the opencode adapter emits normalized per-response usage rows.
 - **aggregate**: daily buckets over a default 30-day window (configurable) - notional cost and token buckets, split by model.
-- **render**: emit one self-contained `index.html` and open it.
+- **render**: start a local server exposing the aggregated data to the forked dashboard, and open it in the browser.
 
 ## UI
 
@@ -43,9 +43,9 @@ Reuses a proven daily cost-over-time chart pattern, fed from the local aggregati
 
 ## Delivery
 
-- `npx` entrypoint: scan local data, run the pipeline, write `index.html`, open it.
-- No server, no database writes.
-- TypeScript/Node, bundled to a single self-contained HTML.
+- `npx` entrypoint: scan local data, run the pipeline, start a local server serving the forked internal person-page dashboard (data layer swapped for the opencode adapter), and open it in the browser.
+- The server binds to localhost only and exits when the process is stopped; no database writes.
+- TypeScript/Node.
 
 ## Source adapter seam
 
@@ -67,9 +67,8 @@ opencode is the first implementation. Additional agents (for example pi) plug in
 ## Open questions
 
 - npm package name.
-- Single-file bundling approach (inline assets vs. a single-file bundler).
 - How much of the chart component ports cleanly vs. needs a local reimplementation.
 
 ## Done when
 
-`npx <tool>` on a machine with opencode history writes an `index.html` showing a 30-day daily notional-cost chart (stacked by model) plus the KPI row, opens it, and sends nothing over the network once the price table is cached (verifiable offline).
+`npx <tool>` on a machine with opencode history starts a local server and opens a page showing a 30-day daily notional-cost chart (stacked by model) plus the KPI row, and sends nothing over the network once the price table is cached (verifiable offline).

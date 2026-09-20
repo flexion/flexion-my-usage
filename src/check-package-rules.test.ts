@@ -51,9 +51,11 @@ describe("isUnderDir: separator-safe directory-prefix check", () => {
 	});
 
 	it("recognizes a Windows-style backslash path under the directory", () => {
-		// npm's own JSON output is POSIX-style, but the check itself must not assume
-		// that of every path it is ever given - the rest of the script normalizes via
-		// basename() rather than hardcoding a separator, and this must do the same.
+		// Whatever format npm's own JSON output turns out to use on a Windows runner is
+		// unverified from here (this repo only observed macOS/POSIX output while writing
+		// this test) - the point of this check is to not depend on that either way, the
+		// same way the rest of the script normalizes via basename() instead of hardcoding
+		// a separator.
 		expect(isUnderDir("dist\\nested\\index.js", "dist")).toBe(true);
 	});
 

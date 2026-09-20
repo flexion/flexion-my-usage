@@ -6,6 +6,7 @@
 // older entries carry the same rates). Only the fields the pricing code reads are kept; keys
 // and rates are unmodified. Tests that need a doctored entry spread a real one and say so.
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { afterAll, vi } from "vitest";
 import type { NormalizedUsageRow } from "./sources/types.js";
@@ -394,6 +395,82 @@ export function failingFetch() {
 	return vi.fn<typeof fetch>(
 		async () => new Response("unavailable", { status: 503 }),
 	);
+}
+
+export interface RecordingProxy {
+	/** `http://127.0.0.1:<port>`: pass this as HTTPS_PROXY. */
+	url: string;
+	/** Every CONNECT target seen so far, as `host:port`, in arrival order. */
+	connects: string[];
+	/**
+	 * Resolves with the next CONNECT target the proxy receives (or, if one has already
+	 * arrived, the most recent one immediately). Resolves `undefined` if none arrives
+	 * within `timeoutMs`, so a caller never hangs waiting for a proxy that (correctly, or
+	 * because the feature is not wired up yet) is never contacted.
+	 */
+	waitForConnect(timeoutMs: number): Promise<string | undefined>;
+	/** Stops the fixture. Always call this, in a `finally`, even on a failed assertion. */
+	close(): Promise<void>;
+}
+
+/**
+ * A real local HTTP server that plays the part of a forwarding proxy, for tests that must
+ * observe whether a real, unmocked fetch actually routes through HTTPS_PROXY - not just
+ * that some code reads the environment variable. It only handles the CONNECT method (how
+ * an HTTP proxy tunnels HTTPS, per every real proxy client including undici): Node's own
+ * `http.Server` surfaces a CONNECT request through the `connect` event rather than
+ * `request`, with `req.url` set to the tunnel target as `host:port` (verified directly
+ * against Node 26.8.2 here: a manual `CONNECT raw.githubusercontent.com:443` produced
+ * `req.url === "raw.githubusercontent.com:443"`).
+ *
+ * It never forwards the tunnel to the real target: on every CONNECT it records the target,
+ * answers 502, and closes the socket. So a client that correctly honors the proxy never
+ * reaches the public network through this fixture; only a client that ignores the proxy
+ * and goes direct does, which the tests that use this account for explicitly.
+ */
+export function startRecordingProxy(): Promise<RecordingProxy> {
+	return new Promise((resolve, reject) => {
+		const connects: string[] = [];
+		let waiter: ((target: string) => void) | undefined;
+		const server = createServer();
+		server.on("connect", (req, socket) => {
+			const target = req.url ?? "";
+			connects.push(target);
+			waiter?.(target);
+			waiter = undefined;
+			socket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+			socket.end();
+		});
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				reject(new Error("recording proxy fixture failed to bind a port"));
+				return;
+			}
+			resolve({
+				url: `http://127.0.0.1:${address.port}`,
+				connects,
+				waitForConnect(timeoutMs) {
+					const [seen] = connects.slice(-1);
+					if (seen !== undefined) return Promise.resolve(seen);
+					return new Promise((res) => {
+						const timer = setTimeout(() => {
+							waiter = undefined;
+							res(undefined);
+						}, timeoutMs);
+						waiter = (target) => {
+							clearTimeout(timer);
+							res(target);
+						};
+					});
+				},
+				close() {
+					return new Promise((res) => server.close(() => res()));
+				},
+			});
+		});
+	});
 }
 
 // Test cache directories live under node_modules/.cache/, never the user's real cache.

@@ -5,6 +5,7 @@ import {
 	failingFetch,
 	fakeFetch,
 	LITELLM_FIXTURE,
+	startRecordingProxy,
 	useTempCacheDirs,
 } from "./pricing.fixtures.js";
 import {
@@ -162,6 +163,47 @@ describe("loadPriceTable: defaults for what the caller does not inject", () => {
 		await loadPriceTable({ fetch: fakeFetch(LITELLM_FIXTURE) }, vi.fn());
 
 		expect(await readdir(join(home, ".cache", "my-usage"))).toHaveLength(1);
+	});
+});
+
+// These two tests exercise the real, unmocked global fetch (no `fetch` override) against a
+// real local proxy server, per myusage-4xu.15: the point is to prove the actual network
+// stack honors HTTPS_PROXY/NO_PROXY, which a fake `fetch` cannot show. Today's implementation
+// ignores both, so it always goes direct to the real raw.githubusercontent.com host - reached
+// over the real network, not this fixture. A short `timeoutMs` bounds how long that takes;
+// once this bead is implemented, a correctly-routed request never leaves the proxy fixture at
+// all (it answers 502 and closes, forwarding nothing), so no real network is touched.
+describe("loadPriceTable: HTTPS_PROXY and NO_PROXY (real fetch, local proxy fixture)", () => {
+	it("routes the request through HTTPS_PROXY when it is set", async () => {
+		const proxy = await startRecordingProxy();
+		vi.stubEnv("HTTPS_PROXY", proxy.url);
+		const connectSeen = proxy.waitForConnect(1500);
+		const load = loadPriceTable(
+			{ cacheDir: await newCacheDir(), timeoutMs: 1500 },
+			vi.fn(),
+		);
+		try {
+			await expect(connectSeen).resolves.toBe("raw.githubusercontent.com:443");
+		} finally {
+			await load.catch(() => {});
+			await proxy.close();
+		}
+	});
+
+	it("does not use the proxy when NO_PROXY matches the target host", async () => {
+		const proxy = await startRecordingProxy();
+		vi.stubEnv("HTTPS_PROXY", proxy.url);
+		vi.stubEnv("NO_PROXY", "raw.githubusercontent.com");
+		const load = loadPriceTable(
+			{ cacheDir: await newCacheDir(), timeoutMs: 500 },
+			vi.fn(),
+		);
+		try {
+			await load.catch(() => {});
+			expect(proxy.connects).toEqual([]);
+		} finally {
+			await proxy.close();
+		}
 	});
 });
 

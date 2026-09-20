@@ -434,6 +434,18 @@ describe("unpricedModels", () => {
 					tokens: { input: 900 },
 					notionalCost: 2,
 				}),
+				// Reviewed (F6): same series as the row above, but this response's cache-write bucket
+				// had no published rate. The series is now mixed (900 priced tokens, 50 unpriced), so
+				// summing `series.tokens` here instead of `series.unpricedTokens` would report 950, not
+				// 50, and still pass every other case in this file (every other unpriced fixture row is
+				// wholly unpriced, so tokens == unpricedTokens there).
+				pricedRow({
+					timestamp: at(2026, 9, 19),
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					tokens: { cacheWrite: 50 },
+					unpriced: true,
+				}),
 			],
 			2,
 			now(),
@@ -446,6 +458,7 @@ describe("unpricedModels", () => {
 				tokens: 700,
 			},
 			{ provider: "example-gateway", model: "example-model", tokens: 500 },
+			{ provider: "anthropic", model: "claude-sonnet-4-5", tokens: 50 },
 		]);
 	});
 

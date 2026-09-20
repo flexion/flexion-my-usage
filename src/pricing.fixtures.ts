@@ -4,7 +4,7 @@
 // (BerriAI/litellm @ 38b310b7510ec78059fab6666d87c2fb6a7f76c9). Only the fields the pricing
 // code reads are kept; keys and rates are unmodified. Tests that need a doctored entry spread
 // a real one and say so.
-import { mkdir, mkdtemp, rm, rmdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { afterAll, vi } from "vitest";
 import type { NormalizedUsageRow } from "./sources/types.js";
@@ -325,8 +325,9 @@ export function useTempCacheDirs(): () => Promise<string> {
 	let root: string | undefined;
 	afterAll(async () => {
 		if (root) await rm(root, { recursive: true, force: true });
-		// Remove the shared parent only if nothing else is using it.
-		await rmdir(CACHE_BASE).catch(() => {});
+		// The shared parent is left in place, empty. Other test files (the opencode reader
+		// tests use the same directory) may still be creating sandboxes under it, and
+		// removing it from here races with them.
 	});
 	return async () => {
 		if (!root) {

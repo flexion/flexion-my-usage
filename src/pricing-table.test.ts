@@ -202,6 +202,23 @@ describe("loadPriceTable: defaults for what the caller does not inject", () => {
 // history). Adding a `url` seam is a source change, out of scope for this test-only round; the
 // case is now pinned decisively, with plain data, in proxy.test.ts's "NO_PROXY against the real
 // price-table host" block instead.
+//
+// round-3 review (TENSION-1): its mirror, "still routes through the proxy when NO_PROXY is set
+// but does not match the target host", is deleted for the same reason. Its assertions were
+// byte-for-byte identical to "routes the request through HTTPS_PROXY when it is set" above (same
+// `connectSeen` check, same env shape with a non-matching NO_PROXY added), so it exercised no
+// code path the test above it does not already cover: an adapter that reads
+// `options.env?.HTTPS_PROXY` and never consults NO_PROXY at all would pass both. Which NO_PROXY
+// forms suppress the proxy is proxy.test.ts's job (`resolveProxy`, pure and exhaustive). What
+// would make a real-transport test decisive for NO_PROXY specifically is its mirror case -
+// NO_PROXY that *does* match the real target host, so the proxy must NOT be dialed - and that
+// hits the same wall the deleted "matches the target host" case above did: proving "does not
+// dial the proxy" here would mean either reaching the real public host directly (an
+// external-network dependency this suite does not take) or adding the same `url` seam, both out
+// of scope for a test-only round. Until that seam exists, end-to-end NO_PROXY suppression is
+// guaranteed only by construction: the adapter has exactly one call site that can resolve a
+// proxy at all, so wiring NO_PROXY into that single `resolveProxy(env, url)` call is what GREEN
+// must do to pass proxy.test.ts's table - it is not separately pinned by an executed test here.
 describe("loadPriceTable: HTTPS_PROXY (real fetch, local proxy fixture)", () => {
 	// Loopback CONNECT + 502 + socket close is sub-10ms in practice, so 500ms leaves ample
 	// margin for a correctly-proxied request while bounding how long an unproxied request
@@ -235,30 +252,6 @@ describe("loadPriceTable: HTTPS_PROXY (real fetch, local proxy fixture)", () => 
 		}
 	});
 
-	it("still routes through the proxy when NO_PROXY is set but does not match the target host", async () => {
-		const proxy = await startRecordingProxy();
-		const connectSeen = proxy.waitForConnect(REAL_FETCH_TIMEOUT_MS);
-		const load = loadPriceTable(
-			{
-				cacheDir: await newCacheDir(),
-				timeoutMs: REAL_FETCH_TIMEOUT_MS,
-				// A neutral, RFC 2606 documentation domain: unrelated to the real target host.
-				// The exhaustive NO_PROXY-form/case/precedence table lives in proxy.test.ts; this
-				// one stays here as an integration check that the real adapter actually consults
-				// NO_PROXY (rather than, say, always proxying once HTTPS_PROXY is set) end to end.
-				env: { HTTPS_PROXY: proxy.url, NO_PROXY: "example.com" },
-			},
-			vi.fn(),
-		);
-		try {
-			const { hostname } = new URL(PRICE_TABLE_URL);
-			await expect(connectSeen).resolves.toBe(`${hostname}:443`);
-		} finally {
-			await load.catch(() => {});
-			await proxy.close();
-		}
-	});
-
 	it("uses the injected fetch as-is when a proxy is configured, never consulting the proxy", async () => {
 		// All 23 other tests in this file inject `options.fetch`; a proxy implementation that
 		// wraps or replaces it (instead of only applying to the real global-fetch fallback)
@@ -283,6 +276,44 @@ describe("loadPriceTable: HTTPS_PROXY (real fetch, local proxy fixture)", () => 
 	});
 });
 
+// round-3 review (F4): no test in either file exercised a malformed HTTPS_PROXY through
+// loadPriceTable itself, so nothing forced the URL-parsing failure to land inside the module's
+// existing never-throw contract, and nothing stopped a silent fall-back to a direct request
+// either. This test does not use startRecordingProxy - there is no tunnel to record, since a
+// correct implementation never attempts one - so a stub on the *global* fetch stands in for
+// "the real network" here.
+describe("loadPriceTable: malformed HTTPS_PROXY", () => {
+	it("fails gracefully without ever dialing out, neither through the bad proxy nor direct", async () => {
+		// No injected `options.fetch`: that seam bypasses proxy resolution entirely (see "uses
+		// the injected fetch as-is" above), so injecting it here would prove nothing about
+		// malformed-proxy handling. Stubbing the global instead forces execution through the
+		// same `options.fetch ?? globalThis.fetch` resolution every unproxied test in this file
+		// relies on, while keeping the test fully offline: the stub is called if and only if the
+		// implementation ever attempts an actual request, proxied or not. A correct
+		// implementation rejects an unusable HTTPS_PROXY value before it gets anywhere near that
+		// call, so the stub must stay untouched. The current, pre-implementation source ignores
+		// the env option entirely and falls straight through to it - exactly the "silently goes
+		// direct" failure this test exists to catch.
+		const directFetch = forbiddenFetch();
+		vi.stubGlobal("fetch", directFetch);
+		const warn = vi.fn();
+
+		const table = await loadPriceTable(
+			{
+				cacheDir: await newCacheDir(),
+				timeoutMs: 500,
+				env: { HTTPS_PROXY: "notaurl" },
+			},
+			warn,
+		);
+
+		expect(table).toBeUndefined();
+		expect(directFetch).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(warn.mock.calls[0]?.[0]).toContain("price table unavailable");
+	});
+});
+
 describe("loadPriceTable: a cache hit makes no network calls, even with a proxy configured", () => {
 	it("returns the cached table without calling fetch", async () => {
 		const cacheDir = await newCacheDir();
@@ -291,16 +322,24 @@ describe("loadPriceTable: a cache hit makes no network calls, even with a proxy 
 			vi.fn(),
 		);
 
+		// round 3 (F1): the size-only assertion below holds whether or not fetch runs, since a
+		// failed refresh falls back to the cache too. These two calls are what actually pin
+		// "makes no network calls": the injected fetch must never fire, and no warning (from a
+		// refresh attempt failing) may fire either.
+		const offline = forbiddenFetch();
+		const warn = vi.fn();
 		const table = await loadPriceTable(
 			{
 				cacheDir,
-				fetch: forbiddenFetch(),
+				fetch: offline,
 				env: { HTTPS_PROXY: "http://proxy.example:8080" },
 			},
-			vi.fn(),
+			warn,
 		);
 
 		expect(table?.size).toBeGreaterThan(0);
+		expect(offline).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
 	});
 });
 

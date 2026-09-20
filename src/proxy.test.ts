@@ -1,27 +1,37 @@
 // Specifies resolveProxy(env, url): the pure decision "which proxy URL, if any, applies to this
 // request", exhaustively, with plain data. No network, no real fetch, no process.env.
 //
-// Why this file exists (myusage-4xu.15, FIX round 2): the sibling describe block in
-// pricing-table.test.ts drives the real, unmocked global fetch through a local recording-proxy
-// fixture, which is the right tool for proving the real network stack is actually wired to a
-// proxy - but it cannot decide (and must not be asked to decide) every NO_PROXY form, case rule
-// and precedence rule, because outcomes there depend on whatever transport mechanism the
-// eventual implementation uses. Node's built-in env-proxy support (NODE_USE_ENV_PROXY) is
-// startup-only and unavailable at this repo's Node floor (engines.node ">=22.13.0" in
-// package.json; added in Node 22.21.0 per the prior review round), so the only viable
-// implementation is a hand-rolled CONNECT tunnel in pricing-table.ts - a file the coverage gate
-// never excludes. Every NO_PROXY/HTTP(S)_PROXY form below is therefore specified here, against
-// plain inputs, so whichever transport the implementer builds only has to satisfy a fixed,
-// deterministic table - not reproduce it by trial and error against a live proxy.
+// Why this file exists (myusage-4xu.15, FIX round 2, corrected round 3): the sibling describe
+// block in pricing-table.test.ts drives the real, unmocked global fetch through a local
+// recording-proxy fixture, which is the right tool for proving the real network stack is
+// actually wired to a proxy - but it cannot decide (and must not be asked to decide) every
+// NO_PROXY form, case rule and precedence rule, because outcomes there depend on whatever
+// transport mechanism the eventual implementation uses. Node's built-in env-proxy support
+// (NODE_USE_ENV_PROXY) is startup-only and unavailable at this repo's Node floor
+// (engines.node ">=22.13.0" in package.json; added in Node 22.21.0 per the prior review round),
+// so the only viable implementation is a hand-rolled CONNECT tunnel in pricing-table.ts - a file
+// the coverage gate never excludes. Every NO_PROXY/HTTP(S)_PROXY form below is therefore
+// specified here, against plain inputs, so whichever transport the implementer builds only has
+// to satisfy a fixed, deterministic table - not reproduce it by trial and error against a live
+// proxy.
 //
-// Grounding: the exact matching rules below (env-var name precedence including the lowercase
-// forms, NO_PROXY's comma/whitespace split, its leading "." and "*" suffix forms vs. a bare
-// hostname's exact-only match, its optional ":port" qualifier, and ALL_PROXY's absence) mirror
-// nodejs/undici @ 7392d6f9f565e550e9047458c275ae77aeaefbb9 (tag v7.16.0),
-// lib/dispatcher/env-http-proxy-agent.js (EnvHttpProxyAgent#shouldProxy/#parseNoProxy) - the
-// same convention Node's own fetch would use once NODE_USE_ENV_PROXY is set, so a proxy admin
-// configuring this tool sees the behavior every other Node-based client on their machine
-// already has. Read there, not invented here.
+// Grounding (re-verified round 3, F2): the exact matching rules below (env-var name precedence
+// including the lowercase forms, NO_PROXY's comma/whitespace split, its optional ":port"
+// qualifier, and ALL_PROXY's absence) mirror the undici actually installed in this repo -
+// node_modules/undici@8.10.2, lib/dispatcher/env-http-proxy-agent.js
+// (EnvHttpProxyAgent#shouldProxy/#parseNoProxy) - which is also what this Node binary's own
+// built-in fetch carries (`process.versions.undici` reports 8.10.2 on the Node running these
+// tests, v26.8.2), cross-checked against the same file at
+// github.com/nodejs/undici @ 5e541e0b9df7563e5766bbd469fbfe383d9ae6ca (tag v8.10.2). Read there,
+// not invented here. Round 3 found the previous citation here (tag v7.16.0) described an
+// algorithm this version no longer implements: #parseNoProxy strips a leading "." or "*." from
+// every NO_PROXY entry before matching
+// (`hostname.replace(/^\*?\./, '').replace(/^(.+)\.$/, '$1')`), so a bare hostname, a
+// leading-dot entry and a leading-star entry all normalize to the same stored value and are all
+// matched by the same rule: exact equality, OR the target is a subdomain of it
+// (`hostname.slice(-(entry.hostname.length + 1)) === '.' + entry.hostname`). There is no
+// "exact-only" bare-hostname case and no "leading dot excludes the parent domain" case; both
+// rows below were wrong in round 2 and are corrected here.
 //
 // Decisions made explicit by a test, not left implicit:
 // - Every proxy/no-proxy env var is read as `env.lower ?? env.UPPER`: an env object with only
@@ -38,9 +48,10 @@
 //   is the conventional meaning of an empty proxy variable.
 // - A malformed or credentialed proxy URL is returned unchanged and unvalidated: this function
 //   only decides *which* configured string applies, never whether that string is a usable URL.
-//   Parsing (and failing gracefully on a bad one) is the adapter's job once it exists - out of
-//   scope for this test-only round, and deliberately not decided here so no untested branch it
-//   would require gets written.
+//   Parsing it, and failing gracefully on a bad one, is the caller's job - deliberately not
+//   decided here so no untested branch it would require gets written. Round 3 (F4) pins that
+//   contract at the caller: pricing-table.test.ts's "loadPriceTable: malformed HTTPS_PROXY"
+//   asserts the adapter never dials out, proxied or direct, on an unusable HTTPS_PROXY value.
 import { describe, expect, it } from "vitest";
 import { PRICE_TABLE_URL } from "./pricing-table.js";
 import { resolveProxy } from "./proxy.js";
@@ -148,10 +159,10 @@ describe("resolveProxy: NO_PROXY matching rules", () => {
 
 	it.each<[string, string, string, boolean]>([
 		[
-			"a bare hostname is an exact match only, and does NOT suffix-match a subdomain",
+			"a bare hostname suffix-matches a subdomain, the same as a leading-dot entry",
 			"example.com",
 			"https://api.example.com/v1",
-			false,
+			true,
 		],
 		[
 			"a bare hostname matches when it equals the target host exactly",
@@ -166,13 +177,13 @@ describe("resolveProxy: NO_PROXY matching rules", () => {
 			true,
 		],
 		[
-			"a leading-dot entry does NOT match the bare parent domain itself",
+			"a leading-dot entry also matches the bare parent domain itself, once the leading dot is stripped",
 			".example.com",
 			"https://example.com/",
-			false,
+			true,
 		],
 		[
-			"a leading-star entry behaves the same as a leading dot",
+			"a leading-star entry normalizes the same way as a leading dot",
 			"*.example.com",
 			"https://api.example.com/v1",
 			true,
@@ -184,15 +195,27 @@ describe("resolveProxy: NO_PROXY matching rules", () => {
 			true,
 		],
 		[
-			"a port-qualified entry suppresses the proxy when the port matches (default 443)",
+			"a port-qualified entry suppresses the proxy when the target carries no explicit port and the entry names the default (443)",
 			"api.example.com:443",
 			GENERIC_URL,
 			true,
 		],
 		[
-			"a port-qualified entry does NOT suppress the proxy when the port does not match",
+			"a port-qualified entry does NOT suppress the proxy when the target carries no explicit port and the entry names a non-default port",
 			"api.example.com:8443",
 			GENERIC_URL,
+			false,
+		],
+		[
+			"a port-qualified entry suppresses the proxy when it matches the target's own explicit, non-default port",
+			"api.example.com:8443",
+			"https://api.example.com:8443/v1",
+			true,
+		],
+		[
+			"a port-qualified entry does NOT suppress the proxy when the target's explicit port differs from the entry's",
+			"api.example.com:443",
+			"https://api.example.com:8443/v1",
 			false,
 		],
 		[

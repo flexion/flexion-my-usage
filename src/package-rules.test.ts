@@ -1,8 +1,13 @@
-// Behavioral tests for the pure decision logic behind scripts/check-package.mjs
-// (bead myusage-4xu.19). scripts/ sits outside tsconfig.json's `include` and outside
-// vitest's coverage.include, so this file does not gate on coverage; it exists to prove
-// the three fixed behaviors with plain data, per AGENTS.md's "extract to a pure function"
-// rule - none of this needs a real npm invocation or a real dist/ tree on disk.
+// Behavioral tests for the pure decision logic behind scripts/check-package.mjs (bead
+// myusage-4xu.19): the pack-list vacuity check, the separator-safe directory-prefix check,
+// and the test-or-support name pattern.
+//
+// This logic lives in src/package-rules.ts, not under scripts/ - so it is type-checked by
+// `yarn typecheck`, gated at 100% coverage by `yarn test` like every other file under src/,
+// and never needs a real npm invocation or a real dist/ tree on disk. The other half of the
+// bead's fix - proving check-package.mjs actually calls this module instead of keeping its
+// old, buggy checks - is covered separately in src/check-package.integration.test.ts, which
+// runs the real script against a real dist/ and a real `npm pack --dry-run`.
 //
 // The module under test does not exist yet (GREEN adds it). Importing it fails today
 // with a module-resolution error, which is the expected RED signal.
@@ -11,7 +16,7 @@ import {
 	filterTestOrSupportPaths,
 	isUnderDir,
 	packListCoversDist,
-} from "../scripts/check-package-rules.mjs";
+} from "./package-rules.js";
 
 describe("filterTestOrSupportPaths: the test-or-support name pattern and its offender filter", () => {
 	it("flags a fixtures file and a spec file", () => {
@@ -87,16 +92,36 @@ describe("packListCoversDist: the pack list must be able to fail the vacuity che
 		expect(packListCoversDist(distFiles, packedFiles)).toBe(true);
 	});
 
-	it("still counts a match when dist entries use native (backslash) separators", () => {
-		const distFiles = ["dist\\index.js"];
-		const packedFiles = ["dist/index.js"];
+	it("fails when dist entries use native (backslash) separators and only the unnormalized count is compared", () => {
+		// Isolates normalization of the DIST side. Both real dist/a.js and dist/b.js are
+		// backslash-separated (as node:path's join() would produce on a real Windows
+		// runner); only one of the two shows up, unnormalized, in the packed list. A
+		// comparison that does not normalize the dist side undercounts it as 0 (neither
+		// "dist\a.js" nor "dist\b.js" starts with "dist/"), so 1 >= 0 wrongly passes;
+		// normalized, dist counts 2 and 1 >= 2 correctly fails.
+		const distFiles = ["dist\\a.js", "dist\\b.js"];
+		const packedFiles = ["dist/a.js"];
+
+		expect(packListCoversDist(distFiles, packedFiles)).toBe(false);
+	});
+
+	it("still counts a match when the packed list uses native (backslash) separators", () => {
+		// Isolates normalization of the PACKED side - the side npm actually emits on a
+		// Windows runner. A comparison that does not normalize the packed side
+		// undercounts it as 0 ("dist\a.js" does not start with "dist/"), so 0 >= 1
+		// wrongly fails; normalized, packed counts 1 and 1 >= 1 correctly passes.
+		const distFiles = ["dist/a.js"];
+		const packedFiles = ["dist\\a.js"];
 
 		expect(packListCoversDist(distFiles, packedFiles)).toBe(true);
 	});
 
 	it("treats an empty dist as vacuously covered by an empty pack count (0 >= 0)", () => {
-		// Guarding against an empty dist/ is check-package.mjs's separate, already-correct
-		// "dist/ is empty" exit-2 path; this function only owns the coverage comparison.
+		// check-package.mjs already exits 2 before this function is ever called when
+		// dist/ is empty (its own, separate "dist/ is empty" guard) - this input never
+		// reaches production code. This case only pins the contract for documentation:
+		// no branch or special case should exist in packListCoversDist for it. The plain
+		// count comparison already returns true for 0 >= 0, at zero implementation cost.
 		expect(packListCoversDist([], [])).toBe(true);
 	});
 });

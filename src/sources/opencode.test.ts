@@ -1,13 +1,24 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+	chmod,
+	mkdir,
+	mkdtemp,
+	rm,
+	symlink,
+	writeFile,
+} from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { compareRows, opencodeSource } from "./opencode.js";
+import {
+	classifyDiscoverError,
+	compareRows,
+	opencodeSource,
+} from "./opencode.js";
 import type { NormalizedUsageRow } from "./types.js";
 
 // Fixtures are throwaway SQLite files that reproduce the upstream opencode schema.
@@ -215,17 +226,82 @@ describe("opencodeSource.discover", () => {
 		expect(await opencodeSource.discover()).toEqual([]);
 	});
 
-	it("rethrows a filesystem error that is neither 'absent' nor 'not a directory'", async () => {
+	it("returns no handles when the data directory is unreadable because of a symlink loop (ELOOP)", async () => {
 		const home = await isolatedHome();
 		await mkdir(join(home, "xdg"), { recursive: true });
-		// A symlink pointing at itself makes stat fail with ELOOP.
+		// A symlink pointing at itself makes stat fail with ELOOP while resolving the path,
+		// the same as a permissions problem: there is no readable opencode data here.
 		await symlink("opencode", join(home, "xdg", "opencode"));
 		vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
 
+		await expect(opencodeSource.discover()).resolves.toEqual([]);
+	});
+
+	// Skipped for root: root ignores the permission bits chmod removes below, so the stat()
+	// this test relies on would succeed instead of failing with EACCES, and the test would
+	// prove nothing. classifyDiscoverError's own tests below cover the decision for EACCES
+	// without depending on which user runs the suite.
+	it.skipIf(process.getuid?.() === 0)(
+		"returns no handles when the data directory's permissions deny access (EACCES)",
+		async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg", "opencode");
+			await mkdir(dataDir, { recursive: true });
+			await writeFile(join(dataDir, "opencode.db"), "");
+			vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
+
+			// Strip search (execute) permission from the data directory itself, so stat() on
+			// the database file inside it fails with EACCES.
+			await chmod(dataDir, 0o000);
+			try {
+				await expect(opencodeSource.discover()).resolves.toEqual([]);
+			} finally {
+				// Restore before the sandbox is torn down, or removing it would itself fail.
+				await chmod(dataDir, 0o755);
+			}
+		},
+	);
+
+	it("rethrows a genuinely unexpected filesystem error (ENAMETOOLONG) instead of swallowing it", async () => {
+		const home = await isolatedHome();
+		// EIO (the bead's own example of "genuinely unexpected") cannot be produced from a
+		// real filesystem without mocking node:fs/promises, which the coverage policy
+		// forbids. A path component past the filesystem's NAME_MAX is a real, portable
+		// stand-in: it fails stat() with an errno that is not ENOENT/ENOTDIR/EACCES/EPERM/
+		// ELOOP, on the real filesystem, with no special permissions and regardless of which
+		// user runs the suite. Verified locally: stat() on such a path raises ENAMETOOLONG.
+		const longComponent = "a".repeat(300);
+		vi.stubEnv("XDG_DATA_HOME", join(home, longComponent));
+
 		await expect(opencodeSource.discover()).rejects.toMatchObject({
-			code: "ELOOP",
+			code: "ENAMETOOLONG",
 		});
 	});
+});
+
+describe("classifyDiscoverError", () => {
+	// Plain error objects, not a real stat() failure: classification is pure logic (an
+	// errno string in, a decision out) and must be provable without depending on which
+	// errno the OS or the calling user's permissions actually produce.
+	function errnoError(code: string): NodeJS.ErrnoException {
+		const error = new Error(code) as NodeJS.ErrnoException;
+		error.code = code;
+		return error;
+	}
+
+	it.each(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"])(
+		"treats %s as ignorable: no readable opencode data at this path",
+		(code) => {
+			expect(classifyDiscoverError(errnoError(code))).toBe("ignorable");
+		},
+	);
+
+	it.each(["EIO", "ENAMETOOLONG"])(
+		"treats %s as unexpected, so discover() still surfaces it",
+		(code) => {
+			expect(classifyDiscoverError(errnoError(code))).toBe("unexpected");
+		},
+	);
 });
 
 describe("opencodeSource.read", () => {

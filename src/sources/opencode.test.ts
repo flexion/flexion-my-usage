@@ -538,8 +538,10 @@ describe("opencodeSource.read", () => {
 		db.exec("CREATE TABLE unrelated (id integer)");
 		db.close();
 
+		// SQLite's own "no such table: message" would also match /message/, so assert the
+		// reader's own error.
 		await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
-			/message/,
+			/Unsupported opencode database/,
 		);
 	});
 
@@ -635,8 +637,36 @@ describe("opencodeSource.read", () => {
 	});
 
 	describe("node:sqlite ExperimentalWarning", () => {
-		it("does not leak the warning from a fresh process", async () => {
+		// Node removed this warning in v24.15.0 and v25.7.0 (nodejs/node, lib/sqlite.js);
+		// v22.x still emits it. Ask the runtime instead of hard-coding a version, so the test
+		// runs exactly where the suppression has something to suppress and is skipped, with a
+		// reason, everywhere else instead of passing vacuously.
+		function runtimeWarnsOnSqliteImport(env: NodeJS.ProcessEnv): boolean {
+			const probe = spawnSync(
+				process.execPath,
+				["--input-type=module", "-e", 'await import("node:sqlite")'],
+				{ encoding: "utf8", env },
+			);
+			expect(probe.status).toBe(0);
+			return /ExperimentalWarning/.test(probe.stderr);
+		}
+
+		it("does not leak the warning from a fresh process", async (ctx) => {
 			const dir = await sandbox();
+			// The child never resolves a home or data path, but give it throwaway ones anyway.
+			const env = {
+				...process.env,
+				HOME: dir,
+				USERPROFILE: dir,
+				XDG_DATA_HOME: dir,
+				XDG_CACHE_HOME: dir,
+				OPENCODE_DB: "",
+			};
+			if (!runtimeWarnsOnSqliteImport(env)) {
+				ctx.skip(
+					"this Node version does not emit the node:sqlite ExperimentalWarning, so there is nothing to suppress",
+				);
+			}
 			const path = join(dir, "opencode.db");
 			const db = createDb(path);
 			insertMessage(db, "msg_fixture_a", assistantData());
@@ -655,7 +685,7 @@ describe("opencodeSource.read", () => {
 			const result = spawnSync(
 				process.execPath,
 				["--import", "tsx", "--input-type=module", "-e", script],
-				{ cwd: REPO_ROOT, encoding: "utf8" },
+				{ cwd: REPO_ROOT, encoding: "utf8", env },
 			);
 
 			expect(result.stderr).not.toMatch(/ExperimentalWarning/);

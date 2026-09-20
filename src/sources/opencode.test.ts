@@ -671,7 +671,9 @@ describe("opencodeSource.read", () => {
 			};
 		}
 
-		it("drops the SQLite warning while it loads node:sqlite, forwards the rest and restores emitWarning", async () => {
+		// A reader over a one-message database, in a fresh module instance so its lazy
+		// node:sqlite import happens inside the test instead of being cached by an earlier one.
+		async function freshReader() {
 			const dir = await sandbox();
 			const path = join(dir, "opencode.db");
 			for (const [name, value] of Object.entries(sandboxEnv(dir, path))) {
@@ -680,32 +682,81 @@ describe("opencodeSource.read", () => {
 			const db = createDb(path);
 			insertMessage(db, "msg_fixture_a", assistantData());
 			db.close();
-			// A fresh module instance, so its lazy node:sqlite import happens inside this test
-			// instead of being cached by an earlier one. Node 24.15+ and 25.7+ never emit the
-			// warning, so the test raises it itself, inside the window in which the reader has
-			// started loading node:sqlite (read() installs the suppressor before it first awaits).
 			vi.resetModules();
 			const { opencodeSource: fresh } = await import("./opencode.js");
-			const realEmitWarning = process.emitWarning;
+			return { fresh, handle: handleFor(path) };
+		}
+
+		// Stands a recorder in for process.emitWarning so nothing a test raises reaches the real
+		// process; restore() always puts the real one back.
+		function recordWarnings() {
+			const real = process.emitWarning;
 			const seen: unknown[][] = [];
 			const recorder = ((...args: unknown[]) => {
 				seen.push(args);
 			}) as unknown as typeof process.emitWarning;
 			process.emitWarning = recorder;
+			return {
+				recorder,
+				seen,
+				restore: () => {
+					process.emitWarning = real;
+				},
+			};
+		}
+
+		// Node 24.15+ and 25.7+ never emit the warning, so this test raises it itself, inside the
+		// window in which the reader is loading node:sqlite.
+		it("drops the SQLite warning while it loads node:sqlite, forwards the rest and restores emitWarning", async () => {
+			const { fresh, handle } = await freshReader();
+			const { recorder, seen, restore } = recordWarnings();
 			let rows: NormalizedUsageRow[];
 			let restored: typeof process.emitWarning;
 			try {
-				const pending = fresh.read(handleFor(path));
+				const pending = fresh.read(handle);
+				// Give the reader a bounded number of ticks to swap its suppressor in, so the test does
+				// not depend on how many it takes. Nothing yields between this check and the two
+				// emissions below, so the load is still in flight when they fire.
+				for (
+					let tick = 0;
+					tick < 100 && process.emitWarning === recorder;
+					tick++
+				) {
+					await Promise.resolve();
+				}
+				expect(
+					process.emitWarning,
+					"read() never installed the SQLite warning suppressor",
+				).not.toBe(recorder);
 				process.emitWarning(SQLITE_WARNING, "ExperimentalWarning");
 				process.emitWarning("unrelated", "DeprecationWarning", "DEP0001");
 				rows = await pending;
 				restored = process.emitWarning;
 			} finally {
-				process.emitWarning = realEmitWarning;
+				restore();
 			}
 
 			expect(rows).toHaveLength(1);
 			expect(seen).toEqual([["unrelated", "DeprecationWarning", "DEP0001"]]);
+			expect(restored).toBe(recorder);
+		});
+
+		// The reader imports node:sqlite once and shares the result. Without that, two overlapping
+		// reads would each patch emitWarning over the other's patch and restore in the wrong order,
+		// leaving the process with a wrapper nobody owns.
+		it("leaves emitWarning as it found it when two reads overlap", async () => {
+			const { fresh, handle } = await freshReader();
+			const { recorder, restore } = recordWarnings();
+			let results: NormalizedUsageRow[][];
+			let restored: typeof process.emitWarning;
+			try {
+				results = await Promise.all([fresh.read(handle), fresh.read(handle)]);
+				restored = process.emitWarning;
+			} finally {
+				restore();
+			}
+
+			expect(results.map((rows) => rows.length)).toEqual([1, 1]);
 			expect(restored).toBe(recorder);
 		});
 

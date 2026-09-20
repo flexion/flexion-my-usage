@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	failingFetch,
 	fakeFetch,
+	forbiddenFetch,
 	LITELLM_FIXTURE,
 	startRecordingProxy,
 	useTempCacheDirs,
@@ -141,12 +142,17 @@ afterEach(() => {
 });
 
 describe("loadPriceTable: defaults for what the caller does not inject", () => {
-	it("uses the global fetch", async () => {
+	it("uses the global fetch when no proxy is configured, the default path for nearly every user", async () => {
 		const globalFetch = fakeFetch(LITELLM_FIXTURE);
 		vi.stubGlobal("fetch", globalFetch);
 
+		// Every other test in this file injects `options.fetch`, which bypasses the proxy
+		// question entirely; this is the one that stands in for the real, unproxied default
+		// path once HTTPS_PROXY/NO_PROXY handling exists. `env: {}` (rather than omitting the
+		// option, which would fall through to the real ambient process.env) keeps it decisive
+		// regardless of the host machine's own proxy configuration.
 		const table = await loadPriceTable(
-			{ cacheDir: await newCacheDir() },
+			{ cacheDir: await newCacheDir(), env: {} },
 			vi.fn(),
 		);
 
@@ -167,52 +173,64 @@ describe("loadPriceTable: defaults for what the caller does not inject", () => {
 	});
 });
 
-// These three tests exercise the real, unmocked global fetch (no `fetch` override) against a
-// real local proxy server, per myusage-4xu.15: the point is to prove the actual network stack
-// honors HTTPS_PROXY/NO_PROXY, which a fake `fetch` cannot show. Proxy configuration goes
-// through `options.env` - the same seam `loadPriceTable` already uses to resolve the cache
-// directory - rather than `vi.stubEnv`/`process.env`, so a machine's own ambient HTTPS_PROXY
-// can never leak into a test and the three tests never share mutable global state (this suite
-// runs `pool: "forks"`, so all three share one process).
+// These tests exercise the real, unmocked global fetch (no `fetch` override) against a real
+// local proxy server, per myusage-4xu.15: the point is to prove the actual network stack
+// engages HTTPS_PROXY end to end - including the resulting graceful failure, since this fixture
+// never forwards a tunnel - which a fake `fetch` cannot show. Proxy configuration goes through
+// `options.env` - the same seam `loadPriceTable` already uses to resolve the cache directory -
+// rather than `vi.stubEnv`/`process.env`, so a machine's own ambient HTTPS_PROXY can never leak
+// into a test and these tests never share mutable global state (this suite runs `pool:
+// "forks"`, so all of them share one process).
 //
-// The two "the proxy is used" cases (HTTPS_PROXY alone, and HTTPS_PROXY with a NO_PROXY entry
-// that does not match the target host) are fully local once myusage-4xu.15 lands: a
-// correctly-routed request never reaches past this fixture, which answers every CONNECT with
-// 502 and closes the socket, forwarding nothing. Today's implementation ignores the proxy
-// entirely, so pre-implementation these two go direct to the real PRICE_TABLE_URL host instead;
-// REAL_FETCH_TIMEOUT_MS bounds how long that takes.
+// round-2 review (F8, F2, F3): every NO_PROXY form, case rule and env-var-name precedence rule
+// used to live only here, asserted against real network timing - but outcomes here depend on
+// whatever transport mechanism the eventual implementation uses (Node's built-in env-proxy
+// support is startup-only and unavailable at this repo's Node floor, so the implementation is
+// necessarily a hand-rolled tunnel), which is a property of the Node build and the
+// implementation, not of NO_PROXY handling itself. That entire decision table now lives in
+// proxy.test.ts, against a pure `resolveProxy(env, url)`, with no network and no timing
+// dependency. What stays here is kept to what plain-data tests structurally cannot prove: that
+// the real transport actually opens a tunnel through a real HTTPS_PROXY, that a refused tunnel
+// still produces this module's normal "price table unavailable" warning rather than an
+// unhandled rejection, and that an injected `options.fetch` - the seam all 23 other tests in
+// this file use - is left alone rather than wrapped or replaced.
 //
-// The third case - NO_PROXY matching the target host, so the request must go direct - has no
-// local target to assert against without an injectable price-table endpoint: LoadOptions
-// carries `fetch`, `cacheDir`, `env` and `homeDir`, but no `url`, and PRICE_TABLE_URL is a
-// module constant `fetchTable` always uses. Adding that seam is a source change, out of scope
-// for this test-only pass (see myusage-4xu.15's FIX-round notes), so both before and after
-// implementation this one case still reaches the real host; it is pinned only negatively (the
-// proxy never sees a CONNECT), with the two positive cases above carrying the decisive,
-// real-stack proof that HTTPS_PROXY/NO_PROXY are actually honored.
-describe("loadPriceTable: HTTPS_PROXY and NO_PROXY (real fetch, local proxy fixture)", () => {
+// "does not use the proxy when NO_PROXY matches the target host" used to live here too, but
+// PRICE_TABLE_URL is a module constant with no injection seam (LoadOptions carries `fetch`,
+// `cacheDir`, `env`, `homeDir`, but no `url`), so that case could only ever be pinned negatively
+// against the real host, for a reason unrelated to NO_PROXY handling (see the deleted test's
+// history). Adding a `url` seam is a source change, out of scope for this test-only round; the
+// case is now pinned decisively, with plain data, in proxy.test.ts's "NO_PROXY against the real
+// price-table host" block instead.
+describe("loadPriceTable: HTTPS_PROXY (real fetch, local proxy fixture)", () => {
 	// Loopback CONNECT + 502 + socket close is sub-10ms in practice, so 500ms leaves ample
 	// margin for a correctly-proxied request while bounding how long an unproxied request
 	// (today's unimplemented state, or a future regression) spends reaching the real host
 	// before its own AbortSignal cancels it.
 	const REAL_FETCH_TIMEOUT_MS = 500;
 
-	it("routes the request through HTTPS_PROXY when it is set", async () => {
+	it("routes the request through HTTPS_PROXY when it is set, and warns gracefully when the proxy refuses the tunnel", async () => {
 		const proxy = await startRecordingProxy();
 		const connectSeen = proxy.waitForConnect(REAL_FETCH_TIMEOUT_MS);
+		const warn = vi.fn();
 		const load = loadPriceTable(
 			{
 				cacheDir: await newCacheDir(),
 				timeoutMs: REAL_FETCH_TIMEOUT_MS,
 				env: { HTTPS_PROXY: proxy.url },
 			},
-			vi.fn(),
+			warn,
 		);
 		try {
 			const { hostname } = new URL(PRICE_TABLE_URL);
 			await expect(connectSeen).resolves.toBe(`${hostname}:443`);
+			// This fixture answers every CONNECT with 502 and forwards nothing (see
+			// startRecordingProxy's doc comment), so a correctly-proxied request must fail the
+			// same way an ordinary fetch failure does: resolve to undefined via the module's
+			// existing, already-covered warn-and-continue path, never throw.
+			await expect(load).resolves.toBeUndefined();
+			expect(warn.mock.calls[0]?.[0]).toContain("price table unavailable");
 		} finally {
-			await load.catch(() => {});
 			await proxy.close();
 		}
 	});
@@ -224,10 +242,10 @@ describe("loadPriceTable: HTTPS_PROXY and NO_PROXY (real fetch, local proxy fixt
 			{
 				cacheDir: await newCacheDir(),
 				timeoutMs: REAL_FETCH_TIMEOUT_MS,
-				// A neutral, RFC 2606 documentation domain: unrelated to the real target host,
-				// so this pins the branch a naive "any NO_PROXY means skip the proxy" bug would
-				// get wrong, which the matching-host case alone cannot pin (it would pass for
-				// that same broken implementation, or for one with no proxy support at all).
+				// A neutral, RFC 2606 documentation domain: unrelated to the real target host.
+				// The exhaustive NO_PROXY-form/case/precedence table lives in proxy.test.ts; this
+				// one stays here as an integration check that the real adapter actually consults
+				// NO_PROXY (rather than, say, always proxying once HTTPS_PROXY is set) end to end.
 				env: { HTTPS_PROXY: proxy.url, NO_PROXY: "example.com" },
 			},
 			vi.fn(),
@@ -241,25 +259,48 @@ describe("loadPriceTable: HTTPS_PROXY and NO_PROXY (real fetch, local proxy fixt
 		}
 	});
 
-	it("does not use the proxy when NO_PROXY matches the target host", async () => {
+	it("uses the injected fetch as-is when a proxy is configured, never consulting the proxy", async () => {
+		// All 23 other tests in this file inject `options.fetch`; a proxy implementation that
+		// wraps or replaces it (instead of only applying to the real global-fetch fallback)
+		// would silently change what every one of those tests actually exercises.
 		const proxy = await startRecordingProxy();
-		const load = loadPriceTable(
-			{
-				cacheDir: await newCacheDir(),
-				timeoutMs: REAL_FETCH_TIMEOUT_MS,
-				env: {
-					HTTPS_PROXY: proxy.url,
-					NO_PROXY: new URL(PRICE_TABLE_URL).hostname,
-				},
-			},
-			vi.fn(),
-		);
+		const injectedFetch = fakeFetch(LITELLM_FIXTURE);
 		try {
-			await load.catch(() => {});
+			const table = await loadPriceTable(
+				{
+					cacheDir: await newCacheDir(),
+					fetch: injectedFetch,
+					env: { HTTPS_PROXY: proxy.url },
+				},
+				vi.fn(),
+			);
+			expect(injectedFetch).toHaveBeenCalledTimes(1);
+			expect(table?.size).toBeGreaterThan(0);
 			expect(proxy.connects).toEqual([]);
 		} finally {
 			await proxy.close();
 		}
+	});
+});
+
+describe("loadPriceTable: a cache hit makes no network calls, even with a proxy configured", () => {
+	it("returns the cached table without calling fetch", async () => {
+		const cacheDir = await newCacheDir();
+		await loadPriceTable(
+			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
+			vi.fn(),
+		);
+
+		const table = await loadPriceTable(
+			{
+				cacheDir,
+				fetch: forbiddenFetch(),
+				env: { HTTPS_PROXY: "http://proxy.example:8080" },
+			},
+			vi.fn(),
+		);
+
+		expect(table?.size).toBeGreaterThan(0);
 	});
 });
 

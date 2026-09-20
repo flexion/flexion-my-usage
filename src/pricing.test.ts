@@ -197,6 +197,34 @@ describe("price: warn never throws", () => {
 
 		expect(out).toMatchObject([{ notionalCost: 0, unpriced: true }]);
 	});
+
+	it("keeps a usable cached price table when the refresh-failed warning throws (a throwing warn must not discard a good cache)", async () => {
+		const cacheDir = await newCacheDir();
+		// Seed a real, usable cache with one successful price() call.
+		await price([usageRow({ tokens: { input: M } })], {
+			cacheDir,
+			fetch: fakeFetch(LITELLM_FIXTURE),
+			warn: () => {},
+		});
+
+		const brokenFetch = vi.fn<typeof fetch>(
+			async () => new Response("unavailable", { status: 503 }),
+		);
+		const throwingWarn = () => {
+			throw new Error("warn blew up");
+		};
+
+		const [row] = await price([usageRow({ tokens: { input: M } })], {
+			cacheDir,
+			fetch: brokenFetch,
+			refresh: true,
+			warn: throwingWarn,
+		});
+
+		// The cache is still usable: a throwing warn on the refresh-failed path must not
+		// discard it and must not turn a priced row into an unpriced one.
+		expect(row).toMatchObject({ notionalCost: 3, unpriced: false });
+	});
 });
 
 describe("price: unknown models", () => {

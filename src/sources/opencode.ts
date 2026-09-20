@@ -1,6 +1,7 @@
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { withoutSqliteWarning } from "./sqlite-warning.js";
 import type { NormalizedUsageRow, SourceHandle, UsageSource } from "./types.js";
 
 // opencode adapter: reads the local opencode SQLite database read-only (WAL-aware).
@@ -45,42 +46,15 @@ const QUERY = `
 type SqliteModule = typeof import("node:sqlite");
 
 // node:sqlite prints an ExperimentalWarning on import in Node 22.x. Suppress exactly that
-// warning while importing, leave every other warning alone, and import once so concurrent
-// reads never nest the temporary patch. Loaded lazily so users who never touch opencode
-// never load it.
+// warning while importing (see sqlite-warning.ts), leave every other warning alone, and
+// import once so concurrent reads never nest the temporary patch. Loaded lazily so users who
+// never touch opencode never load it.
 let sqlite: Promise<SqliteModule> | undefined;
-
-function isSqliteExperimentalWarning(
-	warning: string | Error,
-	args: unknown[],
-): boolean {
-	const message = typeof warning === "string" ? warning : warning.message;
-	const options = args[0];
-	const type =
-		typeof options === "string"
-			? options
-			: typeof options === "object" && options !== null
-				? (options as { type?: string }).type
-				: typeof warning === "string"
-					? undefined
-					: warning.name;
-	return (
-		type === "ExperimentalWarning" &&
-		message.startsWith("SQLite is an experimental feature")
-	);
-}
 
 function loadSqlite(): Promise<SqliteModule> {
 	sqlite ??= (async () => {
 		const original = process.emitWarning;
-		process.emitWarning = ((warning: string | Error, ...args: unknown[]) => {
-			if (isSqliteExperimentalWarning(warning, args)) return;
-			return (original as (...a: unknown[]) => void).call(
-				process,
-				warning,
-				...args,
-			);
-		}) as typeof process.emitWarning;
+		process.emitWarning = withoutSqliteWarning(original);
 		try {
 			return await import("node:sqlite");
 		} finally {
@@ -139,7 +113,12 @@ function toRow(raw: Record<string, unknown>): NormalizedUsageRow | undefined {
 	};
 }
 
-function compareRows(a: NormalizedUsageRow, b: NormalizedUsageRow): number {
+// Exported so the total-order contract (equal keys compare equal) can be tested directly:
+// message ids are a primary key, so the equal case cannot come out of a real database read.
+export function compareRows(
+	a: NormalizedUsageRow,
+	b: NormalizedUsageRow,
+): number {
 	const byTime = a.timestamp.getTime() - b.timestamp.getTime();
 	if (byTime !== 0) return byTime;
 	// Plain code-unit comparison: deterministic regardless of locale.

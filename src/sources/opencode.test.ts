@@ -1,13 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { opencodeSource } from "./opencode.js";
+import { compareRows, opencodeSource } from "./opencode.js";
+import type { NormalizedUsageRow } from "./types.js";
 
 // Fixtures are throwaway SQLite files that reproduce the upstream opencode schema.
 // They never touch the real opencode database or anything under the home directory.
@@ -213,6 +214,18 @@ describe("opencodeSource.discover", () => {
 
 		expect(await opencodeSource.discover()).toEqual([]);
 	});
+
+	it("rethrows a filesystem error that is neither 'absent' nor 'not a directory'", async () => {
+		const home = await isolatedHome();
+		await mkdir(join(home, "xdg"), { recursive: true });
+		// A symlink pointing at itself makes stat fail with ELOOP.
+		await symlink("opencode", join(home, "xdg", "opencode"));
+		vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
+
+		await expect(opencodeSource.discover()).rejects.toMatchObject({
+			code: "ELOOP",
+		});
+	});
 });
 
 describe("opencodeSource.read", () => {
@@ -325,6 +338,10 @@ describe("opencodeSource.read", () => {
 			[
 				"an assistant message with a non-numeric time.completed",
 				assistantData({ time: { created: CREATED, completed: "soon" } }),
+			],
+			[
+				"an assistant message whose time.completed is past the range of a Date",
+				assistantData({ time: { created: CREATED, completed: 1e16 } }),
 			],
 			[
 				"an assistant message with no tokens object",
@@ -692,5 +709,33 @@ describe("opencodeSource.read", () => {
 			expect(result.status).toBe(0);
 			expect(JSON.parse(result.stdout)).toEqual({ rows: 1, seen: [] });
 		}, 30_000);
+	});
+});
+
+describe("compareRows", () => {
+	const row = (completed: number, messageId: string): NormalizedUsageRow => ({
+		source: "opencode",
+		provider: "anthropic",
+		model: "fixture-model-a",
+		timestamp: new Date(completed),
+		sessionId: "ses_fixture_a",
+		messageId,
+		tokens: { input: 1, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
+	});
+
+	it("orders by completion time before message id", () => {
+		expect(compareRows(row(1, "z"), row(2, "a"))).toBeLessThan(0);
+		expect(compareRows(row(2, "a"), row(1, "z"))).toBeGreaterThan(0);
+	});
+
+	it("breaks a time tie by message id, comparing code units rather than locale order", () => {
+		expect(compareRows(row(1, "a"), row(1, "b"))).toBe(-1);
+		expect(compareRows(row(1, "b"), row(1, "a"))).toBe(1);
+		// Code-unit order puts "B" before "a"; a locale-aware compare would not.
+		expect(compareRows(row(1, "B"), row(1, "a"))).toBe(-1);
+	});
+
+	it("compares identical keys as equal, so it is a total order", () => {
+		expect(compareRows(row(1, "a"), row(1, "a"))).toBe(0);
 	});
 });

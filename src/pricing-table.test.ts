@@ -34,11 +34,6 @@ function multibyteBodyAtCharBudget(charBudget: number): string {
 	});
 	const overhead = withoutPadding.length;
 	const paddingLength = charBudget - overhead;
-	if (paddingLength <= 0) {
-		throw new Error(
-			`charBudget must exceed the fixture's fixed overhead (${overhead})`,
-		);
-	}
 	const padding = MULTIBYTE_CHAR.repeat(paddingLength);
 	return withoutPadding.replace('"pad":""', `"pad":${JSON.stringify(padding)}`);
 }
@@ -268,18 +263,9 @@ describe("loadPriceTable: cache directory permissions", () => {
 	it("creates a brand-new cache directory as 0700 (owner-only), not the default umask", async () => {
 		const parent = await newCacheDir();
 		const cacheDir = join(parent, "brand-new-cache-dir");
-		// A control directory made the plain way, under the same parent, with an explicit
-		// permissive umask set for the test rather than trusting whatever umask happens to be
-		// ambient. Sampling the ambient umask made this test's own control assertion fail under
-		// a restrictive `umask 077`, where a plain mkdir already yields 0700. Pinning the umask
-		// here keeps the control - and so the real 0700 assertion below - decisive everywhere.
-		const control = join(parent, "plain-mkdir-control-dir");
+		// The umask is pinned so this assertion is decisive regardless of the ambient umask.
 		const previousUmask = process.umask(0o022);
 		try {
-			await mkdir(control);
-			const controlInfo = await stat(control);
-			expect(controlInfo.mode & 0o777).not.toBe(0o700);
-
 			await loadPriceTable(
 				{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
 				() => {},

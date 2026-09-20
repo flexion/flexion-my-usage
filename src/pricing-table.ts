@@ -10,6 +10,8 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { ProxyAgent } from "undici";
+import { resolveProxy } from "./proxy.js";
 
 export const PRICE_TABLE_URL =
 	"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -213,12 +215,35 @@ async function readCapped(
 
 async function fetchTable(
 	options: LoadOptions,
+	env: Readonly<Record<string, string | undefined>>,
 ): Promise<{ table: PriceTable; text: string }> {
-	const doFetch = options.fetch ?? globalThis.fetch;
-	const response = await doFetch(PRICE_TABLE_URL, {
+	const fetchOptions: RequestInit = {
 		headers: { accept: "application/json" },
 		signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-	});
+	};
+
+	let response: Response;
+	if (options.fetch) {
+		// An injected fetch is used exactly as given: it is the seam every other test in this
+		// file relies on, and it bypasses the proxy question entirely (see LoadOptions.fetch).
+		response = await options.fetch(PRICE_TABLE_URL, fetchOptions);
+	} else {
+		// Node's global fetch does not honor HTTPS_PROXY/HTTP_PROXY on its own (undici only
+		// reads them when NODE_USE_ENV_PROXY is set, which this repo's Node floor cannot rely
+		// on - see resolveProxy's doc comment). Routing through a proxy when one is configured
+		// means dispatching the same global fetch through an explicit undici ProxyAgent instead.
+		const proxyUrl = resolveProxy(env, PRICE_TABLE_URL);
+		// New URL(...) inside ProxyAgent throws synchronously on an unusable value, before any
+		// request - proxied or direct - is ever attempted; the caller's catch turns that into
+		// the module's normal "price table unavailable" warning.
+		const agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+		if (agent) fetchOptions.dispatcher = agent;
+		try {
+			response = await globalThis.fetch(PRICE_TABLE_URL, fetchOptions);
+		} finally {
+			await agent?.close();
+		}
+	}
 	if (!response.ok) {
 		await response.body?.cancel().catch(() => {});
 		throw new Error(`HTTP ${response.status}`);
@@ -265,9 +290,9 @@ export async function loadPriceTable(
 	options: LoadOptions,
 	warn: Warn,
 ): Promise<PriceTable | undefined> {
+	const env = options.env ?? process.env;
 	const cacheDir =
-		options.cacheDir ??
-		resolveCacheDir(options.env ?? process.env, options.homeDir ?? homedir());
+		options.cacheDir ?? resolveCacheDir(env, options.homeDir ?? homedir());
 	const cachePath = join(cacheDir, CACHE_FILE_NAME);
 
 	const cached = await readCache(
@@ -278,7 +303,7 @@ export async function loadPriceTable(
 
 	let fetched: { table: PriceTable; text: string };
 	try {
-		fetched = await fetchTable(options);
+		fetched = await fetchTable(options, env);
 	} catch (error) {
 		const reason = describeError(error);
 		if (cached) {

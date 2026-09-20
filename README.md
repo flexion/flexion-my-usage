@@ -20,6 +20,19 @@ This closes that gap - an over-time view of your usage, with a notional cost wor
 
 Everything runs on your machine. It reads local files, writes a local page, and never phones home - no account, no upload, no back end. That's the point: it's what lets it run in locked-down environments.
 
+## Proxies and offline machines
+
+The one network call this tool makes is a one-time fetch of the public [LiteLLM price table](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), cached locally afterward. A cache hit skips the fetch entirely.
+
+That fetch honors `HTTPS_PROXY` and `HTTP_PROXY` (lowercase forms work too, and take priority over the uppercase ones), so it works behind a mandatory corporate proxy without any extra setup. `NO_PROXY` opts specific hosts out - a bare hostname, a `.`- or `*.`-prefixed one for its subdomains, an optional `:port` qualifier, a comma- or whitespace-separated list, or `*` to bypass every host.
+
+On a machine with no outbound access at all, seed the cache by hand: copy that same JSON file to
+
+- macOS / Linux: `~/.cache/my-usage/litellm-model-prices.json` (note: not `~/Library/Caches` on macOS)
+- Windows: `<home>\.cache\my-usage\litellm-model-prices.json`, where `<home>` is your account's home directory
+
+or, on any OS, to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` if `XDG_CACHE_HOME` is set to an absolute path. Once that file is there, this tool never fetches or sends anything over the network.
+
 ## Usage
 
 Planned, not wired up yet:

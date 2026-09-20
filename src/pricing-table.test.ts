@@ -106,6 +106,38 @@ describe("parsePriceTable: the rate ceiling", () => {
 	);
 });
 
+describe("parsePriceTable: untrusted top-level shape", () => {
+	it("never throws on a JSON top level of null, per its documented contract", () => {
+		expect(parsePriceTable(null).size).toBe(0);
+	});
+
+	it("rejects a JSON array instead of keying entries by numeric index", () => {
+		const table = parsePriceTable([
+			{
+				litellm_provider: "array-index",
+				input_cost_per_token: 0,
+				output_cost_per_token: 0,
+			},
+		]);
+		expect(table.size).toBe(0);
+	});
+
+	it.each([
+		["missing", { input_cost_per_token: 0, output_cost_per_token: 0 }],
+		[
+			"not a string",
+			{
+				litellm_provider: 42,
+				input_cost_per_token: 0,
+				output_cost_per_token: 0,
+			},
+		],
+	])("excludes an entry whose litellm_provider is %s", (_case, entry) => {
+		const table = parsePriceTable({ "provider/entry": entry });
+		expect(table.size).toBe(0);
+	});
+});
+
 afterEach(() => {
 	vi.unstubAllGlobals();
 	vi.unstubAllEnvs();
@@ -236,22 +268,28 @@ describe("loadPriceTable: cache directory permissions", () => {
 	it("creates a brand-new cache directory as 0700 (owner-only), not the default umask", async () => {
 		const parent = await newCacheDir();
 		const cacheDir = join(parent, "brand-new-cache-dir");
-		// A control directory made the plain way, under the same parent and the same ambient
-		// umask, so the assertion below is self-checking: if the umask itself already produces
-		// 0700 (a restrictive `umask 077`), this control proves it and the real assertion would
-		// pass vacuously. Only a control that is NOT 0700 shows the mode came from the code.
+		// A control directory made the plain way, under the same parent, with an explicit
+		// permissive umask set for the test rather than trusting whatever umask happens to be
+		// ambient. Sampling the ambient umask made this test's own control assertion fail under
+		// a restrictive `umask 077`, where a plain mkdir already yields 0700. Pinning the umask
+		// here keeps the control - and so the real 0700 assertion below - decisive everywhere.
 		const control = join(parent, "plain-mkdir-control-dir");
-		await mkdir(control);
-		const controlInfo = await stat(control);
-		expect(controlInfo.mode & 0o777).not.toBe(0o700);
+		const previousUmask = process.umask(0o022);
+		try {
+			await mkdir(control);
+			const controlInfo = await stat(control);
+			expect(controlInfo.mode & 0o777).not.toBe(0o700);
 
-		await loadPriceTable(
-			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
-			() => {},
-		);
+			await loadPriceTable(
+				{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
+				() => {},
+			);
 
-		const info = await stat(cacheDir);
-		expect(info.mode & 0o777).toBe(0o700);
+			const info = await stat(cacheDir);
+			expect(info.mode & 0o777).toBe(0o700);
+		} finally {
+			process.umask(previousUmask);
+		}
 	});
 });
 

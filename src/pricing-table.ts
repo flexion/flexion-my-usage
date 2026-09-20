@@ -180,7 +180,11 @@ async function readCapped(
 	maxBytes: number,
 ): Promise<string> {
 	const declared = Number(response.headers.get("content-length"));
-	if (Number.isFinite(declared) && declared > maxBytes) {
+	// No separate Number.isFinite check: a missing header parses to 0 and a non-numeric one to
+	// NaN, and both already fail the comparison below. A header that resolves to Infinity now
+	// fails it too - a reasonable outcome, and the byte-counted read below enforces the real
+	// cap regardless of what any header claims.
+	if (declared > maxBytes) {
 		await response.body?.cancel().catch(() => {});
 		throw new Error("response too large");
 	}

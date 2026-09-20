@@ -555,8 +555,10 @@ describe("opencodeSource.read", () => {
 		db.exec("CREATE TABLE unrelated (id integer)");
 		db.close();
 
+		// SQLite's own "no such table: message" would also match /message/, so assert the
+		// reader's own error.
 		await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
-			/message/,
+			/Unsupported opencode database/,
 		);
 	});
 
@@ -652,9 +654,145 @@ describe("opencodeSource.read", () => {
 	});
 
 	describe("node:sqlite ExperimentalWarning", () => {
-		it("does not leak the warning from a fresh process", async () => {
+		const SQLITE_WARNING =
+			"SQLite is an experimental feature and might change at any time";
+
+		// Point every path that opencode or the OS could resolve at throwaway fixtures, so
+		// nothing here can reach the real home or the real database. opencode itself lets
+		// OPENCODE_DB override the database path (anomalyco/opencode v1.18.31,
+		// packages/core/src/database/database.ts), so an ambient value must not leak in either.
+		function sandboxEnv(dir: string, dbPath: string): Record<string, string> {
+			return {
+				HOME: dir,
+				USERPROFILE: dir,
+				XDG_DATA_HOME: dir,
+				XDG_CACHE_HOME: dir,
+				OPENCODE_DB: dbPath,
+			};
+		}
+
+		// A reader over a one-message database, in a fresh module instance so its lazy
+		// node:sqlite import happens inside the test instead of being cached by an earlier one.
+		async function freshReader() {
 			const dir = await sandbox();
 			const path = join(dir, "opencode.db");
+			for (const [name, value] of Object.entries(sandboxEnv(dir, path))) {
+				vi.stubEnv(name, value);
+			}
+			const db = createDb(path);
+			insertMessage(db, "msg_fixture_a", assistantData());
+			db.close();
+			vi.resetModules();
+			const { opencodeSource: fresh } = await import("./opencode.js");
+			return { fresh, handle: handleFor(path) };
+		}
+
+		// Stands a recorder in for process.emitWarning so nothing a test raises reaches the real
+		// process; restore() always puts the real one back.
+		function recordWarnings() {
+			const real = process.emitWarning;
+			const seen: unknown[][] = [];
+			const recorder = ((...args: unknown[]) => {
+				seen.push(args);
+			}) as unknown as typeof process.emitWarning;
+			process.emitWarning = recorder;
+			return {
+				recorder,
+				seen,
+				restore: () => {
+					process.emitWarning = real;
+				},
+			};
+		}
+
+		// Node 24.15+ and 25.7+ never emit the warning, so this test raises it itself, inside the
+		// window in which the reader is loading node:sqlite.
+		it("drops the SQLite warning while it loads node:sqlite, forwards the rest and restores emitWarning", async () => {
+			const { fresh, handle } = await freshReader();
+			const { recorder, seen, restore } = recordWarnings();
+			let rows: NormalizedUsageRow[];
+			let restored: typeof process.emitWarning;
+			try {
+				const pending = fresh.read(handle);
+				// Give the reader a bounded number of ticks to swap its suppressor in, so the test does
+				// not depend on how many it takes. Nothing yields between this check and the two
+				// emissions below, so the load is still in flight when they fire.
+				for (
+					let tick = 0;
+					tick < 100 && process.emitWarning === recorder;
+					tick++
+				) {
+					await Promise.resolve();
+				}
+				expect(
+					process.emitWarning,
+					"read() never installed the SQLite warning suppressor",
+				).not.toBe(recorder);
+				process.emitWarning(SQLITE_WARNING, "ExperimentalWarning");
+				process.emitWarning("unrelated", "DeprecationWarning", "DEP0001");
+				rows = await pending;
+				restored = process.emitWarning;
+			} finally {
+				restore();
+			}
+
+			expect(rows).toHaveLength(1);
+			expect(seen).toEqual([["unrelated", "DeprecationWarning", "DEP0001"]]);
+			expect(restored).toBe(recorder);
+		});
+
+		// The reader imports node:sqlite once and shares the result. Without that, two overlapping
+		// reads would each patch emitWarning over the other's patch and restore in the wrong order,
+		// leaving the process with a wrapper nobody owns.
+		it("leaves emitWarning as it found it when two reads overlap", async () => {
+			const { fresh, handle } = await freshReader();
+			const { recorder, restore } = recordWarnings();
+			let results: NormalizedUsageRow[][];
+			let restored: typeof process.emitWarning;
+			try {
+				results = await Promise.all([fresh.read(handle), fresh.read(handle)]);
+				restored = process.emitWarning;
+			} finally {
+				restore();
+			}
+
+			expect(results.map((rows) => rows.length)).toEqual([1, 1]);
+			expect(restored).toBe(recorder);
+		});
+
+		// Node removed this warning in v24.15.0 and v25.7.0 (nodejs/node, lib/sqlite.js);
+		// v22.x still emits it. Ask the runtime instead of hard-coding a version, so this check
+		// runs exactly where the import really emits the warning and is skipped, with a reason,
+		// everywhere else instead of passing vacuously. The in-process test above and
+		// sqlite-warning.test.ts hold the contract on every runtime; this proves the real import
+		// stays quiet in a fresh process.
+		function runtimeWarnsOnSqliteImport(env: NodeJS.ProcessEnv): boolean {
+			const probe = spawnSync(
+				process.execPath,
+				["--input-type=module", "-e", 'await import("node:sqlite")'],
+				{ encoding: "utf8", env },
+			);
+			expect(probe.status).toBe(0);
+			return /ExperimentalWarning/.test(probe.stderr);
+		}
+
+		it("does not leak the warning from a fresh process", async (ctx) => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			// NODE_OPTIONS=--no-warnings or NODE_NO_WARNINGS=1 in the ambient environment would
+			// hide the warning from the probe and skip this check. Undefined values are not
+			// passed to the child.
+			const env = {
+				...process.env,
+				...sandboxEnv(dir, path),
+				NODE_OPTIONS: undefined,
+				NODE_NO_WARNINGS: undefined,
+			};
+			if (!runtimeWarnsOnSqliteImport(env)) {
+				ctx.skip(
+					"this Node version does not emit the node:sqlite ExperimentalWarning, so there is nothing to suppress",
+				);
+			}
 			const db = createDb(path);
 			insertMessage(db, "msg_fixture_a", assistantData());
 			db.close();
@@ -672,7 +810,7 @@ describe("opencodeSource.read", () => {
 			const result = spawnSync(
 				process.execPath,
 				["--import", "tsx", "--input-type=module", "-e", script],
-				{ cwd: REPO_ROOT, encoding: "utf8" },
+				{ cwd: REPO_ROOT, encoding: "utf8", env },
 			);
 
 			expect(result.stderr).not.toMatch(/ExperimentalWarning/);

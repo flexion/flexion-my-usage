@@ -69,8 +69,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Real published rates are USD per token, always far below 1 (the priciest entries in the
+ * table run a few times 1e-5). A rate above this ceiling is corrupted data, not a legitimate
+ * price - the common failure mode is a per-million rate copied in as-is - so the whole entry
+ * is rejected rather than pricing rows at an absurd notional cost.
+ */
+const MAX_RATE_PER_TOKEN = 1;
+
 function isRate(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+	return (
+		typeof value === "number" &&
+		Number.isFinite(value) &&
+		value >= 0 &&
+		value <= MAX_RATE_PER_TOKEN
+	);
 }
 
 /** Reads an optional rate: absent is fine, present-but-invalid rejects the whole entry. */
@@ -160,7 +173,7 @@ async function readCache(
 	} catch {
 		return undefined;
 	}
-	if (text.length > maxBytes) return undefined;
+	if (Buffer.byteLength(text, "utf8") > maxBytes) return undefined;
 	return parseBody(text);
 }
 
@@ -176,7 +189,9 @@ async function readCapped(
 	}
 	if (!response.body) {
 		const text = await response.text();
-		if (text.length > maxBytes) throw new Error("response too large");
+		if (Buffer.byteLength(text, "utf8") > maxBytes) {
+			throw new Error("response too large");
+		}
 		return text;
 	}
 	const reader = response.body.getReader();
@@ -222,7 +237,9 @@ async function writeCache(
 	path: string,
 	text: string,
 ): Promise<void> {
-	await mkdir(dir, { recursive: true });
+	// 0700 (owner-only): the file itself is already written 0600, so the directory should not
+	// be world- or group-readable under the default umask either.
+	await mkdir(dir, { recursive: true, mode: 0o700 });
 	const temp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
 	try {
 		await writeFile(temp, text, { mode: 0o600 });

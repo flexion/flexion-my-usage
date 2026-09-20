@@ -1,9 +1,35 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { aggregateDaily, unpricedModels } from "./aggregate.js";
+import {
+	aggregateDaily,
+	type DayBucket,
+	type ModelTotals,
+	unpricedModels,
+} from "./aggregate.js";
 import type { PricedRow } from "./pricing.js";
 
-// Fixtures are LOCAL wall-clock times (never epoch ms or UTC strings), so a fixture names the
-// same calendar day on any machine timezone. The daylight-saving cases pin their own zone.
+// Every test runs in one fixed zone that observes daylight saving, never the machine's own. On a
+// UTC runner local days and UTC days coincide, so a bucketing that wrongly used UTC days would
+// pass; in New York the two differ for most of the day.
+//
+// Fixtures are LOCAL wall-clock times (never epoch ms or UTC strings), so each names the same
+// calendar day in whichever zone the test runs in.
+const ZONE = "America/New_York";
+
+// process.env.TZ is process-global, so each test sets it and puts it back: nothing leaks to the
+// next test and nothing relies on the runner isolating files. It only takes effect in a process
+// that owns its environment (vitest's default forks pool; worker threads ignore it). The guard
+// turns a runner that ignores it into a failure in every test, not a vacuous pass.
+let ambientTz: string | undefined;
+beforeEach(() => {
+	ambientTz = process.env.TZ;
+	process.env.TZ = ZONE;
+	// 1 July is summer time in New York: four hours behind UTC.
+	expect(new Date(2026, 6, 1, 12).getTimezoneOffset()).toBe(240);
+});
+afterEach(() => {
+	if (ambientTz === undefined) delete process.env.TZ;
+	else process.env.TZ = ambientTz;
+});
 
 /** A local wall-clock time; `month` is 1-based. */
 function at(
@@ -29,8 +55,21 @@ function today(): string {
 	return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
-// "Now" for most tests: mid-afternoon on 2026-09-19. Rows default to earlier that morning.
-const NOW = at(2026, 9, 19, 15, 30);
+// "Now" for most tests: mid-afternoon on 2026-09-19. A function, so each call reads the wall
+// clock in the zone the test is running in (a module-level Date would be built before it is set).
+const now = () => at(2026, 9, 19, 15, 30);
+
+/**
+ * A day's per-model series, in a fixed order. The record's keys are an implementation detail
+ * that no consumer should parse, so tests read the series and let each name its own provider
+ * and model.
+ */
+function seriesOf(day: DayBucket | undefined): ModelTotals[] {
+	return Object.values(day?.byModel ?? {}).sort(
+		(a, b) =>
+			a.provider.localeCompare(b.provider) || a.model.localeCompare(b.model),
+	);
+}
 
 function pricedRow(
 	overrides: Partial<Omit<PricedRow, "tokens">> & {
@@ -75,7 +114,7 @@ describe("aggregateDaily: window", () => {
 				}),
 			],
 			5,
-			NOW,
+			now(),
 		);
 
 		expect(days.map((d) => [d.day, d.responses, d.tokens])).toEqual([
@@ -111,7 +150,7 @@ describe("aggregateDaily: window", () => {
 				pricedRow({ timestamp: at(2026, 9, 19, 0, 30), tokens: { input: 10 } }),
 			],
 			3,
-			NOW,
+			now(),
 		);
 
 		expect(days.map((d) => [d.day, d.tokens])).toEqual([
@@ -128,7 +167,7 @@ describe("aggregateDaily: window", () => {
 				pricedRow({ timestamp: endOfDay(2026, 9, 16), tokens: { input: 1 } }),
 				// First moment of the window.
 				pricedRow({ timestamp: at(2026, 9, 17, 0, 0), tokens: { input: 10 } }),
-				// Last moment of today, later than NOW but still today.
+				// Last moment of today, later than now() but still today.
 				pricedRow({ timestamp: endOfDay(2026, 9, 19), tokens: { input: 100 } }),
 				// Tomorrow.
 				pricedRow({
@@ -137,7 +176,7 @@ describe("aggregateDaily: window", () => {
 				}),
 			],
 			3,
-			NOW,
+			now(),
 		);
 
 		expect(days.map((d) => [d.day, d.tokens])).toEqual([
@@ -177,66 +216,44 @@ describe("aggregateDaily: totals", () => {
 					tokens: { input: 100, output: 50 },
 					notionalCost: 1.5,
 				}),
-			],
-			1,
-			NOW,
-		);
-
-		expect(day).toEqual({
-			day: "2026-09-19",
-			byModel: {
-				"anthropic/claude-sonnet-4-5": {
-					provider: "anthropic",
-					model: "claude-sonnet-4-5",
-					notionalCost: 0.75,
-					tokens: 5760,
-					unpricedTokens: 0,
-				},
-				"github-copilot/claude-sonnet-4-5": {
-					provider: "github-copilot",
-					model: "claude-sonnet-4-5",
-					notionalCost: 1.5,
-					tokens: 150,
-					unpricedTokens: 0,
-				},
-			},
-			notionalCost: 2.25,
-			tokens: 5910,
-			responses: 3,
-		});
-	});
-
-	it("carries provider and model as a pair, even when the model id itself contains a slash", () => {
-		// Gateway providers route to "vendor/model" ids, so "openrouter/anthropic/claude-sonnet-4.5"
-		// cannot be trusted to split back into its two halves. Each series carries them as they
-		// arrived, and the joined string is only its key.
-		const days = aggregateDaily(
-			[
+				// A gateway's model id can itself contain a slash. The series still names its provider
+				// and model as they arrived; a joined "provider/model" string cannot be split back.
 				pricedRow({
 					provider: "openrouter",
 					model: "anthropic/claude-sonnet-4.5",
-					tokens: { input: 100 },
-					unpriced: true,
+					tokens: { input: 200, output: 40 },
+					notionalCost: 0.5,
 				}),
 			],
 			1,
-			NOW,
+			now(),
 		);
 
-		expect(days[0]?.byModel).toEqual({
-			"openrouter/anthropic/claude-sonnet-4.5": {
-				provider: "openrouter",
-				model: "anthropic/claude-sonnet-4.5",
-				notionalCost: 0,
-				tokens: 100,
-				unpricedTokens: 100,
+		expect(day?.day).toBe("2026-09-19");
+		expect(day?.notionalCost).toBe(2.75);
+		expect(day?.tokens).toBe(6150);
+		expect(day?.responses).toBe(4);
+		expect(seriesOf(day)).toEqual([
+			{
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				notionalCost: 0.75,
+				tokens: 5760,
+				unpricedTokens: 0,
 			},
-		});
-		expect(unpricedModels(days)).toEqual([
+			{
+				provider: "github-copilot",
+				model: "claude-sonnet-4-5",
+				notionalCost: 1.5,
+				tokens: 150,
+				unpricedTokens: 0,
+			},
 			{
 				provider: "openrouter",
 				model: "anthropic/claude-sonnet-4.5",
-				tokens: 100,
+				notionalCost: 0.5,
+				tokens: 240,
+				unpricedTokens: 0,
 			},
 		]);
 	});
@@ -267,58 +284,51 @@ describe("aggregateDaily: totals", () => {
 				}),
 			],
 			1,
-			NOW,
+			now(),
 		);
 
-		expect(day?.byModel).toEqual({
-			"anthropic/claude-sonnet-4-5": {
+		expect(seriesOf(day)).toEqual([
+			{
 				provider: "anthropic",
 				model: "claude-sonnet-4-5",
 				notionalCost: 1,
 				tokens: 150,
 				unpricedTokens: 50,
 			},
-			"example-gateway/example-model": {
+			{
 				provider: "example-gateway",
 				model: "example-model",
 				notionalCost: 0,
 				tokens: 1000,
 				unpricedTokens: 1000,
 			},
-		});
+		]);
 		expect(day?.tokens).toBe(1150);
 		expect(day?.notionalCost).toBe(1);
 	});
 
-	it("adds costs as plain numbers, without rounding", () => {
+	it("adds costs without rounding them", () => {
 		const [day] = aggregateDaily(
-			[pricedRow({ notionalCost: 0.1 }), pricedRow({ notionalCost: 0.2 })],
+			[
+				pricedRow({ notionalCost: 0.0012345 }),
+				pricedRow({ notionalCost: 0.0045678 }),
+			],
 			1,
-			NOW,
+			now(),
 		);
 
-		// 0.1 + 0.2 drifts under float addition (0.30000000000000004), so a bucket that rounds its
-		// cost, whether per model or per day, cannot match it. Rounding is the renderer's job.
-		const sum = 0.1 + 0.2;
-		expect(day?.notionalCost).toBe(sum);
-		expect(day?.byModel["anthropic/claude-sonnet-4-5"]?.notionalCost).toBe(sum);
+		// Sub-cent amounts, so a bucket that rounds its cost (to cents, mills or any display
+		// precision), per model or per day, cannot match. Rounding is the renderer's job.
+		expect(day?.notionalCost).toBeCloseTo(0.0058023, 10);
+		expect(seriesOf(day)[0]?.notionalCost).toBeCloseTo(0.0058023, 10);
 	});
 });
 
-describe("aggregateDaily: daylight-saving changes", {
-	concurrent: false,
-}, () => {
+describe("aggregateDaily: daylight-saving changes", () => {
 	// On the day a zone's clocks change, that day is 23 or 25 hours long, and a window that counts
 	// 24-hour steps skips the short day or repeats the long one. One zone with both changes covers
-	// both failures. Setting the zone here makes the cases bite on every machine, a UTC CI runner
-	// included.
+	// both failures; the file pins the zone (see the top).
 	//
-	// process.env.TZ is process-global, so the cases are fenced in. The zone is restored after each
-	// case, so nothing leaks to the next case and nothing relies on per-file isolation.
-	// `concurrent: false` keeps the cases sequential even if a config or a parent describe turns
-	// concurrency on. And the precondition below turns a runner that ignores TZ (worker threads
-	// do) into a red test instead of a vacuous pass.
-	const tz = "America/New_York";
 	// `days` is [change day - 2, - 1, change day, + 1]; `hours` is the length of the change day.
 	const changes = [
 		{
@@ -338,16 +348,6 @@ describe("aggregateDaily: daylight-saving changes", {
 			days: ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"],
 		},
 	];
-
-	let ambientTz: string | undefined;
-	beforeEach(() => {
-		ambientTz = process.env.TZ;
-		process.env.TZ = tz;
-	});
-	afterEach(() => {
-		if (ambientTz === undefined) delete process.env.TZ;
-		else process.env.TZ = ambientTz;
-	});
 
 	it.each(changes)(
 		"neither skips nor repeats a day across the $name",
@@ -415,10 +415,11 @@ describe("unpricedModels", () => {
 					tokens: { input: 200 },
 					unpriced: true,
 				}),
+				// A gateway's model id can itself contain a slash; the pair still comes back whole.
 				pricedRow({
 					timestamp: at(2026, 9, 19),
-					provider: "example-provider",
-					model: "new-model",
+					provider: "openrouter",
+					model: "anthropic/claude-sonnet-4.5",
 					tokens: { output: 700 },
 					unpriced: true,
 				}),
@@ -431,39 +432,50 @@ describe("unpricedModels", () => {
 				}),
 			],
 			2,
-			NOW,
+			now(),
 		);
 
 		expect(unpricedModels(days)).toEqual([
-			{ provider: "example-provider", model: "new-model", tokens: 700 },
+			{
+				provider: "openrouter",
+				model: "anthropic/claude-sonnet-4.5",
+				tokens: 700,
+			},
 			{ provider: "example-gateway", model: "example-model", tokens: 500 },
 		]);
 	});
 
-	// Both arrival orders, so the result cannot be an accident of which row came first.
+	// Equal tokens tie-break on model id, then provider (the same model id can come through two
+	// providers). Arrival in sorted order and in reverse order, so neither a stable sort with no
+	// tie-break nor a descending one can pass by accident of which row came first.
+	const sorted = [
+		{ provider: "example-gateway", model: "alpha-model" },
+		{ provider: "provider-a", model: "shared-model" },
+		{ provider: "provider-b", model: "shared-model" },
+		{ provider: "example-gateway", model: "zeta-model" },
+	];
 	it.each([
-		{ arrival: "zeta then alpha", models: ["zeta-model", "alpha-model"] },
-		{ arrival: "alpha then zeta", models: ["alpha-model", "zeta-model"] },
+		{ arrival: "sorted order", pairs: sorted },
+		{ arrival: "reverse order", pairs: [...sorted].reverse() },
 	])(
-		"orders models with equal unpriced tokens by model id ($arrival)",
-		({ models }) => {
+		"orders models with equal unpriced tokens by model id, then provider (arriving in $arrival)",
+		({ pairs }) => {
 			const days = aggregateDaily(
-				models.map((model) =>
+				pairs.map(({ provider, model }) =>
 					pricedRow({
-						provider: "example-gateway",
+						provider,
 						model,
 						tokens: { input: 100 },
 						unpriced: true,
 					}),
 				),
 				1,
-				NOW,
+				now(),
 			);
 
-			expect(unpricedModels(days)).toEqual([
-				{ provider: "example-gateway", model: "alpha-model", tokens: 100 },
-				{ provider: "example-gateway", model: "zeta-model", tokens: 100 },
-			]);
+			expect(unpricedModels(days)).toEqual(
+				sorted.map((pair) => ({ ...pair, tokens: 100 })),
+			);
 		},
 	);
 });

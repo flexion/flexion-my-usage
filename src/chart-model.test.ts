@@ -619,6 +619,7 @@ describe("formatTokens", () => {
 		expect(formatTokens(0)).toBe("0");
 		expect(formatTokens(999)).toBe("999");
 		expect(formatTokens(42.4)).toBe("42");
+		expect(formatTokens(42.6)).toBe("43");
 	});
 
 	it("uses k with one decimal from a thousand", () => {

@@ -31,7 +31,8 @@ jobs:
       - run: yarn check:package
 
   # Runs the engines.node floor from package.json, which the Node 22 above never reaches.
-  # Keep node-version equal to engines.node.
+  # Keep node-version equal to engines.node: the first step after setup-node fails the job when
+  # they differ.
   # A separate job on purpose, NOT a matrix on verify: main requires checks named exactly
   # "verify" and "leak-scan", and a matrix would rename verify to "verify (22)" and block every PR.
   # Install and test only. tsc and biome are native binaries behind a Node launcher, and
@@ -44,6 +45,26 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22.13.0"
+      # Fails fast, before install, when engines.node and the pin above drift apart. It compares the
+      # engines.node floor with the Node this job actually runs, so the pin is not written down a
+      # third time. It fails closed on anything other than a plain ">=X.Y.Z" range.
+      - name: Check node-version matches engines.node
+        run: |
+          node - <<'EOF'
+          const range = require("./package.json").engines?.node;
+          const floor =
+            typeof range === "string" ? /^>=(\d+\.\d+\.\d+)$/.exec(range)?.[1] : undefined;
+          const running = process.versions.node;
+          if (floor === undefined) {
+            console.log(`::error::engines.node is ${JSON.stringify(range)}, not a plain ">=X.Y.Z" range, so the floor cannot be checked`);
+            process.exitCode = 1;
+          } else if (floor !== running) {
+            console.log(`::error::engines.node floor is ${floor} but this job runs Node ${running}; make node-version in verify-node-floor equal to engines.node`);
+            process.exitCode = 1;
+          } else {
+            console.log(`engines.node floor ${floor} matches the Node this job runs (${running})`);
+          }
+          EOF
       - run: corepack enable
       - run: yarn install --immutable
       # The coverage gate, on the floor. node:sqlite needs no flag from 22.13.0.

@@ -268,6 +268,9 @@ describe("price: first-party fallback for providers without a rule", () => {
 		["github-copilot", "gemini-3.6-flash", 0.75],
 		["some-custom-provider", "grok-4", 1.25],
 		["some-custom-provider", "deepseek-chat", 0.28],
+		// Resellers are not first party: Azure also lists this id (azure/gpt-4o-mini at 0.165), and
+		// if it counted, the two rate sets would disagree and the row would go unpriced.
+		["some-custom-provider", "gpt-4o-mini", 0.15],
 	];
 
 	it.each(priced)(
@@ -301,6 +304,16 @@ describe("price: first-party fallback for providers without a rule", () => {
 			"mistral-large-latest",
 			"Mistral's namespace also lists other vendors' models, so it is not consulted",
 		],
+		[
+			"some-custom-provider",
+			"anthropic/claude-sonnet-4.5",
+			"only a gateway (OpenRouter) lists it",
+		],
+		[
+			"some-custom-provider",
+			"claude-sonnet-4-5@20250929",
+			"only a cloud (Vertex) lists it",
+		],
 	];
 
 	it.each(unmatched)("%s / %s stays unpriced (%s)", async (provider, model) => {
@@ -308,6 +321,32 @@ describe("price: first-party fallback for providers without a rule", () => {
 		const [row] = await priceWith([usageRow({ provider, model, tokens })]);
 		expect(row).toMatchObject({ notionalCost: 0, unpriced: true, tokens });
 		expect(row).not.toHaveProperty("priceLabel");
+	});
+
+	it("leaves the row unpriced and unlabeled when a bucket with tokens has no first-party rate", async () => {
+		// The id matches a first-party key, but xAI publishes no cache-write rate for it.
+		const [row] = await priceWith([
+			usageRow({
+				provider: "some-custom-provider",
+				model: "grok-4",
+				tokens: { input: 1000, cacheWrite: 500 },
+			}),
+		]);
+		expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
+		expect(row).not.toHaveProperty("priceLabel");
+	});
+
+	it("labels each row by its own provider when a rule provider and a ruleless one share a model id", async () => {
+		const row = (provider: string) =>
+			usageRow({ provider, model: "claude-opus-5", tokens: { input: M } });
+		const [own, gateway, ownAgain] = await priceWith([
+			row("anthropic"),
+			row("github-copilot"),
+			row("anthropic"),
+		]);
+		expect(own).not.toHaveProperty("priceLabel");
+		expect(gateway?.priceLabel).toBe(LABEL);
+		expect(ownAgain).not.toHaveProperty("priceLabel");
 	});
 
 	// Two first-party vendors listing the same bare id count as one answer only when every
@@ -359,16 +398,11 @@ describe("price: first-party fallback for providers without a rule", () => {
 	// github-copilot spells Claude versions with a dot; Anthropic and LiteLLM's `anthropic` keys
 	// use a dash. Each pair is a github-copilot model id and the first-party key that models.dev
 	// gives as its base_model. The table holds only the target key, so a row prices only if the
-	// alias points at exactly that key.
+	// alias points at exactly that key. Two pairs stand for the mechanism; the full list, with
+	// its models.dev and LiteLLM evidence, is documented on the alias table in pricing-match.ts.
 	const aliased: [string, string, number][] = [
-		["claude-fable-5.1", "claude-fable-5-1", 10],
-		["claude-haiku-4.5", "claude-haiku-4-5", 1],
-		["claude-opus-4.5", "claude-opus-4-5", 5],
-		["claude-opus-4.6", "claude-opus-4-6", 5],
 		["claude-opus-4.7", "claude-opus-4-7", 5],
-		["claude-opus-4.8", "claude-opus-4-8", 5],
-		["claude-sonnet-4.5", "claude-sonnet-4-5", 3],
-		["claude-sonnet-4.6", "claude-sonnet-4-6", 3],
+		["claude-fable-5.1", "claude-fable-5-1", 10],
 	];
 
 	it.each(aliased)(

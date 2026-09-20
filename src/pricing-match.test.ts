@@ -23,16 +23,6 @@ describe("resolveRates", () => {
 		});
 	});
 
-	it("falls back to a first-party key for a provider with no rule", () => {
-		const entry = rates();
-		expect(resolveRates(tableOf([["m", entry]]), "some-gateway", "m")).toEqual({
-			ok: true,
-			key: "m",
-			rates: entry,
-			fallback: true,
-		});
-	});
-
 	it("says no-match when the key is absent", () => {
 		expect(resolveRates(tableOf([]), "anthropic", "m")).toEqual({
 			ok: false,

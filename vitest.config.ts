@@ -1,8 +1,24 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig, type ViteUserConfig } from "vitest/config";
 
 // Coverage policy: 100% statements, branches, functions and lines, per file.
 // See "Testing & coverage policy" in AGENTS.md before touching `exclude`.
-export default defineConfig({
+//
+// `satisfies` below is the enforcement, not decoration. tsconfig.json's rootDir is `src`,
+// so this file sits outside it and plain `tsc --noEmit` never type-checks it; a misspelled
+// key (e.g. `branchez`) or a weakened value would compile clean and the threshold would
+// silently vanish. tsconfig.config.json (see `yarn typecheck`) brings this file under tsc,
+// and the two `satisfies` clauses below make that check reject an unknown coverage option
+// by name and reject any of the four thresholds, or `perFile`, being anything but the
+// literal 100 / true the gate requires.
+type CoverageGate = {
+	perFile: true;
+	statements: 100;
+	branches: 100;
+	functions: 100;
+	lines: 100;
+};
+
+const config = {
 	test: {
 		// Only this checkout's tests. Vitest's default glob also matches other agents'
 		// git worktrees under .claude/worktrees/, which would run (and report) their
@@ -40,7 +56,14 @@ export default defineConfig({
 				branches: 100,
 				functions: 100,
 				lines: 100,
-			},
+			} as const,
 		},
 	},
-});
+} satisfies ViteUserConfig;
+
+// Named, per-key enforcement: renaming or weakening any one of these five fails here,
+// pointing at the exact field, instead of the object literal above merely widening to
+// `number`/`boolean` under `CoverageOptions` and letting the change through.
+config.test.coverage.thresholds satisfies CoverageGate;
+
+export default defineConfig(config);

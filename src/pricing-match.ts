@@ -131,12 +131,11 @@ const MODEL_ALIASES: ReadonlyMap<string, string> = new Map([
 export type Resolution =
 	| {
 			ok: true;
-			key: string;
 			rates: ModelRates;
 			/** True when the row's provider has no rule and a first-party price was used. */
 			fallback: boolean;
 	  }
-	| { ok: false; reason: "no-match" | "ambiguous" };
+	| { ok: false };
 
 /** Two entries agree when every rate a cost calculation would use is identical. */
 function sameEffectiveRates(a: ModelRates, b: ModelRates): boolean {
@@ -149,40 +148,36 @@ function sameEffectiveRates(a: ModelRates, b: ModelRates): boolean {
 	);
 }
 
-interface Hit {
-	key: string;
-	rates: ModelRates;
-}
-
-/** The table entries a rule accepts for `model`. */
-function ruleHits(table: PriceTable, rule: ProviderRule, model: string): Hit[] {
-	const hits: Hit[] = [];
+/** The rates of the table entries a rule accepts for `model`. */
+function ruleHits(
+	table: PriceTable,
+	rule: ProviderRule,
+	model: string,
+): ModelRates[] {
+	const hits: ModelRates[] = [];
 	for (const prefix of rule.prefixes) {
-		const key = prefix + model;
-		const rates = table.get(key);
+		const rates = table.get(prefix + model);
 		if (rates && rule.litellmProviders.includes(rates.provider)) {
-			hits.push({ key, rates });
+			hits.push(rates);
 		}
 	}
 	return hits;
 }
 
 /**
- * One answer from the candidate entries: if more than one exists, they must agree on every
- * effective rate (a single distinct rate set); otherwise the answer is "ambiguous" rather
- * than a guess.
+ * One answer from the candidate entries: none, or several that disagree on an effective rate,
+ * leave the row unpriced rather than guessed; otherwise there is a single distinct rate set.
  */
-function settle(hits: Hit[], fallback: boolean): Resolution {
+function settle(hits: ModelRates[], fallback: boolean): Resolution {
 	const [first] = hits;
-	if (!first) return { ok: false, reason: "no-match" };
-	if (!hits.every((hit) => sameEffectiveRates(first.rates, hit.rates))) {
-		return { ok: false, reason: "ambiguous" };
+	if (!first || !hits.every((hit) => sameEffectiveRates(first, hit))) {
+		return { ok: false };
 	}
-	return { ok: true, key: first.key, rates: first.rates, fallback };
+	return { ok: true, rates: first, fallback };
 }
 
 /**
- * Finds the table entry for a row, or says why it could not.
+ * Finds the rates for a row, or reports that it has none.
  *
  * A provider with a rule uses that rule alone. A provider without one gets the first-party
  * fallback: the bare model id (or its alias, see MODEL_ALIASES) is looked up under every

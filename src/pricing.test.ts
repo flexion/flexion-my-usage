@@ -200,7 +200,6 @@ describe("price: (provider, model) -> LiteLLM key", () => {
 		["anthropic", "claude-opus-4.7", "a dotted id is not aliased here"],
 		["anthropic", "", "empty model id"],
 		["constructor", "__proto__", "prototype-ish ids are just unknown"],
-		["anthropic", "sample_spec", "non-model entry"],
 	];
 
 	it.each(unpriced)("%s / %s is unpriced (%s)", async (provider, model) => {

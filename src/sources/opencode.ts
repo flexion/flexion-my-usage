@@ -117,17 +117,47 @@ export function compareRows(
 	return a.messageId < b.messageId ? -1 : a.messageId > b.messageId ? 1 : 0;
 }
 
-export const opencodeSource: UsageSource = {
+// discover() takes an injectable `stat`, the same seam shape as the price table's injected
+// `fetch`: a named field on an options object, defaulting to the real dependency when
+// omitted. This lives on opencode's own type, not on the shared `UsageSource.discover()`
+// signature in types.ts, so every other source's `discover()` stays zero-arg.
+export interface DiscoverOptions {
+	stat?: typeof stat;
+}
+
+// Codes that mean "no readable opencode data at this path", not "something is wrong":
+// absent (ENOENT), a path segment that isn't a directory (ENOTDIR), permission denied
+// (EACCES/EPERM), a symlink loop (ELOOP), or a path too long to resolve (ENAMETOOLONG).
+// Anything else - EIO, or an error with no .code at all - is genuinely unexpected and must
+// still surface so it doesn't get treated as "opencode just isn't installed".
+const IGNORABLE_DISCOVER_CODES = new Set([
+	"ENOENT",
+	"ENOTDIR",
+	"EACCES",
+	"EPERM",
+	"ELOOP",
+	"ENAMETOOLONG",
+]);
+
+// The ignore-or-surface decision, extracted as pure logic (an errno in, a return-or-throw
+// out) so it is provable without depending on the OS or the calling user's permissions.
+// discover()'s catch delegates to this directly.
+export function handleDiscoverError(error: unknown): SourceHandle[] {
+	const code = (error as NodeJS.ErrnoException).code;
+	if (code !== undefined && IGNORABLE_DISCOVER_CODES.has(code)) return [];
+	throw error;
+}
+
+export const opencodeSource = {
 	name: SOURCE,
 
-	async discover(): Promise<SourceHandle[]> {
+	async discover(options: DiscoverOptions = {}): Promise<SourceHandle[]> {
+		const statFn = options.stat ?? stat;
 		const path = databasePath();
 		try {
-			if (!(await stat(path)).isFile()) return [];
+			if (!(await statFn(path)).isFile()) return [];
 		} catch (error) {
-			const code = (error as NodeJS.ErrnoException).code;
-			if (code === "ENOENT" || code === "ENOTDIR") return [];
-			throw error;
+			return handleDiscoverError(error);
 		}
 		return [{ source: SOURCE, path }];
 	},
@@ -165,4 +195,4 @@ export const opencodeSource: UsageSource = {
 			db.close();
 		}
 	},
-};
+} satisfies UsageSource;

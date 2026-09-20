@@ -1,14 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
-import {
-	chmod,
-	mkdir,
-	mkdtemp,
-	rm,
-	symlink,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -248,45 +241,18 @@ describe("opencodeSource.discover", () => {
 		},
 	);
 
-	// Skipped for root: root ignores the permission bits chmod removes below, so the stat()
-	// this test relies on would succeed instead of failing with EACCES, and the test would
-	// prove nothing. Skipped on Windows too: Node's chmod there only toggles the read-only
-	// flag, not directory search permission, so stat() would still succeed and the test would
-	// fail rather than skip. handleDiscoverError's own tests below cover the EACCES decision
-	// directly and without depending on the OS or which user runs the suite; this test is not
-	// load-bearing for coverage (the ELOOP test above already exercises the same ignorable arm
-	// end to end) but is kept as a real-world proof of the bead's own EACCES scenario.
-	it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
-		"returns no handles when the data directory's permissions deny access (EACCES)",
-		async () => {
-			const home = await isolatedHome();
-			const dataDir = join(home, "xdg", "opencode");
-			await mkdir(dataDir, { recursive: true });
-			await writeFile(join(dataDir, "opencode.db"), "");
-			vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
+	// A chmod-based EACCES filesystem test was tried here and removed: it skips as root (so it
+	// can never fail in a root CI container, exactly where a regression would matter) and skips
+	// on Windows, and forcing both skips still left the suite at 100% - the ELOOP test above
+	// already exercises the same ignorable arm end to end, and handleDiscoverError's own tests
+	// below cover the EACCES decision directly, without depending on the OS or which user runs
+	// the suite.
 
-			// Strip search (execute) permission from the data directory itself, so stat() on
-			// the database file inside it fails with EACCES.
-			await chmod(dataDir, 0o000);
-			try {
-				await expect(opencodeSource.discover()).resolves.toEqual([]);
-			} finally {
-				// Restore before the sandbox is torn down, or removing it would itself fail.
-				await chmod(dataDir, 0o755);
-			}
-		},
-	);
-
-	// Round 2 of the red-checkpoint review found a real gap: with the ignore-or-surface
-	// decision fully extracted into handleDiscoverError (tested in isolation below), nothing at
-	// discover()'s own integration boundary proves the two are actually wired together.
-	// Mutating discover()'s catch to an unconditional `return []` - silently swallowing every
-	// error, including EIO - left the whole suite green at 100% coverage. Per Brice's decision
-	// (myusage-pqm), discover() takes an injectable `stat`, mirroring the injected-`fetch` seam
-	// `loadPriceTable` already uses for the price table (an options object, a named field,
-	// defaulting to the real dependency when omitted). Injecting a stat that rejects with EIO
-	// and asserting discover() still throws proves the real path end to end: no vendor mock (no
-	// `vi.mock` on node:fs/promises), no chmod, no platform dependence.
+	// Proves discover()'s catch is actually wired to handleDiscoverError, not just that the
+	// pure function decides correctly in isolation: the `stat` seam is injected (see
+	// `DiscoverOptions`) so this reaches the real path end to end with no vendor mock (no
+	// `vi.mock` on node:fs/promises), no chmod, and no platform dependence. Decision record:
+	// bead myusage-pqm.
 	it("propagates a genuinely unexpected stat error through the real discover() path (injected stat, EIO)", async () => {
 		// Sandboxed like every other test here even though the injected stat should make the
 		// real filesystem irrelevant: if a future regression stops discover() from honoring the
@@ -300,11 +266,6 @@ describe("opencodeSource.discover", () => {
 		}) as NodeJS.ErrnoException;
 		const injectedStat = vi.fn().mockRejectedValue(error);
 
-		// GREEN adds this options parameter to opencode's own exported type only (e.g. a
-		// `DiscoverOptions` interface local to opencode.ts, with `opencodeSource` changed from a
-		// `: UsageSource` annotation to `satisfies UsageSource`), never by widening the shared
-		// `UsageSource.discover()` signature in types.ts: every other source's `discover()` stays
-		// zero-arg, and src/index.ts's untyped call site still typechecks either way.
 		await expect(
 			opencodeSource.discover({ stat: injectedStat }),
 		).rejects.toThrow(error);
@@ -317,18 +278,14 @@ describe("handleDiscoverError", () => {
 	// which errno the OS or the calling user's permissions actually produce. discover()'s catch
 	// delegates the whole decision to this function (`return handleDiscoverError(error)`), so
 	// these are the only tests the decision needs — no filesystem test has to reach the
-	// "unexpected" arm, and none of these errnos need to come from a real, portable filesystem
-	// failure the way ENAMETOOLONG would.
+	// "unexpected" arm.
 	function errnoError(code: string): NodeJS.ErrnoException {
 		const error = new Error(code) as NodeJS.ErrnoException;
 		error.code = code;
 		return error;
 	}
 
-	// ENAMETOOLONG is a path-resolution failure, the same family as ENOENT/ENOTDIR/ELOOP: it
-	// means "this path cannot name a file", not "the disk is broken", so it belongs with the
-	// ignorable codes rather than standing in for "genuinely unexpected".
-	it.each(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP", "ENAMETOOLONG"])(
+	it.each(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"])(
 		"treats %s as ignorable: no readable opencode data at this path",
 		(code) => {
 			expect(handleDiscoverError(errnoError(code))).toEqual([]);

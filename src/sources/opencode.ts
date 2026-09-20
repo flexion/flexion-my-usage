@@ -127,16 +127,20 @@ export interface DiscoverOptions {
 
 // Codes that mean "no readable opencode data at this path", not "something is wrong":
 // absent (ENOENT), a path segment that isn't a directory (ENOTDIR), permission denied
-// (EACCES/EPERM), a symlink loop (ELOOP), or a path too long to resolve (ENAMETOOLONG).
-// Anything else - EIO, or an error with no .code at all - is genuinely unexpected and must
-// still surface so it doesn't get treated as "opencode just isn't installed".
-const IGNORABLE_DISCOVER_CODES = new Set([
+// (EACCES/EPERM), or a symlink loop (ELOOP). Anything else - EIO, or an error with no
+// .code at all - is genuinely unexpected and must still surface so it doesn't get
+// treated as "opencode just isn't installed".
+//
+// Typed as a set of `unknown` (not `Set<string>`) so `.has(code)` accepts `code`'s real
+// type (`string | undefined`) directly: `Set.has` on an unknown-typed set never needs the
+// argument narrowed first, and `.has(undefined)` is simply false since undefined was never
+// added, which is exactly the "no .code at all" case below.
+const IGNORABLE_DISCOVER_CODES: ReadonlySet<unknown> = new Set([
 	"ENOENT",
 	"ENOTDIR",
 	"EACCES",
 	"EPERM",
 	"ELOOP",
-	"ENAMETOOLONG",
 ]);
 
 // The ignore-or-surface decision, extracted as pure logic (an errno in, a return-or-throw
@@ -144,7 +148,7 @@ const IGNORABLE_DISCOVER_CODES = new Set([
 // discover()'s catch delegates to this directly.
 export function handleDiscoverError(error: unknown): SourceHandle[] {
 	const code = (error as NodeJS.ErrnoException).code;
-	if (code !== undefined && IGNORABLE_DISCOVER_CODES.has(code)) return [];
+	if (IGNORABLE_DISCOVER_CODES.has(code)) return [];
 	throw error;
 }
 

@@ -106,6 +106,10 @@ describe("withSqliteWarningSuppressed", () => {
 
 	it("drops the SQLite warning raised while loading and forwards every other warning", async () => {
 		const loaded = await withSqliteWarningSuppressed(async () => {
+			// Force a real suspension point, so restoring the original emitWarning too early
+			// (a `return load()` that drops the `await`) lets this warning through unfiltered
+			// instead of being caught here.
+			await Promise.resolve();
 			process.emitWarning(MESSAGE, "ExperimentalWarning");
 			process.emitWarning("something else", "DeprecationWarning", "DEP0001");
 			return "module";

@@ -75,6 +75,19 @@ function seriesOf(day: DayBucket | undefined): ModelTotals[] {
 	);
 }
 
+// Reviewed (round 1, F3): aggregate.ts is strictly downstream of the opencode reader, which
+// already clamps every token bucket to a finite positive number or 0, rejects any row with an
+// empty provider/model/messageId/sessionId or an unusable `completed` timestamp, and drops rows
+// whose five buckets are all zero (src/sources/opencode.ts, `toRow`/`bucket`). No PricedRow this
+// fixture builds, or that a real read can produce, can carry a non-finite or negative token, an
+// empty provider or model string, or an all-zero bucket set. This factory's four unspecified
+// token buckets default to 0, which is why a `Number.isFinite(x) && x > 0` clamp on the buckets,
+// or an `if (rows.length === 0) return days;` early-out, both slip past the coverage gate here
+// (the zero default drives both sides of `x > 0`, and the "defaults to 30 days" test supplies
+// the empty array) without the guard doing anything real. The green stage reads row.tokens.*,
+// row.provider, row.model, row.timestamp and row.notionalCost directly: no Number.isFinite,
+// >= 0, empty-string, rows.length === 0 or windowDays <= 0 guard belongs in aggregate.ts. That
+// is an instruction for the green implementation, not something to add another test for.
 function pricedRow(
 	overrides: Partial<Omit<PricedRow, "tokens">> & {
 		tokens?: Partial<PricedRow["tokens"]>;
@@ -454,36 +467,32 @@ describe("unpricedModels", () => {
 	});
 
 	// Equal tokens tie-break on model id, then provider (the same model id can come through two
-	// providers). Arrival in sorted order and in reverse order, so neither a stable sort with no
-	// tie-break nor a descending one can pass by accident of which row came first.
+	// providers). Reviewed (round 1, F4): a stable sort with no tie-break at all returns arrival
+	// order, so only a reversed arrival can expose that; feeding the already-sorted order too
+	// added no kill a reversed arrival didn't already cover (mutation testing), so one case
+	// carries the check.
 	const sorted = [
 		{ provider: "example-gateway", model: "alpha-model" },
 		{ provider: "provider-a", model: "shared-model" },
 		{ provider: "provider-b", model: "shared-model" },
 		{ provider: "example-gateway", model: "zeta-model" },
 	];
-	it.each([
-		{ arrival: "sorted order", pairs: sorted },
-		{ arrival: "reverse order", pairs: [...sorted].reverse() },
-	])(
-		"orders models with equal unpriced tokens by model id, then provider (arriving in $arrival)",
-		({ pairs }) => {
-			const days = aggregateDaily(
-				pairs.map(({ provider, model }) =>
-					pricedRow({
-						provider,
-						model,
-						tokens: { input: 100 },
-						unpriced: true,
-					}),
-				),
-				1,
-				now(),
-			);
+	it("orders models with equal unpriced tokens by model id, then provider", () => {
+		const days = aggregateDaily(
+			[...sorted].reverse().map(({ provider, model }) =>
+				pricedRow({
+					provider,
+					model,
+					tokens: { input: 100 },
+					unpriced: true,
+				}),
+			),
+			1,
+			now(),
+		);
 
-			expect(unpricedModels(days)).toEqual(
-				sorted.map((pair) => ({ ...pair, tokens: 100 })),
-			);
-		},
-	);
+		expect(unpricedModels(days)).toEqual(
+			sorted.map((pair) => ({ ...pair, tokens: 100 })),
+		);
+	});
 });

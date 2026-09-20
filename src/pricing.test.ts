@@ -178,6 +178,25 @@ describe("price: warn never throws", () => {
 			writeSpy.mockRestore();
 		}
 	});
+
+	it("resolves normally even when the injected warn throws from price()'s own backstop (loadPriceTable rejects outright, not just reports a failure)", async () => {
+		// A cacheDir getter that throws blows up loadPriceTable before it enters its own
+		// try/catch, so the rejection reaches price()'s own catch block, which is the only
+		// thing standing between a throwing warn and a rejected price() call.
+		const options = {
+			get cacheDir(): string {
+				throw new Error("boom");
+			},
+			fetch: forbiddenFetch(),
+			warn: () => {
+				throw new Error("warn blew up");
+			},
+		};
+
+		const out = await price([usageRow({ tokens: { input: 5 } })], options);
+
+		expect(out).toMatchObject([{ notionalCost: 0, unpriced: true }]);
+	});
 });
 
 describe("price: unknown models", () => {

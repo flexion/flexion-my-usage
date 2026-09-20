@@ -265,6 +265,35 @@ describe("opencodeSource.discover", () => {
 			}
 		},
 	);
+
+	// Round 2 of the red-checkpoint review found a real gap: with the ignore-or-surface
+	// decision fully extracted into handleDiscoverError (tested in isolation below), nothing at
+	// discover()'s own integration boundary proves the two are actually wired together.
+	// Mutating discover()'s catch to an unconditional `return []` - silently swallowing every
+	// error, including EIO - left the whole suite green at 100% coverage. Per Brice's decision
+	// (myusage-pqm), discover() takes an injectable `stat`, mirroring the injected-`fetch` seam
+	// `loadPriceTable` already uses for the price table (an options object, a named field,
+	// defaulting to the real dependency when omitted). Injecting a stat that rejects with EIO
+	// and asserting discover() still throws proves the real path end to end: no vendor mock (no
+	// `vi.mock` on node:fs/promises), no chmod, no platform dependence.
+	it("propagates a genuinely unexpected stat error through the real discover() path (injected stat, EIO)", async () => {
+		// Sandboxed like every other test here even though the injected stat should make the
+		// real filesystem irrelevant: if a future regression stops discover() from honoring the
+		// injected dependency, the fallback must land on a throwaway path, never the real home
+		// or opencode database.
+		const home = await isolatedHome();
+		vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
+
+		const error = Object.assign(new Error("EIO"), {
+			code: "EIO",
+		}) as NodeJS.ErrnoException;
+		const injectedStat = vi.fn().mockRejectedValue(error);
+
+		await expect(
+			opencodeSource.discover({ stat: injectedStat }),
+		).rejects.toThrow(error);
+		expect(injectedStat).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("handleDiscoverError", () => {

@@ -980,6 +980,34 @@ function fakeDayBar(day: string): FakeDayBar {
 	};
 }
 
+/** Every `id="..."` attribute value present anywhere in `html`, regardless of which tag carries it. */
+function idsInHtml(html: string): Set<string> {
+	const ids = new Set<string>();
+	for (const match of html.matchAll(/\sid="([^"]+)"/g)) {
+		const id = match[1];
+		if (id) ids.add(id);
+	}
+	return ids;
+}
+
+/**
+ * The static-markup ids CLIENT_SCRIPT's real `document.getElementById` call sites look up
+ * (`elementsById` below). Checked against `idsInHtml(html)` in `runClientScript` so a renamed id
+ * in `renderHtml` (e.g. `chart-title` or `day-detail`) fails this harness loudly - myusage-4xu.50:
+ * before this check, `elementsById` handed back the same fixed fake objects no matter what ids
+ * `renderHtml` actually emitted, so a rename left the vm harness (and the whole suite) green even
+ * though a real browser's `document.getElementById` would return null and the very next line
+ * (`titleEl.textContent = ...`) would throw.
+ */
+const REQUIRED_ELEMENT_IDS = [
+	"panel-cost",
+	"panel-tokens",
+	"measure-cost",
+	"measure-tokens",
+	"chart-title",
+	"day-detail",
+] as const;
+
 /**
  * Runs the ACTUAL `<script>` block extracted from real `renderHtml(html)` output in a `node:vm`
  * context, against a fake DOM built from plain objects (never jsdom, per this repo's
@@ -989,6 +1017,15 @@ function fakeDayBar(day: string): FakeDayBar {
  * day bar is fixed to "2026-09-07", the fixture's busiest day (see `buildWindow`).
  */
 function runClientScript(html: string) {
+	const renderedIds = idsInHtml(html);
+	for (const id of REQUIRED_ELEMENT_IDS) {
+		if (!renderedIds.has(id)) {
+			throw new Error(
+				`renderHtml no longer emits id="${id}" - CLIENT_SCRIPT's document.getElementById("${id}") call site would return null in a real browser`,
+			);
+		}
+	}
+
 	const panels = { cost: { hidden: false }, tokens: { hidden: true } };
 	const buttons = { cost: fakeButton(), tokens: fakeButton() };
 	const titleEl = { textContent: "Daily cost" };
@@ -1050,6 +1087,31 @@ describe("renderHtml: client script execution (vm)", () => {
 		expect(panels.tokens.hidden).toBe(false);
 		expect(buttons.tokens.classList.active).toBe(true);
 		expect(buttons.tokens.ariaPressed).toBe("true");
+	});
+
+	// myusage-4xu.50: the Cost button's own click handler registration
+	// (`buttons.cost.addEventListener("click", ...)`) was, until this test, only ever exercised by
+	// a guard-only test myusage-jom deleted along with the guard it existed to test. Mutating that
+	// handler's `setMeasure("cost")` call to `setMeasure("tokens")` left the whole suite green: the
+	// line still runs (it's registered whenever runClientScript's setup runs), so line/branch
+	// coverage stayed 100% - a mutation-coverage gap, not a coverage-number gap. Starting from
+	// tokens (so cost isn't already active-by-default) and clicking Cost proves the click actually
+	// reaches `setMeasure("cost")`, not just that the listener is registered.
+	it("switches back to cost from tokens and restores the chart title from the real embedded cost payload", () => {
+		const html = renderHtml(buildWindow());
+		const costPayload = readPanelData(html, "panel-cost");
+
+		const { panels, buttons, titleEl } = runClientScript(html);
+		buttons.tokens.dispatchClick();
+		buttons.cost.dispatchClick();
+
+		expect(titleEl.textContent).toBe(costPayload.title);
+		expect(panels.cost.hidden).toBe(false);
+		expect(panels.tokens.hidden).toBe(true);
+		expect(buttons.cost.classList.active).toBe(true);
+		expect(buttons.cost.ariaPressed).toBe("true");
+		expect(buttons.tokens.classList.active).toBe(false);
+		expect(buttons.tokens.ariaPressed).toBe("false");
 	});
 
 	it("renders the real per-day drill-down from the embedded payload when a day bar is clicked", () => {

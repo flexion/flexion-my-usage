@@ -519,6 +519,40 @@ function narrowTestInclude(
 	};
 }
 
+/** Deletes the whole `include: requireTestIncludePattern([...])` line (key, call and its own
+ * trailing comma) from the `test` block - the test.include mirror of removeCoverageInclude
+ * above, for requireTestIncludePattern's own presence-check line (myusage-4xu.62): the plain
+ * `config.test.include satisfies string[];` reference near the bottom of vitest.config.ts only
+ * does its job once this key is gone entirely, and nothing exercised that until now, the same
+ * gap removeCoverageInclude's own test already closed for coverage.include.
+ *
+ * Reuses narrowTestInclude's own anchor discipline (`include:` first non-whitespace text on its
+ * own line, matched before the coverage block, so this can never bind to coverage.include's own
+ * `include:` field spelled the same way) rather than findKeyedArray's coverage-scoped balanced-
+ * array walk: `include: requireTestIncludePattern([...])` is a call, not a bare array literal,
+ * so findKeyedArray's own array-literal search (built for `exclude: explicitPaths([...])`, where
+ * the array immediately follows the key) does not apply here without also touching that shared
+ * helper. Unlike narrowTestInclude, this drops the ENTIRE line - key, call and trailing comma -
+ * rather than replacing just the captured literal inside it. */
+function removeTestInclude(source: string): string {
+	const pattern = /^[ \t]*include:[^\n]*\n/m;
+	const match = pattern.exec(source);
+	expect(
+		match,
+		"expected an `include: ...` field (not inside a comment) in vitest.config.ts before coverage.include (fixture anchor stale?)",
+	).not.toBeNull();
+	const startIndex = match?.index ?? -1;
+	const coverageStart = findCoverageBlock(source);
+	expect(
+		startIndex,
+		"expected test.include's field to appear before the coverage block (fixture anchor stale - matched coverage.include instead?)",
+	).toBeLessThan(coverageStart);
+	const matched = match?.[0] ?? "";
+	return (
+		source.slice(0, startIndex) + source.slice(startIndex + matched.length)
+	);
+}
+
 /** Replaces `pool`'s own quoted value (`pool: "forks"`) with `value` (already quoted) - the
  * scalar-field mirror of `replaceEntryInPlace` above, needed because PoolGate (vitest.config.ts,
  * myusage-7j2) guards a single string field, not an array, so there's no `findKeyedArray` span to
@@ -811,12 +845,16 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 		// assertion before typecheck ever runs, failing this test loudly for the right reason.
 		//
 		// This does NOT also cover the myusage-4xu.53 block-comment cross-literal-merge variant
-		// (corrected here, myusage-4xu.59, after a reviewer proved the original wording overstated
-		// this test's reach): that bug paired a `*/`-like substring inside one glob-shaped entry
-		// with a `/*`-like substring inside a LATER, separate entry, blanking the comma and quotes
-		// between them as if they were one block comment. Reproducing it needs that specific
-		// adjacent pair, which a single planted `//` line comment doesn't create and which no
-		// entry in the real coverage.exclude/coverage.include holds today - confirmed by hand by
+		// (corrected here, myusage-4xu.62, after two independent reviewers found the myusage-4xu.59
+		// wording had the comment mechanism backwards): that bug paired a `/*`-like substring inside
+		// one glob-shaped entry (the opener) with a `*/`-like substring inside a LATER, separate entry
+		// (the closer) - not the reverse, since `/*` opens a block comment and `*/` closes one.
+		// Blanking the comma and quotes between them treated the two as if they were one block
+		// comment. Reproducing it needs that pair, but not necessarily an ADJACENT one: an unrelated
+		// entry sitting between the opener and the closer would trigger the same bug just as well,
+		// since the regex only scans forward for the next `*/` regardless of what sits between them.
+		// No such pair - adjacent or not - exists in the real coverage.exclude/coverage.include
+		// today, so a single planted `//` line comment doesn't exercise this path - confirmed by hand by
 		// reintroducing the old block-comment-handling regex verbatim into stripComments here and
 		// finding every test in this file, including this one, still green. myusage-4xu.53's own
 		// fix - deleting that code path entirely rather than hardening it (see stripComments' own
@@ -1078,6 +1116,37 @@ describe("vitest.config.ts: test.include stays widened", () => {
 			'"src/**/*.test.ts"',
 			entryLine,
 			"test.include narrowed back to the literal src/**/*.test.ts",
+		);
+	});
+
+	// myusage-4xu.62: requireTestIncludePattern (above) only checks the array's SHAPE where it's
+	// written - the narrowing test above exercises that half. coverage.include's own equivalent
+	// guard has a second half too: `config.test.include satisfies string[];` near the bottom of
+	// vitest.config.ts, a presence check that only does its job once the `include:` key and its
+	// wrapping call are gone entirely (the same role coverage.include's own presence line plays
+	// for `removeCoverageInclude`'s "removed entirely" test above). Nothing exercised that second
+	// half for test.include until now.
+	//
+	// Hand-verified in a throwaway sandbox before this test existed: deleting ONLY test.include's
+	// key/call (removeTestInclude, leaving the presence-check line in place) already failed
+	// typecheck today - TS2339, "Property 'include' does not exist" - so the production guard
+	// already worked, it was simply untested. Separately confirmed the sharper edge this test
+	// does NOT cover: deleting the key/call AND the presence-check line TOGETHER compiles clean
+	// (0 exit) - removing a check alongside the very thing it protects leaves nothing behind to
+	// catch the hollowing, which is why that presence line's own doc comment warns "don't delete
+	// it as dead code later." This test exercises the catchable half - key/call gone, presence
+	// line intact - mirroring coverage.include's "removed entirely" test above via
+	// removeCoverageInclude/expectIncludeShapeMismatch.
+	it("fails typecheck when the include key is removed entirely", async () => {
+		const real = await realConfigSource();
+		const mutated = removeTestInclude(real);
+		const dir = await typecheckProjectWith(mutated);
+
+		const result = runTypecheck(dir);
+
+		expectIncludeShapeMismatch(
+			result,
+			"test.include removed entirely - the easiest complete hollowing",
 		);
 	});
 });

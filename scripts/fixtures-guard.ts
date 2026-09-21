@@ -165,8 +165,17 @@ function isUnderTestSupportDir(path: string): boolean {
 // a *.fixtures.* file sitting under __tests__/ or __mocks__/ instead. Without the isFixturesFile
 // exclusion below, src/__tests__/a.fixtures.ts could "vouch for" src/b.fixtures.ts's test-only
 // status - exactly the shape this file's own header rule forbids ("referenced by a real
-// *.test.*-named file - not merely another *.fixtures.* file"), and a.fixtures.ts never runs as
-// a test itself (vitest.config.ts's test.include is src/**/*.test.*, which it doesn't match).
+// *.test.*-named file - not merely another *.fixtures.* file"), and a.fixtures.ts in that
+// example never runs as a test itself (it has no ".test." in its own basename).
+//
+// The exclusion below is broader than that one example: a *.fixtures.* file's own basename
+// never counts as a real test referencer, even on the rarer dual-suffix shape (e.g.
+// src/x.test.fixtures.ts) that DOES also match test.include's own src/**/*.test.* glob and
+// would genuinely run as a test. Nothing distinguished that as a deliberate choice, rather than
+// an accidental side effect of this exclusion, until myusage-4xu.61 pinned it with a test (see
+// this file's own test suite) - fail-closed only: it can only cause a false-positive
+// unverified-fixtures flag on a fixtures file whose sole referencer has this exact name shape,
+// never a missed real violation.
 function isRealTestFile(path: string): boolean {
 	return (
 		!isFixturesFile(path) &&

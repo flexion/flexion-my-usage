@@ -280,7 +280,7 @@ const config = {
 				// alone can't express: it fails the moment anything outside test support imports
 				// a *.fixtures.* file, and separately fails a *.fixtures.* file that can't be
 				// verified as test-only (it doesn't import vitest, and no real *.test.* file
-				// references it either).
+				// or __tests__/__mocks__-directory file references it either).
 				"src/**/*.fixtures.*",
 
 				// Humble objects (invasive-species rule): I/O and wiring only, no logic.

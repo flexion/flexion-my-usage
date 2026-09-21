@@ -389,4 +389,107 @@ describe("checkFixturesGuard", () => {
 
 		expect(checkFixturesGuard(files)).toEqual([]);
 	});
+
+	it("does not let a fixtures file under __tests__/ vouch for another fixtures file's test-only status", () => {
+		// myusage-4xu.60: both PR #66 reviewers found the same gap in myusage-4xu.58's fix
+		// above - isRealTestFile's new directory check didn't also exclude *.fixtures.* files,
+		// so a fixtures file placed under __tests__/ could "vouch for" another fixtures file,
+		// exactly the shape the header rule forbids ("referenced by a real *.test.*-named
+		// file - not merely another *.fixtures.* file"). REPRODUCED by hand against the pre-fix
+		// isRealTestFile (basename check OR bare directory check, no fixtures exclusion): this
+		// exact input flagged only src/__tests__/a.fixtures.ts, letting src/b.fixtures.ts pass
+		// unflagged - vouched for by a file that itself never runs as a test
+		// (vitest.config.ts's test.include is src/**/*.test.*, which a.fixtures.ts doesn't
+		// match) and is itself excluded from coverage. Both must be flagged.
+		const files = [
+			{
+				path: "src/__tests__/a.fixtures.ts",
+				text: 'import { helper } from "../b.fixtures.js";\nhelper();\n',
+			},
+			{
+				path: "src/b.fixtures.ts",
+				text: "export function helper() {\n\treturn 1;\n}\n",
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([
+			{
+				kind: "unverified-fixtures",
+				fixturesFile: "src/__tests__/a.fixtures.ts",
+			},
+			{ kind: "unverified-fixtures", fixturesFile: "src/b.fixtures.ts" },
+		]);
+	});
+
+	it("does not count a directory segment that merely contains __tests__ as a substring as a real test referencer", () => {
+		// myusage-4xu.60 test-quality gap (a): exact-segment match, the same discipline
+		// package-rules.test.ts already pins for its own analogous directory check ("does not
+		// flag a directory whose name merely contains __mocks__ as a substring"). Nothing here
+		// previously distinguished "isUnderTestSupportDir walks exact segments" from "it
+		// substring-matches" - this does. src/my__tests__thing/helper.ts's own basename has no
+		// ".test." in it either, so this isolates the directory-segment check specifically.
+		const files = [
+			{
+				path: "src/my__tests__thing/helper.ts",
+				text: 'import { helper } from "../thing.fixtures.js";\nhelper();\n',
+			},
+			{
+				path: "src/thing.fixtures.ts",
+				text: "export function helper() {\n\treturn 1;\n}\n",
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([
+			{
+				kind: "banned-import",
+				importer: "src/my__tests__thing/helper.ts",
+				fixturesFile: "src/thing.fixtures.ts",
+			},
+			{ kind: "unverified-fixtures", fixturesFile: "src/thing.fixtures.ts" },
+		]);
+	});
+
+	it("does not count a __mocks__-directory helper without '.test.' in its own basename as a real test referencer", () => {
+		// myusage-4xu.60 test-quality gap (c): the __tests__ case just above (and the
+		// myusage-4xu.58 test further up) exercises __tests__, but __mocks__ - half of
+		// TEST_SUPPORT_DIR - had zero dedicated coverage. Mirrors the __tests__ shape.
+		const files = [
+			{
+				path: "src/__mocks__/helper.ts",
+				text: 'import { helper } from "../thing.fixtures.js";\nhelper();\n',
+			},
+			{
+				path: "src/thing.fixtures.ts",
+				text: "export function helper() {\n\treturn 1;\n}\n",
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([]);
+	});
+
+	it("does not count a file under a literal fixtures/ directory as a real test referencer, even though that same directory exempts it from banned-import", () => {
+		// myusage-4xu.60 test-quality gap (b): isUnderTestSupportDir's own comment argues at
+		// length that its directory set must NOT include "fixtures" (unlike package-rules.ts's
+		// TEST_OR_SUPPORT_DIR, which does, for its own different purpose), because a bare
+		// fixtures/ directory proves a file is test SUPPORT, not that it's a REAL test able to
+		// verify another fixtures file. Nothing pinned that claim before this. src/fixtures/
+		// helper.ts IS exempt from banned-import (filterTestOrSupportPaths' own directory set
+		// includes "fixtures"), so only the unverified-fixtures violation below would disappear
+		// if "fixtures" were ever added to isUnderTestSupportDir's set - which is exactly what
+		// this test would then fail to catch.
+		const files = [
+			{
+				path: "src/fixtures/helper.ts",
+				text: 'import { helper } from "../thing.fixtures.js";\nhelper();\n',
+			},
+			{
+				path: "src/thing.fixtures.ts",
+				text: "export function helper() {\n\treturn 1;\n}\n",
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([
+			{ kind: "unverified-fixtures", fixturesFile: "src/thing.fixtures.ts" },
+		]);
+	});
 });

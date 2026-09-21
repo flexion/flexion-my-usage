@@ -156,8 +156,19 @@ function isUnderTestSupportDir(path: string): boolean {
 	return segments.some((segment) => TEST_SUPPORT_DIR.has(segment));
 }
 
+// bead myusage-4xu.60: isUnderTestSupportDir's own comment above already argues that a bare
+// fixtures/ directory proves a file is test SUPPORT, not a REAL test able to verify another
+// fixtures file - but myusage-4xu.58's directory widening didn't actually enforce that against
+// a *.fixtures.* file sitting under __tests__/ or __mocks__/ instead. Without the isFixturesFile
+// exclusion below, src/__tests__/a.fixtures.ts could "vouch for" src/b.fixtures.ts's test-only
+// status - exactly the shape this file's own header rule forbids ("referenced by a real
+// *.test.*-named file - not merely another *.fixtures.* file"), and a.fixtures.ts never runs as
+// a test itself (vitest.config.ts's test.include is src/**/*.test.*, which it doesn't match).
 function isRealTestFile(path: string): boolean {
-	return /\.test\./.test(posix.basename(path)) || isUnderTestSupportDir(path);
+	return (
+		!isFixturesFile(path) &&
+		(/\.test\./.test(posix.basename(path)) || isUnderTestSupportDir(path))
+	);
 }
 
 export type FixturesGuardViolation =

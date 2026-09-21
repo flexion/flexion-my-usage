@@ -40,3 +40,6 @@ jobs:
 
       - name: Guardrail scan (secrets + internal terms)
         run: sh scripts/guardrail-scan.sh tree
+
+      - name: Guardrail scan (full-snapshot secret scan)
+        run: sh scripts/guardrail-scan.sh snapshot

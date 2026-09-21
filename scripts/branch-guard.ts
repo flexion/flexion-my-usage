@@ -64,9 +64,12 @@
 //     as one - a false negative, the same "fails closed" direction as this file's other
 //     documented gaps - and an arithmetic `/` with no identifier immediately before it once
 //     whitespace is skipped (`x++ / y`) could be misread as a regex opener, blanking real code up
-//     to the next unescaped `/` on the line - a false positive, costing a reviewer a second look,
-//     not a silent miss. Neither shape occurs in src/index.ts or src/sources/types.ts today,
-//     confirmed by hand; a genuinely general fix needs real tokenization, not a regex.
+//     to the next unescaped `/` on the line - a false-positive MASKING (treating real code as if
+//     it were a regex literal), which can hide a real `&&` or ternary sitting inside the wrongly-
+//     blanked span. That's a silent miss, the same failure direction as this file's other
+//     documented gaps, not a mere nuisance that costs a reviewer a second look. Neither shape
+//     occurs in src/index.ts or src/sources/types.ts today, confirmed by hand; a genuinely general
+//     fix needs real tokenization, not a regex.
 import { posix } from "node:path";
 import type { SourceFile } from "./fixtures-guard.js";
 
@@ -163,20 +166,43 @@ interface ConstructMatcher {
 //   side of `??`/`??=` - without the lookbehind half, the SECOND `?` of `??` independently
 //   satisfies the two lookaheads below and would double-report a nullish-coalescing site as a
 //   ternary too; caught during this file's own test-writing by a planted `x ??= 1;` fixture, not
-//   by inspection), not immediately followed by `.` (optional chaining), not, allowing
-//   whitespace, immediately followed by `:`/`)`/`,` (an optional property/parameter marker -
-//   `x?:`, `x?)`, `x?,` - which has nothing between the `?` and that next token; a real ternary's
-//   consequent expression can never be empty, so this is a safe split between the two shapes),
-//   and not immediately (ZERO whitespace - no `\s*` here) followed by `(` or `<` (myusage-4xu.64:
-//   an optional METHOD signature - `discover?(): Promise<void>;`, or its generic form
-//   `load?<T>(id: string): Promise<T>;` - is the same "empty consequent" shape as `x?:`/`x?)`/
-//   `x?,`, just spelled with `(`/`<` instead of `:`/`)`/`,`. Unlike those three, whitespace can't
-//   be allowed here: `(` and `<` CAN legally start a real ternary's consequent expression -
-//   `x ? (a) : b` is ordinary, idiomatic code - so "whitespace then `(`" is not proof of an empty
-//   consequent the way "whitespace then `:`" is. Requiring zero whitespace between `?` and
-//   `(`/`<` is what keeps that real ternary correctly flagged (src/branch-guard.test.ts pins this
-//   with an `x ? (x) : -x`-shaped test) while still excluding the method-signature shape, which
-//   this codebase's own formatting convention never writes with a space before its `(`/`<`.
+//   by inspection), not immediately followed by `.` (optional chaining), not immediately (ZERO
+//   whitespace, no `\s*` - myusage-4xu.67, see below) followed by `:`/`)`/`,` (an optional
+//   property/parameter marker - `x?:`, `x?)`, `x?,` - which has nothing between the `?` and that
+//   next token; a real ternary's consequent expression can never be empty, so this is a safe
+//   split between the two shapes), and not immediately (ZERO whitespace - no `\s*` here either)
+//   followed by `(` or `<` (myusage-4xu.64: an optional METHOD signature -
+//   `discover?(): Promise<void>;`, or its generic form - `load?<T>(id: string): Promise<T>;` - is
+//   the same "empty consequent" shape as `x?:`/`x?)`/`x?,`, just spelled with `(`/`<` instead of
+//   `:`/`)`/`,`.
+//
+//   The `:`/`)`/`,` exclusion originally allowed whitespace between `?` and the terminator
+//   (`\s*[:),]`), on the theory that a real ternary's consequent can never be empty, so seeing a
+//   terminator after only whitespace was safe proof of an optional marker. That reasoning broke
+//   for a masked-out consequent (myusage-4xu.67): `c ? "a" : "b"` is a genuine ternary with a
+//   string consequent, but maskNonCode (see that function's own header) blanks the `"a"` to
+//   spaces before this pattern ever runs, so by the time the ternary check sees it, `?` IS
+//   followed by nothing but whitespace before `:` - indistinguishable, under the old
+//   `\s*`-tolerant rule, from a real `x?:` marker's genuinely empty gap. checkBranchGuard on
+//   `const x = c ? "a" : "b";` returned no violations at all, on already-shipped, unmodified
+//   code - a real ternary silently unflagged, confirmed by direct execution before this fix.
+//   Tightening the exclusion to zero whitespace closes this cleanly: a real optional marker's gap
+//   is empty in the UNMASKED source too, so requiring immediate adjacency still excludes it
+//   correctly, while a masked string/template consequent always leaves at least one blanked
+//   character between `?` and the terminator (even `""`, the shortest possible string literal,
+//   masks to two space characters), which the tightened check now correctly reads as a non-empty
+//   consequent and flags as a ternary. src/branch-guard.test.ts pins both directions: the real
+//   optional-marker shapes (`x?:`/`x?)`/`x?,`, still zero-width and still excluded) and the
+//   previously-unflagged string-consequent ternary (now flagged).
+//
+//   Requiring zero whitespace here trades away one shape this codebase has never written and
+//   Biome's own formatter never produces: a hand-written optional marker with deliberate
+//   whitespace before its terminator (`x? : number`) is syntactically legal TypeScript -
+//   insignificant whitespace between tokens is always allowed - and would now be misread as a
+//   ternary instead of excluded. Not a realistic shape in the type-only humble-object files this
+//   guard actually scans today, and not one this codebase's formatting convention would ever
+//   produce - the same trade-off this file's `?(`/`?<` exclusion below already accepts, for the
+//   same reason.
 //   Known, accepted gap this narrower rule doesn't attempt to close (fails CLOSED, matching this
 //   file's other documented gaps): a genuinely zero-whitespace terse ternary immediately followed
 //   by `(` or `<` - `cond?(a):(b)` - would be misread as an optional marker and go unflagged. Not
@@ -190,7 +216,7 @@ const CONSTRUCT_PATTERNS: readonly ConstructMatcher[] = [
 	},
 	{ kind: "&&", pattern: /&&/g },
 	{ kind: "??", pattern: /\?\?/g },
-	{ kind: "ternary", pattern: /(?<!\?)\?(?!\.|\?)(?!\s*[:),])(?![(<])/g },
+	{ kind: "ternary", pattern: /(?<!\?)\?(?!\.|\?)(?![:),])(?![(<])/g },
 ];
 
 function lineAt(text: string, index: number): number {

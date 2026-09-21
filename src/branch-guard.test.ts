@@ -193,6 +193,12 @@ describe("checkBranchGuard", () => {
 		]);
 	});
 
+	it('does not flag an identifier that merely contains "switch" as a substring, like toggleswitch(...) (myusage-4xu.67: unlike its siblings if/while - see the verifyIf/motif and meanwhile/dowhile tests above and below - nothing previously pinned that the switch pattern\'s leading \\b is load-bearing; hand-verified: stripping \\b from just the switch pattern left the full suite green before this test existed. The fixture ends its identifier in "switch" with the call\'s "(" immediately after, mirroring motif(...) and meanwhile(...)\'s shape - "switch" alone, without an immediately-following "(", would never even reach the pattern, the same reason myusage-4xu.66 rejected a fixture with only one "/" for the regex-masking guard)', () => {
+		const files = [{ path: "src/index.ts", text: "toggleswitch(3);\n" }];
+
+		expect(checkBranchGuard(files)).toEqual([]);
+	});
+
 	it("flags a classic for loop as a loop violation", () => {
 		const files = [
 			{
@@ -417,6 +423,41 @@ describe("checkBranchGuard", () => {
 		expect(checkBranchGuard(files)).toEqual([
 			{ path: "src/index.ts", kind: "ternary", line: 1, snippet: "?" },
 		]);
+	});
+
+	it("flags a ternary whose consequent is a string literal (myusage-4xu.67: maskNonCode blanks the consequent to spaces before the ternary pattern ever runs, so the old whitespace-tolerant `?`-then-`:` optional-marker exclusion misread the masked gap as a real x?: marker's empty one and swallowed the ternary - checkBranchGuard on this exact source returned [] on origin/main, confirmed by direct execution before this fix)", () => {
+		const files = [
+			{ path: "src/index.ts", text: 'const x = c ? "a" : "b";\n' },
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{ path: "src/index.ts", kind: "ternary", line: 1, snippet: "?" },
+		]);
+	});
+
+	it("flags a ternary whose consequent is a template literal - the same masked-consequent gap as the string case above, spelled with backticks", () => {
+		const files = [
+			{ path: "src/index.ts", text: "const x = c ? `a` : `b`;\n" },
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{ path: "src/index.ts", kind: "ternary", line: 1, snippet: "?" },
+		]);
+	});
+
+	it("still does not flag a real optional property/parameter marker (x?:, x?), x?,) now that the exclusion requires zero whitespace - proves tightening the gap above didn't also break the shapes it was written for", () => {
+		const files = [
+			{
+				path: "src/sources/types.ts",
+				text: "export interface Options {\n\ttimeout?: number;\n}\n",
+			},
+			{
+				path: "src/index.ts",
+				text: "export function f(x?: number, y?) {\n\treturn x;\n}\n",
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([]);
 	});
 
 	it("does not flag ?/&&/?? characters inside a regex literal as real branching constructs (myusage-4xu.65)", () => {

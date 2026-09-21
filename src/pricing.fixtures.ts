@@ -6,6 +6,9 @@
 // older entries carry the same rates). Only the fields the pricing code reads are kept; keys
 // and rates are unmodified. Tests that need a doctored entry spread a real one and say so.
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { connect as netConnect } from "node:net";
 import { fileURLToPath } from "node:url";
 import { afterAll, vi } from "vitest";
 import type { NormalizedUsageRow } from "./sources/types.js";
@@ -386,6 +389,246 @@ export function fakeFetch(body: unknown, init?: ResponseInit) {
 export function forbiddenFetch() {
 	return vi.fn<typeof fetch>(async () => {
 		throw new Error("network access is not allowed here");
+	});
+}
+
+/** A fake fetch that answers every call with a 503, for tests that must reach the network. */
+export function failingFetch() {
+	return vi.fn<typeof fetch>(
+		async () => new Response("unavailable", { status: 503 }),
+	);
+}
+
+export interface RecordingProxy {
+	/** `http://127.0.0.1:<port>`: pass this as HTTPS_PROXY. */
+	url: string;
+	/** Every CONNECT target seen so far, as `host:port`, in arrival order. */
+	connects: string[];
+	/**
+	 * Resolves with the next CONNECT target the proxy receives (or, if one has already
+	 * arrived, the most recent one immediately). Resolves `undefined` if none arrives
+	 * within `timeoutMs`, so a caller never hangs waiting for a proxy that (correctly, or
+	 * because the feature is not wired up yet) is never contacted.
+	 */
+	waitForConnect(timeoutMs: number): Promise<string | undefined>;
+	/** Stops the fixture. Always call this, in a `finally`, even on a failed assertion. */
+	close(): Promise<void>;
+}
+
+/**
+ * A real local HTTP server that plays the part of a forwarding proxy, for tests that must
+ * observe whether a real, unmocked fetch actually routes through HTTPS_PROXY - not just
+ * that some code reads the environment variable. It only handles the CONNECT method (how
+ * an HTTP proxy tunnels HTTPS, per every real proxy client including undici): Node's own
+ * `http.Server` surfaces a CONNECT request through the `connect` event rather than
+ * `request`, with `req.url` set to the tunnel target as `host:port` (verified directly
+ * against Node 26.8.2 here: a manual `CONNECT raw.githubusercontent.com:443` produced
+ * `req.url === "raw.githubusercontent.com:443"`).
+ *
+ * It never forwards the tunnel to the real target: on every CONNECT it records the target,
+ * answers 502, and closes the socket. So a client that correctly honors the proxy never
+ * reaches the public network through this fixture; only a client that ignores the proxy
+ * and goes direct does, which the tests that use this account for explicitly.
+ */
+export function startRecordingProxy(): Promise<RecordingProxy> {
+	return new Promise((resolve, reject) => {
+		const connects: string[] = [];
+		let waiter: ((target: string) => void) | undefined;
+		const server = createServer();
+		server.on("connect", (req, socket) => {
+			// Node's http.Server always sets req.url to the CONNECT target (see the class doc
+			// comment above); an undefined value here would mean Node's own contract changed
+			// under us, so this blows up loudly rather than silently recording an empty string
+			// that would turn into a confusing assertion failure downstream.
+			if (req.url === undefined) {
+				throw new Error(
+					"recording proxy fixture: CONNECT request carried no url",
+				);
+			}
+			const target = req.url;
+			connects.push(target);
+			waiter?.(target);
+			waiter = undefined;
+			socket.write("HTTP/1.1 502 Bad Gateway\r\n\r\n");
+			socket.end();
+		});
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				reject(new Error("recording proxy fixture failed to bind a port"));
+				return;
+			}
+			resolve({
+				url: `http://127.0.0.1:${address.port}`,
+				connects,
+				waitForConnect(timeoutMs) {
+					const [seen] = connects.slice(-1);
+					if (seen !== undefined) return Promise.resolve(seen);
+					return new Promise((res) => {
+						const timer = setTimeout(() => {
+							waiter = undefined;
+							res(undefined);
+						}, timeoutMs);
+						waiter = (target) => {
+							clearTimeout(timer);
+							res(target);
+						};
+					});
+				},
+				close() {
+					return new Promise((res) => server.close(() => res()));
+				},
+			});
+		});
+	});
+}
+
+// Throwaway 10-year self-signed test certificate (generated 2026-09-21 via `openssl req -x509
+// -newkey rsa:2048 -days 3650 -nodes -subj "/CN=raw.githubusercontent.com" -addext
+// "subjectAltName=DNS:raw.githubusercontent.com"`), used only to TLS-terminate
+// startTunnelingProxy's local fake origin below. Not a secret: it signs nothing but this
+// fixture's own loopback server, and a test process trusts it only by pointing
+// NODE_EXTRA_CA_CERTS at it directly (see loadThroughRealProxy.fixtures.ts) - it grants no
+// access to anything real. Committed rather than generated at test time so the suite never
+// depends on `openssl` being present in CI.
+export const TEST_ORIGIN_CERT = `-----BEGIN CERTIFICATE-----
+MIIDTzCCAjegAwIBAgIUSrVe9CdtIA/+cM4+fYZRwCbZaAEwDQYJKoZIhvcNAQEL
+BQAwJDEiMCAGA1UEAwwZcmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbTAeFw0yNjA5
+MjEwODM2MjZaFw0zNjA5MTgwODM2MjZaMCQxIjAgBgNVBAMMGXJhdy5naXRodWJ1
+c2VyY29udGVudC5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC4
+2fLxI/WJOcrU+GkN5gXTgK/TKAs6A8NP89rUHxPdBOaeSJ+qWig/a50seylqRs/q
+CZ/CRthEqeZ51RE7unZZchXxk0I3NGDXYACzXwFGyIJuLOpxtT7g61FhQPBBe3AU
+asjRNBIJlTHq8kQ1L1YIL+IoketkZIJdnAz5cKaa+TAHsWAedJnpzgnuqputwQK7
+nrY3n6V0UzILIqaW02Vn7ZB6UHhThtfHBFBZqFKM2WrkOLTGsE37+ad4t5abGD+i
+twARlJ9jieOtDUlMmkDL/gf0m418WZIpnd3lRn8mYu+Y3zAVoT+Os1W5nz5D4HDz
+hqruH1ton1gZaNNqkfpLAgMBAAGjeTB3MB0GA1UdDgQWBBTISuE4hVmc0orvWcUh
+mz0K+araojAfBgNVHSMEGDAWgBTISuE4hVmc0orvWcUhmz0K+araojAPBgNVHRMB
+Af8EBTADAQH/MCQGA1UdEQQdMBuCGXJhdy5naXRodWJ1c2VyY29udGVudC5jb20w
+DQYJKoZIhvcNAQELBQADggEBADJ0i286te4RBTvY97pGgzPSSdWa5uy2VzhmRq3a
+g0ZPCElszPzQnP7NKRFVJrT8S0MbH3ydSJjV6UCFGw7pn5wJbZTQxuDZX9cWwxwN
+NVKW7GSwiPC8WicVp5M6MOgqI95JsUpmXnd+GnYpKUfz8NYFfWEO6BPifr+Xnffo
+5/AnOGC6azz3JWILlRh9uJrCDW5OdJJle6x4lOdlr87dYWhHHzJmTWvHiuupHG0v
+SDpZDhoUIiXQCzH/rzGy9rjzOLCbMwsOFJR7ztlUlpGJ7disuiV+ua5LzhwsNYwj
+NUSVnjaga33aIdIuhJEH1dyDgJoqwfpYEVPnTXBVP3vuseM=
+-----END CERTIFICATE-----
+`;
+
+export const TEST_ORIGIN_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC42fLxI/WJOcrU
++GkN5gXTgK/TKAs6A8NP89rUHxPdBOaeSJ+qWig/a50seylqRs/qCZ/CRthEqeZ5
+1RE7unZZchXxk0I3NGDXYACzXwFGyIJuLOpxtT7g61FhQPBBe3AUasjRNBIJlTHq
+8kQ1L1YIL+IoketkZIJdnAz5cKaa+TAHsWAedJnpzgnuqputwQK7nrY3n6V0UzIL
+IqaW02Vn7ZB6UHhThtfHBFBZqFKM2WrkOLTGsE37+ad4t5abGD+itwARlJ9jieOt
+DUlMmkDL/gf0m418WZIpnd3lRn8mYu+Y3zAVoT+Os1W5nz5D4HDzhqruH1ton1gZ
+aNNqkfpLAgMBAAECggEAW4zF/5v5nU8cH8Iv9Yw40nlnm0K33LHEZ7K0bF4/7jTh
+Kv945FvmlxJrM36EEnijvJurngKMVeV3mltmP5inyMDyEUUHhGPSmpiXgD7LWQ0x
+W/Ou4UYMsESbd3k8BJJn/hStBL+vN0PHBz+ZfGXHTCK69bDfTkdhMY959YhPW2y4
+tDeRCyDnFrHSYPrIIGDx7C7UMXUrkZST92K/zakPY4CF7ROyM65yYaT8/i6CT/sk
+KsEc3/DGZVqNdJfu2XhNIn78WfFHEngLtQAojOK21db3+C/GZEVbDuNiwXUy394C
+gED3/vXfoZqYdx6+/R6oDWtoNuE4JHTWBS6+jBkI8QKBgQD+fXi9zPRQaVmDRqK4
+JwhypJd/5APPfmMiwBNQquXgGSpDRGIL6icQkx9ajCIWJ+/RBzcym5lWMszQS+66
+TnXH5rC4LsNcrSj1x9MOBkVhDZIoiLDGjNCQ0+hn4vT7yGDiOt2T9ekbHAFVDvnb
+mgU1pmRgorX0v8YXJLxTUzAwPwKBgQC58rUlWXOmdmZaLrfDQkCY8jiRGuO+Dotc
+Ua3vp23mIB6DQZ9+suiSX8R52v/d+0bba/08kGkN6oOv41g4nWfIZckuNsldj+mI
+YUbu71u02W2sKXZXykM9t3VPWwRr/0bbRCQG+qag2QVebkzP7sLR1Y3DT+14eKKH
+d2eVuhiy9QKBgQC7GRgJwoLkE2/h2a6L4PaPAn73YXWDuRG9XKVWqy4x4Y52wfGr
+fMyXnPJyKZBt5ZKkhL+KD2dePh7iDNFIW6KwAuRtpMOwgQYaHH0IVIfxYH7SGhyM
+/L3hnEnDBtLBwYGpEUoSG7rzWVWJaWc8kjG+TcSCX12SwOMr5LAoOoK1FQKBgFb2
+lZVkIlxFn1Sp6LNe9ssQ7TeftccbEj4YzRn52cH4X4zPUgJ1NaPPOhorO+LbM6ZG
++OYsO5WQignmb0n7A6CLSe1dHgut1HA93mi8dM09qrcLpRcltxDUDf8Q+B5yAvdl
+BNxmuSsclBA30aClb2OnVmdzqAHhmVF1nHI/2HFJAoGBAKiLqtPmqfvl3ZzxBPOc
+ON6Fd6YLRJYD6RglgAHRMLwerAh0WW7wDyaBLXl/Ds6pSSrVW0EFweJ3AxAyVOFS
+zKX97FyWWwP3Lkz9FYo8Z3u2VuTMtHlxpFD2gtERxSzc3LsGqSWaQ9VCdgogrC57
+/zAFpYvu65ck/Fvryih8E1e+
+-----END PRIVATE KEY-----
+`;
+
+export interface TunnelingProxy {
+	/** `http://127.0.0.1:<port>`: pass this as HTTPS_PROXY. */
+	url: string;
+	close(): Promise<void>;
+}
+
+/**
+ * A real local HTTP CONNECT proxy that, unlike startRecordingProxy above, actually tunnels:
+ * on CONNECT it opens a real TCP connection to `originPort` (ignoring the CONNECT target the
+ * client asked for - always redirected to this fixture's own local origin, never the real
+ * internet) and pipes bytes in both directions, so a client's TLS handshake and full response
+ * genuinely flow through this proxy process rather than being answered locally. Forwards the
+ * CONNECT handler's `head` buffer (any bytes the client already sent past the CONNECT request
+ * line, e.g. the start of a TLS ClientHello racing ahead of the "200 Connection Established"
+ * reply) - dropping it silently loses those bytes and hangs the handshake, caught by hand
+ * while building this fixture.
+ */
+export function startTunnelingProxy(
+	originPort: number,
+): Promise<TunnelingProxy> {
+	return new Promise((resolve, reject) => {
+		const server = createServer();
+		server.on("connect", (_req, clientSocket, head) => {
+			const upstream = netConnect(originPort, "127.0.0.1", () => {
+				clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+				if (head.length > 0) upstream.write(head);
+				upstream.pipe(clientSocket);
+				clientSocket.pipe(upstream);
+			});
+			upstream.on("error", () => clientSocket.destroy());
+			clientSocket.on("error", () => upstream.destroy());
+		});
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				reject(new Error("tunneling proxy fixture failed to bind a port"));
+				return;
+			}
+			resolve({
+				url: `http://127.0.0.1:${address.port}`,
+				close() {
+					return new Promise((res) => server.close(() => res()));
+				},
+			});
+		});
+	});
+}
+
+export interface FakeOrigin {
+	port: number;
+	close(): Promise<void>;
+}
+
+/**
+ * A real local HTTPS server, TLS-terminated with TEST_ORIGIN_CERT/TEST_ORIGIN_KEY (whose SAN
+ * is raw.githubusercontent.com), answering every request with `body` and a
+ * `content-type: application/json` header. Meant to sit behind startTunnelingProxy: a client
+ * that trusts TEST_ORIGIN_CERT (via NODE_EXTRA_CA_CERTS) and requests the real
+ * PRICE_TABLE_URL through a proxy pointed at this origin genuinely can't tell it apart from
+ * the real host at the TLS layer.
+ */
+export function startFakeOrigin(body: string): Promise<FakeOrigin> {
+	return new Promise((resolve, reject) => {
+		const server = createHttpsServer(
+			{ cert: TEST_ORIGIN_CERT, key: TEST_ORIGIN_KEY },
+			(_req, res) => {
+				res.writeHead(200, { "content-type": "application/json" });
+				res.end(body);
+			},
+		);
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", () => {
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				reject(new Error("fake origin fixture failed to bind a port"));
+				return;
+			}
+			resolve({
+				port: address.port,
+				close() {
+					return new Promise((res) => server.close(() => res()));
+				},
+			});
+		});
 	});
 }
 

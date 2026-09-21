@@ -39,6 +39,21 @@ const defaultWarn: Warn = (message) => {
 	process.stderr.write(`${message}\n`);
 };
 
+/**
+ * Wraps a warn function so it can never make `price()` reject: a caller-injected warn can
+ * throw, and the default warn can raise EPIPE when stderr is a closed pipe. Warning delivery
+ * is best-effort and must never take priority over returning priced rows.
+ */
+function safeWarn(warn: Warn): Warn {
+	return (message) => {
+		try {
+			warn(message);
+		} catch {
+			// Best-effort: a broken warning channel must not crash pricing.
+		}
+	};
+}
+
 /** Token counts are untrusted numbers: anything non-finite or negative counts as zero. */
 function count(tokens: number): number {
 	return Number.isFinite(tokens) && tokens > 0 ? tokens : 0;
@@ -103,7 +118,7 @@ export async function price(
 	options: PriceOptions = {},
 ): Promise<PricedRow[]> {
 	if (rows.length === 0) return [];
-	const warn = options.warn ?? defaultWarn;
+	const warn = safeWarn(options.warn ?? defaultWarn);
 
 	let table: PriceTable | undefined;
 	try {

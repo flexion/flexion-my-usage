@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+	failingFetch,
 	fakeFetch,
 	forbiddenFetch,
 	LITELLM_FIXTURE,
@@ -112,6 +113,108 @@ describe("price: cost model", () => {
 		]);
 		expect(row?.unpriced).toBe(false);
 		expect(row?.notionalCost).toBeCloseTo(15, 9);
+	});
+
+	it("leaves the row unpriced instead of an absurd notional cost when the table entry has an absurd rate (bead example: 1e300)", async () => {
+		const corrupted = {
+			...LITELLM_FIXTURE,
+			"claude-sonnet-4-5": {
+				...LITELLM_FIXTURE["claude-sonnet-4-5"],
+				input_cost_per_token: 1e300,
+			},
+		};
+		const [row] = await priceWith(
+			[
+				usageRow({
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					tokens: { input: M },
+				}),
+			],
+			corrupted,
+		);
+		expect(row).toMatchObject({ notionalCost: 0, unpriced: true });
+	});
+});
+
+describe("price: warn never throws", () => {
+	it("resolves normally even when the injected warn function throws", async () => {
+		// A fetch failure with no cache is the path that reports through warn.
+		const throwingWarn = () => {
+			throw new Error("warn blew up");
+		};
+
+		const out = await price([usageRow({ tokens: { input: 5 } })], {
+			cacheDir: await newCacheDir(),
+			fetch: failingFetch(),
+			warn: throwingWarn,
+		});
+
+		expect(out).toMatchObject([{ notionalCost: 0, unpriced: true }]);
+	});
+
+	it("resolves normally even when the default warn's write to stderr fails (as a closed pipe does with EPIPE)", async () => {
+		const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+		const writeSpy = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation(() => {
+				throw epipe;
+			});
+		try {
+			const out = await price([usageRow({ tokens: { input: 5 } })], {
+				cacheDir: await newCacheDir(),
+				fetch: failingFetch(),
+				// No warn injected: exercises the default warn, which writes to process.stderr.
+			});
+
+			expect(out).toMatchObject([{ notionalCost: 0, unpriced: true }]);
+		} finally {
+			writeSpy.mockRestore();
+		}
+	});
+
+	it("resolves normally even when the injected warn throws from price()'s own backstop (loadPriceTable rejects outright, not just reports a failure)", async () => {
+		// A cacheDir getter that throws blows up loadPriceTable before it enters its own
+		// try/catch, so the rejection reaches price()'s own catch block, which is the only
+		// thing standing between a throwing warn and a rejected price() call.
+		const options = {
+			get cacheDir(): string {
+				throw new Error("boom");
+			},
+			fetch: forbiddenFetch(),
+			warn: () => {
+				throw new Error("warn blew up");
+			},
+		};
+
+		const out = await price([usageRow({ tokens: { input: 5 } })], options);
+
+		expect(out).toMatchObject([{ notionalCost: 0, unpriced: true }]);
+	});
+
+	it("keeps a usable cached price table when the refresh-failed warning throws (a throwing warn must not discard a good cache)", async () => {
+		const cacheDir = await newCacheDir();
+		// Seed a real, usable cache with one successful price() call.
+		await price([usageRow({ tokens: { input: M } })], {
+			cacheDir,
+			fetch: fakeFetch(LITELLM_FIXTURE),
+			warn: () => {},
+		});
+
+		const throwingWarn = () => {
+			throw new Error("warn blew up");
+		};
+
+		const [row] = await price([usageRow({ tokens: { input: M } })], {
+			cacheDir,
+			fetch: failingFetch(),
+			refresh: true,
+			warn: throwingWarn,
+		});
+
+		// The cache is still usable: a throwing warn on the refresh-failed path must not
+		// discard it and must not turn a priced row into an unpriced one.
+		expect(row).toMatchObject({ notionalCost: 3, unpriced: false });
 	});
 });
 

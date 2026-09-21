@@ -22,7 +22,8 @@ Over-time visibility into your own AI coding-agent usage, plus a cost figure eve
 
 - Notional cost = tokens x published per-model rate, with cache-read and cache-write priced at their own rates.
 - Rates come from the LiteLLM public price table, fetched once and cached locally; if offline, fall back to the cached copy.
-- Model-id form varies by provider, so normalize `(provider, model)` to a canonical id for the rate lookup. An unknown model still counts its tokens, gets cost 0, and is flagged.
+- Matching is exact-key, on purpose: each (provider, model) row is looked up under a fixed per-provider prefix rule (for example `vertex_ai/` or `azure/`, or the bare id) and the resulting entry's `litellm_provider` field, with no dot/dash rewriting or prefix stripping. Regional ids carry their own real rates - a Bedrock `us.`-prefixed Claude Sonnet id lists $3.30 per million input tokens against $3.00 for the bare and `global.` ids - so normalizing a prefix away would silently underprice those rows. A provider with no explicit rule falls back to the model maker's own list price by bare model id, labeled as approximate. An unknown model still counts its tokens, gets cost 0, and is flagged.
+- The price table caches to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` when `XDG_CACHE_HOME` is set to an absolute path, else `~/.cache/my-usage/litellm-model-prices.json` (on macOS this is NOT `~/Library/Caches`). The cache has no expiry: once fetched, it's reused indefinitely with no further network call, until the file is deleted or reseeded by hand.
 
 ## Pipeline
 

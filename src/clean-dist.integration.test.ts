@@ -60,9 +60,15 @@ describe("scripts/clean-dist.mjs against a real dist/ on disk", () => {
 		// Two siblings of dist/, untouched by a correct clean - a file AND a directory - this
 		// is what proves the script's blast radius stays scoped to dist/ instead of the whole
 		// cwd. A file-only sibling would not catch a broken clean that over-broadly deletes
-		// every top-level directory (not just dist/) while leaving files alone.
+		// every top-level directory (not just dist/) while leaving files alone. The directory
+		// sibling holds a real file, not just an empty directory: an empty directory can't
+		// distinguish "sibling survives" from "sibling's subtree got recursively wiped", so a
+		// mutation that empties a sibling's contents instead of leaving it alone would still
+		// pass here otherwise. No { recursive: true } on this mkdir (unlike dist/'s, above) -
+		// mkdtemp already created dir itself, so there's no missing parent to create.
 		await writeFile(`${dir}/package.json`, "{}\n");
 		await mkdir(`${dir}/src`);
+		await writeFile(`${dir}/src/index.ts`, "export {};\n");
 
 		const result = runCleanDist(dir);
 
@@ -70,6 +76,7 @@ describe("scripts/clean-dist.mjs against a real dist/ on disk", () => {
 		expect(await exists(`${dir}/dist`)).toBe(false);
 		expect(await exists(`${dir}/package.json`)).toBe(true);
 		expect(await exists(`${dir}/src`)).toBe(true);
+		expect(await exists(`${dir}/src/index.ts`)).toBe(true);
 	});
 
 	it("succeeds when dist/ does not exist yet (a first build)", async () => {

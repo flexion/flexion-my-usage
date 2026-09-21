@@ -293,7 +293,7 @@ const config = {
 				// Each entry is an explicit path on purpose - never a glob - so a new file
 				// cannot be excluded by accident. If one of these grows a decision or a
 				// data transform, move that logic into a covered pure module instead.
-				"src/index.ts", // composition root: wires the pipeline, touches process/console
+				"src/index.ts", // composition root: wires real deps into runCli (src/cli.ts), touches process
 				"src/sources/types.ts", // type-only: compiles to no runtime code
 			]),
 

@@ -18,10 +18,14 @@
 // non-src explicit-path precedent package-rules.ts already established.
 //
 // Identity rule (the exact thing the original bug got wrong): two critical flags are the SAME
-// critical only when they match by `id` (when BOTH sides carry one - a reviewer-assigned
-// per-round label like "F1" is not guaranteed to mean the same defect two rounds running, so
-// an id match only counts when it's a comparison of two ids that both actually exist) or,
-// failing that, by an exact match on `evidence` (trimmed) - the reviewer's own description of
+// critical only when they match by `id` (when BOTH sides carry one that is non-empty - a
+// reviewer-assigned per-round label like "F1" is not guaranteed to mean the same defect two
+// rounds running, so an id match only counts when it's a comparison of two ids that both
+// actually exist AND are non-empty; an empty string is not a real id, so it is treated as
+// absent, same as no id at all - see myusage-4xu.48) or, failing that, by an exact (never
+// substring) match on `evidence` (trimmed, and only when that trimmed evidence is non-empty -
+// blank evidence carries no more identity information than a missing id, so two flags that both
+// merely lack real evidence never count as a match either) - the reviewer's own description of
 // what the flag is about. Merely having a critical in both rounds' lists is not enough; one of
 // the current round's flags must be the SAME flag as one of the previous round's by one of
 // those two keys. No prior-round criticals, or no current-round criticals, can never count as
@@ -59,16 +63,30 @@ function normalizeEvidence(evidence: string): string {
 	return evidence.trim();
 }
 
+/** Whether `flag` carries a real, present `id` - present and non-empty. An empty string is not
+ * a real identifier (it carries no more identity information than a missing one), so it is
+ * treated as absent rather than as a real id value that trivially equals another empty id. */
+function hasId(flag: CriticalFlag): boolean {
+	return flag.id !== undefined && flag.id !== "";
+}
+
 /** Whether `a` and `b` are the SAME critical flag, per the identity rule in this file's
- * header comment: matched by `id` when both sides carry one, otherwise by an exact (trimmed)
- * match on `evidence`. A flag with an `id` on only one side still falls back to `evidence` -
- * a one-sided id proves nothing about identity, since there is no matching id on the other
- * side to compare it against. */
+ * header comment: matched by `id` when both sides carry one that is non-empty, otherwise by an
+ * exact (trimmed, non-empty) match on `evidence`. A flag with a real `id` on only one side
+ * still falls back to `evidence` - a one-sided id proves nothing about identity, since there is
+ * no matching id on the other side to compare it against. Blank (post-trim) evidence never
+ * counts as a match, even against another blank evidence string, for the same reason an empty
+ * id doesn't: no real identity information to compare. */
 export function sameCriticalFlag(a: CriticalFlag, b: CriticalFlag): boolean {
-	if (a.id !== undefined && b.id !== undefined) {
+	if (hasId(a) && hasId(b)) {
 		return a.id === b.id;
 	}
-	return normalizeEvidence(a.evidence) === normalizeEvidence(b.evidence);
+	const normalizedA = normalizeEvidence(a.evidence);
+	const normalizedB = normalizeEvidence(b.evidence);
+	if (normalizedA === "" || normalizedB === "") {
+		return false;
+	}
+	return normalizedA === normalizedB;
 }
 
 /** Whether a critical genuinely "persisted" from the previous round into the current one: the

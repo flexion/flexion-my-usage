@@ -82,6 +82,47 @@ describe("sameCriticalFlag: the identity rule itself", () => {
 
 		expect(sameCriticalFlag(a, b)).toBe(true);
 	});
+
+	it("does not match two flags that both carry an empty-string id, even though evidence differs", () => {
+		// An empty-string id is not `undefined`, so a naive `!== undefined` guard treats it as a
+		// real, present id and matches any two empty-id flags against each other - a false
+		// positive the original bug got wrong (myusage-4xu.48). Empty-string id must be treated
+		// as absent, same as no id at all.
+		const a: CriticalFlag = { id: "", evidence: "totally unrelated defect A" };
+		const b: CriticalFlag = { id: "", evidence: "totally unrelated defect B" };
+
+		expect(sameCriticalFlag(a, b)).toBe(false);
+	});
+
+	it("falls through to evidence when both sides carry an empty-string id and the evidence matches", () => {
+		// Treating an empty-string id as absent must fall through to the evidence comparison,
+		// not just hard-fail the whole match - two empty-id flags with the SAME evidence are
+		// still the same critical by the evidence fallback.
+		const a: CriticalFlag = { id: "", evidence: "same defect, same wording" };
+		const b: CriticalFlag = { id: "", evidence: "same defect, same wording" };
+
+		expect(sameCriticalFlag(a, b)).toBe(true);
+	});
+
+	it("does not match two flags whose evidence both trim to an empty string", () => {
+		// An empty (post-trim) evidence string carries no identity information, same as an
+		// empty id - two flags that both merely lack real evidence must not read as "the same
+		// critical" just because they're both blank (myusage-4xu.48).
+		const a: CriticalFlag = { evidence: "   " };
+		const b: CriticalFlag = { evidence: "" };
+
+		expect(sameCriticalFlag(a, b)).toBe(false);
+	});
+
+	it("does not match when one evidence string is merely a substring of the other", () => {
+		// Pins the evidence comparison as an EXACT match, not `.includes()` - mutation testing
+		// on PR #55 found the entire existing suite stays green even if this comparison is
+		// weakened to a substring check (myusage-4xu.48).
+		const a: CriticalFlag = { evidence: "foo bar" };
+		const b: CriticalFlag = { evidence: "foo bar baz" };
+
+		expect(sameCriticalFlag(a, b)).toBe(false);
+	});
 });
 
 describe("criticalPersisted: the round-over-round check", () => {

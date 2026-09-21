@@ -239,14 +239,36 @@ describe("opencodeSource.discover", () => {
 		expect(await opencodeSource.discover()).toEqual([]);
 	});
 
+	// discover()'s scan-arm catch delegates to handleDiscoverError, same as the override arm
+	// above - but unlike the override arm, nothing here proved that wiring end to end before
+	// this test: the only test reaching this catch (the ELOOP test below) only proves the
+	// *ignorable* outcome, which looks identical under a mutation that swallows every error
+	// unconditionally. `readdir` is injected the same way `stat` is (see `DiscoverOptions`),
+	// so this reaches the real scan-arm catch with no vendor mock and no platform dependence.
+	it("propagates a genuinely unexpected readdir error through the real discover() path (injected readdir, EIO)", async () => {
+		const home = await isolatedHome();
+		vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
+
+		const error = Object.assign(new Error("EIO"), {
+			code: "EIO",
+		}) as NodeJS.ErrnoException;
+		const injectedReaddir = vi.fn().mockRejectedValue(error);
+
+		await expect(
+			opencodeSource.discover({ readdir: injectedReaddir }),
+		).rejects.toThrow(error);
+	});
+
 	// Skipped on Windows: creating a symlink there needs the SeCreateSymbolicLinkPrivilege,
 	// which a non-elevated account only has with Developer Mode on; without it `symlink()`
 	// rejects with EPERM instead of producing the ELOOP this test needs, so it would fail
 	// rather than skip (nodejs/node issue #47783 tracks the same privilege requirement). Not
-	// load-bearing for coverage there either: handleDiscoverError's own tests below cover the
-	// ELOOP decision directly, and skipping every filesystem test in this describe block still
-	// leaves the suite at 100%. CI is ubuntu-latest only, so this guard only matters on a
-	// developer's Windows machine.
+	// load-bearing for coverage on its own: handleDiscoverError's own tests below cover the
+	// ELOOP decision directly. That is NOT true of the three "symlinked databases" tests just
+	// below, though - those skipIf(win32) tests are load-bearing for coverage: force-skipping
+	// them (as a real Windows run would) drops src/sources/opencode.ts to roughly 95%
+	// statements/branches/lines and fails the yarn test coverage gate. CI itself is unaffected
+	// (ubuntu-latest only), so this only bites a developer running the suite on Windows.
 	it.skipIf(process.platform === "win32")(
 		"returns no handles when the data directory is unreadable because of a symlink loop (ELOOP)",
 		async () => {
@@ -509,8 +531,8 @@ describe("opencodeSource.discover", () => {
 			);
 		});
 
-		// Proves discover()'s catch is actually wired to handleDiscoverError, not just that the
-		// pure function decides correctly in isolation: the `stat` seam is injected (see
+		// Proves discover()'s catch actually reaches the named-error path below, not just that
+		// some pure function decides correctly in isolation: the `stat` seam is injected (see
 		// `DiscoverOptions`) so this reaches the real path end to end with no vendor mock (no
 		// `vi.mock` on node:fs/promises), no chmod, and no platform dependence. Anchored on the
 		// override arm rather than the scan: the override's own existence check (see the two
@@ -518,24 +540,55 @@ describe("opencodeSource.discover", () => {
 		// injecting a failure there is guaranteed to land on it regardless of what's on disk.
 		// (The scan arm calls the same seam too, but only for symlink-named candidates - see
 		// "symlinked databases" above - so it is not the simplest place to prove this.)
-		// Decision record: bead myusage-pqm.
-		it("propagates a genuinely unexpected stat error through the real discover() path (injected stat, EIO)", async () => {
-			// Sandboxed like every other test here even though the injected stat should make the
-			// real filesystem irrelevant: if a future regression stops discover() from honoring the
-			// injected dependency, the fallback must land on a throwaway path, never the real home
-			// or opencode database.
+		//
+		// The user named this exact path, so every stat() failure other than ENOENT - not just
+		// EIO, but also codes like EACCES and ENOTDIR that the scan arm below treats as merely
+		// ignorable (see IGNORABLE_DISCOVER_CODES) - must become this same named, actionable
+		// error instead of silently returning [] via handleDiscoverError: an explicitly
+		// configured OPENCODE_DB that cannot be read is never "opencode just isn't installed".
+		// Decision record: bead myusage-pqm (EIO surfaces), extended by myusage-4xu.35 (every
+		// other non-ENOENT code is treated the same way, not just EIO).
+		it.each(["EIO", "EACCES", "ENOTDIR"])(
+			"throws a named error identifying OPENCODE_DB and the resolved path when stat fails with %s",
+			async (code) => {
+				// Sandboxed like every other test here even though the injected stat should make
+				// the real filesystem irrelevant: if a future regression stops discover() from
+				// honoring the injected dependency, the fallback must land on a throwaway path,
+				// never the real home or opencode database.
+				await isolatedHome();
+				const elsewhere = await sandbox();
+				const overridePath = join(elsewhere, "override.db");
+				vi.stubEnv("OPENCODE_DB", overridePath);
+
+				const error = Object.assign(new Error(code), {
+					code,
+				}) as NodeJS.ErrnoException;
+				const injectedStat = vi.fn().mockRejectedValue(error);
+
+				await expect(
+					opencodeSource.discover({ stat: injectedStat }),
+				).rejects.toThrow(
+					`OPENCODE_DB is set to ${overridePath} but it could not be read: ${code}`,
+				);
+			},
+		);
+
+		// Same named-error path as above, but for a stat() failure with no .code at all (a bare
+		// Error, or a throw that never went through Node's fs/promises layer) - the message falls
+		// back to the raw error message instead of an errno code.
+		it("throws a named error using the raw message when stat fails with no .code at all", async () => {
 			await isolatedHome();
 			const elsewhere = await sandbox();
-			vi.stubEnv("OPENCODE_DB", join(elsewhere, "override.db"));
+			const overridePath = join(elsewhere, "override.db");
+			vi.stubEnv("OPENCODE_DB", overridePath);
 
-			const error = Object.assign(new Error("EIO"), {
-				code: "EIO",
-			}) as NodeJS.ErrnoException;
-			const injectedStat = vi.fn().mockRejectedValue(error);
+			const injectedStat = vi.fn().mockRejectedValue(new Error("boom"));
 
 			await expect(
 				opencodeSource.discover({ stat: injectedStat }),
-			).rejects.toThrow(error);
+			).rejects.toThrow(
+				`OPENCODE_DB is set to ${overridePath} but it could not be read: boom`,
+			);
 		});
 	});
 });
@@ -1053,17 +1106,14 @@ describe("opencodeSource.read", () => {
 		// these prove the discrimination directly, via an injected DatabaseSyncCtor, so the
 		// property holds independent of chmod, root, or platform.
 		describe("classifies read failures correctly (injected DatabaseSyncCtor)", () => {
-			// A fake DatabaseSync-shaped constructor whose open throws the given error.
+			// A fake DatabaseSync-shaped constructor whose open throws the given error. The
+			// constructor always throws before any instance method would be called, so the fake
+			// declares none - readRows()'s call site only ever needs the constructor itself here.
 			function fakeDatabaseSyncCtor(error: Error) {
 				class FakeDatabaseSync {
 					constructor(_location: string, _options: unknown) {
 						throw error;
 					}
-					exec(): void {}
-					prepare(): never {
-						throw new Error("unreachable: constructor always throws first");
-					}
-					close(): void {}
 				}
 				return FakeDatabaseSync as unknown as typeof DatabaseSync;
 			}
@@ -1084,7 +1134,7 @@ describe("opencodeSource.read", () => {
 				).rejects.toBe(otherError);
 			});
 
-			it("rewrites the failure into a named error, naming the path and the remedy, when it is genuinely SQLITE_READONLY_DIRECTORY", async () => {
+			it("rewrites the failure into a named error, naming the path and the remedy, and chains the original error as .cause, when it is genuinely SQLITE_READONLY_DIRECTORY", async () => {
 				const dir = await sandbox();
 				const path = join(dir, "opencode.db");
 				const readonlyDirectoryError = Object.assign(
@@ -1092,11 +1142,29 @@ describe("opencodeSource.read", () => {
 					{ errcode: 1544 },
 				);
 
-				await expect(
-					opencodeSource.read(handleFor(path), {
+				// Two halves, both pinned: the cause ("its directory is not writable...") and the
+				// remedy ("Copy the database..."). A source change that drops the remedy sentence
+				// (the whole reason this is a named error and not just a rethrow) must fail here,
+				// not just the cause half.
+				let caught: unknown;
+				try {
+					await opencodeSource.read(handleFor(path), {
 						DatabaseSyncCtor: fakeDatabaseSyncCtor(readonlyDirectoryError),
-					}),
-				).rejects.toThrow(`Cannot read ${path}: its directory is not writable`);
+					});
+				} catch (error) {
+					caught = error;
+				}
+
+				expect(caught).toBeInstanceOf(Error);
+				const message = (caught as Error).message;
+				expect(message).toContain(
+					`Cannot read ${path}: its directory is not writable`,
+				);
+				expect(message).toContain(
+					"Copy the database (and any -wal/-shm files beside it) to a writable location and read from there.",
+				);
+				// The original low-level SQLite error is chained, not dropped.
+				expect((caught as Error).cause).toBe(readonlyDirectoryError);
 			});
 		});
 	});

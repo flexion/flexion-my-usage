@@ -35,6 +35,14 @@ describe("measureToggleState", () => {
 	});
 
 	it("leaves the title undefined when that measure's payload never loaded", () => {
+		// render.ts's own wiring never passes a null payload here - readJson always resolves
+		// panel-cost-data/panel-tokens-data to real parsed JSON, since render.ts always embeds
+		// both scripts. This instead guards measureToggleState's own documented general
+		// contract: its `payload` parameter is typed `Record<Measure, DayDetailPayload |
+		// null>`, and `MeasureToggleState.title`'s own doc comment calls out the null case by
+		// name. This module is deliberately its own independently-testable unit (see this
+		// file's header comment), not a mirror restricted to what render.ts's exact call
+		// sites can reach (myusage-4xu.43).
 		const state = measureToggleState("cost", { cost: null, tokens: null });
 
 		expect(state.title).toBeUndefined();
@@ -51,6 +59,14 @@ describe("findDayDetail", () => {
 		expect(findDayDetail(days, "2026-09-08")).toBe(days[1]);
 	});
 
+	// render.ts's own wiring can never call findDayDetail with a day that has no match, or
+	// with an empty list: the cost and tokens panels always share the same day.day values
+	// (both come from stackByModel on the same input days), and a bar can only be clicked -
+	// dispatching a real day.day - when at least one exists to click. The next two tests
+	// instead guard findDayDetail's own documented general contract ("or undefined if there
+	// is none") - this module is deliberately its own independently-testable unit (see this
+	// file's header comment), not a mirror restricted to what render.ts's exact call sites
+	// can reach (myusage-4xu.43).
 	it("returns undefined when no day matches", () => {
 		expect(findDayDetail(days, "2026-09-09")).toBeUndefined();
 	});

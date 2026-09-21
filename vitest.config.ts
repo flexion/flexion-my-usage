@@ -227,11 +227,17 @@ const config = {
 			// decision logic behind the runtime check that a *.fixtures.* file excluded below
 			// is actually test support (see that file's header and
 			// scripts/check-fixtures-guard.mjs, wired into `yarn lint`).
+			//
+			// scripts/branch-guard.ts (bead myusage-qx9) is the same shape once more: the pure
+			// decision logic behind the runtime check that every humble-object path below
+			// actually stays logic-free (see that file's header and
+			// scripts/check-branch-guard.mjs, wired into `yarn lint`).
 			include: requireCoveragePattern([
 				"src/**/*.ts",
 				"scripts/package-rules.ts",
 				"scripts/critical-persisted.ts",
 				"scripts/fixtures-guard.ts",
+				"scripts/branch-guard.ts",
 			]),
 
 			exclude: explicitPaths([

@@ -131,10 +131,11 @@ export function compareRows(
 	return a.messageId < b.messageId ? -1 : a.messageId > b.messageId ? 1 : 0;
 }
 
-// discover() takes an injectable `stat`, the same seam shape as the price table's injected
-// `fetch`: a named field on an options object, defaulting to the real dependency when
-// omitted. This lives on opencode's own type, not on the shared `UsageSource.discover()`
-// signature in types.ts, so every other source's `discover()` stays zero-arg.
+// discover() takes two injectable seams, `stat` and `readdir`, the same seam shape as the
+// price table's injected `fetch`: named fields on an options object, each defaulting to its
+// real dependency when omitted. These live on opencode's own type, not on the shared
+// `UsageSource.discover()` signature in types.ts, so every other source's `discover()` stays
+// zero-arg.
 export interface DiscoverOptions {
 	stat?: typeof stat;
 	readdir?: typeof readdir;
@@ -246,12 +247,14 @@ export const opencodeSource = {
 				// stat() failure (EACCES on the file itself, ENOTDIR from a parent path
 				// component that is actually a file, EIO, ...) means this override is broken,
 				// not "opencode isn't installed" - it must surface as a named, actionable error
-				// too, never fall through to handleDiscoverError's silent [].
-				const code = (error as NodeJS.ErrnoException).code;
+				// too, never fall through to handleDiscoverError's silent []. A real errno
+				// error's own message already embeds its code (e.g. "EACCES: permission
+				// denied, stat '/x'"), so no separate `.code` fallback is needed here.
 				throw new Error(
 					`OPENCODE_DB is set to ${overridePath} but it could not be read: ${
-						code ?? (error as Error).message
+						(error as Error).message
 					}`,
+					{ cause: error },
 				);
 			}
 			if (info.isDirectory()) {

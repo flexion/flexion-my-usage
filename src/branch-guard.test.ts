@@ -280,7 +280,7 @@ describe("checkBranchGuard", () => {
 		]);
 	});
 
-	it("does not flag .forEach( or .map( - a method call is not a for/while/do keyword", () => {
+	it('does not flag .forEach( or .map( - rejected by the \\s*\\( requirement right after the keyword (forEach\'s next character is "E", not "(" or whitespace), not by a word-boundary check (myusage-4xu.69: the for alternative\'s trailing \\b was dead code, and this fixture is the proof - it stays green even with that \\b deleted, confirmed by mutation)', () => {
 		const files = [
 			{
 				path: "src/index.ts",
@@ -291,9 +291,9 @@ describe("checkBranchGuard", () => {
 		expect(checkBranchGuard(files)).toEqual([]);
 	});
 
-	it('does not flag "meanwhile" or "dowhile" as while/do keywords (myusage-4xu.65: the original fixture - const meanwhile = 1; / const todo = 2; - never reached the pattern\'s \\b guards at all, since neither line had the ( the loop pattern requires; this shape does, mirroring the sibling "if" test\'s verifyIf(...)/motif(...) fixture above - hand-verified: removing both \\b boundaries from the loop pattern makes this fail, where the original fixture stayed green)', () => {
+	it('does not flag "meanwhile" or "todo {" as while/do keywords (myusage-4xu.65: the original fixture - const meanwhile = 1; / const todo = 2; - never reached the pattern\'s \\b guards at all, since neither line had the ( or { the loop pattern requires; meanwhile(3) does, mirroring the sibling "if" test\'s verifyIf(...)/motif(...) fixture above. myusage-4xu.69: the do half of THIS test was itself inert even after that fix - the dowhile(3) fixture it used can never reach do\'s pattern at all, since do requires a following {, not (, so only the meanwhile half ever did real work; confirmed by mutation - removing do\'s leading \\b left dowhile(3) green. Swapped in todo { instead: "do" inside "todo" fails the leading \\b the same way "while" inside "meanwhile" does, and removing do\'s leading \\b now makes this fixture fail with a false-positive "do {" match - the same hand-verification meanwhile\'s while-boundary already had)', () => {
 		const files = [
-			{ path: "src/index.ts", text: "meanwhile(3);\ndowhile(3);\n" },
+			{ path: "src/index.ts", text: "meanwhile(3);\ntodo {\n\tx();\n}\n" },
 		];
 
 		expect(checkBranchGuard(files)).toEqual([]);

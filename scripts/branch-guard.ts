@@ -149,12 +149,19 @@ interface ConstructMatcher {
 // - "loop": `for (`/`while (` (one alternation, since the bead groups "loops" as a single
 //   category, not three), `for await (` (the async form of a for-of loop - myusage-4xu.63: the
 //   plain `for`/`while` alternation alone doesn't match this, since the `await` keyword sits
-//   between `for` and `(`, and the original pattern only ever allowed whitespace there; `\bfor\b`
-//   below matches the "for" keyword on its own word boundary, then an optional `(?:\s+await)?`
-//   consumes a real `for await`'s extra keyword before the same `\s*\(` every other loop shape
-//   already used), or `do {` - the closing `while (...)` of a do/while loop also matches the
-//   `while (` half of this pattern independently, so a single do-while loop is reported as two
-//   violations (its `do {` and its `while (...)`), both true statements about the file.
+//   between `for` and `(`, and the original pattern only ever allowed whitespace there; `\bfor`
+//   below matches the "for" keyword on its own leading word boundary, then an optional
+//   `(?:\s+await)?` consumes a real `for await`'s extra keyword before the same `\s*\(` every
+//   other loop shape already used (myusage-4xu.69: the pattern originally also carried a trailing
+//   `\b` right after "for" - `\bfor\b(?:\s+await)?\s*\(` - but it was dead code: whatever
+//   character follows "for" in any successful match is already whitespace or `(`, both non-word
+//   characters, so the trailing `\b` never excluded anything the `\s*\(` requirement didn't
+//   already exclude on its own - confirmed by a brute-force differential run of both regex forms
+//   against ~158k generated inputs, zero behavioral difference; removed as dead code, matching the
+//   `.trim()` precedent below in checkBranchGuard), or `do {` - the closing `while (...)` of a
+//   do/while loop also matches the `while (` half of this pattern independently, so a single
+//   do-while loop is reported as two violations (its `do {` and its `while (...)`), both true
+//   statements about the file.
 //   `for...of` and `for...in` loops need no dedicated pattern of their own: `for (` matches
 //   before this scan ever looks inside the parens, so both shapes are already caught by the same
 //   classic-`for` alternative - src/branch-guard.test.ts (myusage-4xu.63) now pins that with its
@@ -231,7 +238,7 @@ const CONSTRUCT_PATTERNS: readonly ConstructMatcher[] = [
 	{ kind: "switch", pattern: /\bswitch\s*\(/g },
 	{
 		kind: "loop",
-		pattern: /\bfor\b(?:\s+await)?\s*\(|\bwhile\s*\(|\bdo\b\s*\{/g,
+		pattern: /\bfor(?:\s+await)?\s*\(|\bwhile\s*\(|\bdo\b\s*\{/g,
 	},
 	{ kind: "&&", pattern: /&&/g },
 	{ kind: "??", pattern: /\?\?/g },

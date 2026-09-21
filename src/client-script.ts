@@ -85,13 +85,14 @@ export interface DomGetElementByIdLike {
  * Reads and `JSON.parse`s the payload embedded in the element with id `id` (see render.ts's
  * `embedJson`). Returns `null` - never throws - on any of three distinct paths: no element with
  * that id, an element whose `textContent` is empty, or content that fails `JSON.parse` (a
- * truncated or corrupt embedded payload).
+ * truncated or corrupt embedded payload). All three reach `null` through `JSON.parse`'s own
+ * throw, caught below, rather than a separate presence guard - one path to `null` to keep
+ * correct, not two.
  */
 export function readJson(doc: DomGetElementByIdLike, id: string): unknown {
 	const el = doc.getElementById(id);
-	if (!el?.textContent) return null;
 	try {
-		return JSON.parse(el.textContent);
+		return JSON.parse(el?.textContent ?? "");
 	} catch {
 		return null;
 	}

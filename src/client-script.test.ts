@@ -80,15 +80,21 @@ describe("findDayDetail", () => {
 	});
 });
 
+/**
+ * A minimal `document` fake whose `getElementById` returns `el` only when the requested id
+ * matches `expectedId`, `null` otherwise - so a call site that hardcodes the wrong element id
+ * fails these tests instead of silently getting the right element back anyway.
+ */
 function fakeGetElementByIdDoc(
+	expectedId: string,
 	el: { textContent: string } | null,
 ): DomGetElementByIdLike {
-	return { getElementById: () => el };
+	return { getElementById: (id) => (id === expectedId ? el : null) };
 }
 
 describe("readJson", () => {
 	it("parses and returns the JSON payload from the element's textContent", () => {
-		const doc = fakeGetElementByIdDoc({
+		const doc = fakeGetElementByIdDoc("panel-cost-data", {
 			textContent: '{"title":"Daily cost","days":[]}',
 		});
 
@@ -102,22 +108,25 @@ describe("readJson", () => {
 	// distinct way render.ts's embedded payload can fail to reach measureToggleState as parsed
 	// data once the HTML is written and opened (myusage-4xu.7) - a page saved or served without
 	// its data script, a script tag present but emptied, or a payload truncated mid-write. None
-	// of the three throws past readJson; each is pinned separately since a fix to one (e.g.
-	// tightening the `!el?.textContent` guard) must not silently paper over another.
+	// throws past readJson. Their kill sets aren't independent, though: readJson reaches `null`
+	// on all three through the same `JSON.parse` throw, so "empty textContent"'s kill set is a
+	// strict subset of "missing element"'s. They're kept as three tests because each documents a
+	// distinct real-world input a reader might otherwise assume readJson mishandles, not because
+	// each is an independent proof point.
 	it("returns null when no element with that id exists", () => {
-		const doc = fakeGetElementByIdDoc(null);
+		const doc = fakeGetElementByIdDoc("panel-cost-data", null);
 
 		expect(readJson(doc, "panel-cost-data")).toBeNull();
 	});
 
 	it("returns null when the element's textContent is empty", () => {
-		const doc = fakeGetElementByIdDoc({ textContent: "" });
+		const doc = fakeGetElementByIdDoc("panel-cost-data", { textContent: "" });
 
 		expect(readJson(doc, "panel-cost-data")).toBeNull();
 	});
 
 	it("returns null, not a thrown error, when textContent is truncated/corrupt JSON", () => {
-		const doc = fakeGetElementByIdDoc({
+		const doc = fakeGetElementByIdDoc("panel-cost-data", {
 			textContent: '{"title": "Daily cost", "days": [',
 		});
 

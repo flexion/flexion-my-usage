@@ -83,7 +83,7 @@ export function sameCriticalFlag(a: CriticalFlag, b: CriticalFlag): boolean {
 	}
 	const normalizedA = normalizeEvidence(a.evidence);
 	const normalizedB = normalizeEvidence(b.evidence);
-	if (normalizedA === "" || normalizedB === "") {
+	if (normalizedA === "" && normalizedB === "") {
 		return false;
 	}
 	return normalizedA === normalizedB;

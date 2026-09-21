@@ -9,10 +9,17 @@
 	// inside the package it checks defeats the point (round-2 review). Listed here instead,
 	// the same way vitest.config.ts already is, so it still gets type-checked without being
 	// part of the build.
+	//
+	// scripts/critical-persisted.ts (bead myusage-4xu.25) is the same shape - non-product
+	// tooling for the bead-drain automation loop - listed here for the same reason.
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"rootDir": ".",
 		"noEmit": true
 	},
-	"include": ["vitest.config.ts", "scripts/package-rules.ts"]
+	"include": [
+		"vitest.config.ts",
+		"scripts/package-rules.ts",
+		"scripts/critical-persisted.ts"
+	]
 }

@@ -18,8 +18,11 @@
 //      module depends on isn't test support, no matter what it's named.
 //   2. A *.fixtures.* file that clears check 1 must still prove it's actually test support, not
 //      merely unreferenced by anything this scan found: it must either import "vitest" itself
-//      (src/pricing.fixtures.ts does), or be referenced by a real *.test.*-named file - not
-//      merely another *.fixtures.* file - among the references this scan found. That covers
+//      (src/pricing.fixtures.ts does), or be referenced by a real *.test.*-named file, or by a
+//      non-fixtures file under a __tests__/ or __mocks__/ directory (myusage-4xu.58) - never by
+//      merely another *.fixtures.* file, whichever of those two shapes it's named or placed
+//      like (myusage-4xu.60: a *.fixtures.* file sitting under __tests__/ or __mocks__/ still
+//      doesn't count - see isRealTestFile below). The *.test.*-named case covers
 //      src/load-price-table-via-proxy.fixtures.ts, which imports no test framework at all (it's
 //      a standalone tsx subprocess entry point) but is handed to a real subprocess via
 //      `new URL("./load-price-table-via-proxy.fixtures.ts", import.meta.url)` in
@@ -156,8 +159,19 @@ function isUnderTestSupportDir(path: string): boolean {
 	return segments.some((segment) => TEST_SUPPORT_DIR.has(segment));
 }
 
+// bead myusage-4xu.60: isUnderTestSupportDir's own comment above already argues that a bare
+// fixtures/ directory proves a file is test SUPPORT, not a REAL test able to verify another
+// fixtures file - but myusage-4xu.58's directory widening didn't actually enforce that against
+// a *.fixtures.* file sitting under __tests__/ or __mocks__/ instead. Without the isFixturesFile
+// exclusion below, src/__tests__/a.fixtures.ts could "vouch for" src/b.fixtures.ts's test-only
+// status - exactly the shape this file's own header rule forbids ("referenced by a real
+// *.test.*-named file - not merely another *.fixtures.* file"), and a.fixtures.ts never runs as
+// a test itself (vitest.config.ts's test.include is src/**/*.test.*, which it doesn't match).
 function isRealTestFile(path: string): boolean {
-	return /\.test\./.test(posix.basename(path)) || isUnderTestSupportDir(path);
+	return (
+		!isFixturesFile(path) &&
+		(/\.test\./.test(posix.basename(path)) || isUnderTestSupportDir(path))
+	);
 }
 
 export type FixturesGuardViolation =
@@ -169,8 +183,9 @@ export type FixturesGuardViolation =
 	  }
 	| {
 			kind: "unverified-fixtures";
-			/** A *.fixtures.* file that imports no test framework and has no real *.test.*
-			 * referencer this scan could find, so it can't be trusted to stay excluded from
+			/** A *.fixtures.* file that imports no test framework and has no real test
+			 * referencer (a *.test.*-named file, or a non-fixtures file under __tests__/ or
+			 * __mocks__/) this scan could find, so it can't be trusted to stay excluded from
 			 * coverage. */
 			fixturesFile: string;
 	  };
@@ -182,7 +197,7 @@ export function formatViolation(violation: FixturesGuardViolation): string {
 	if (violation.kind === "banned-import") {
 		return `${violation.importer} imports ${violation.fixturesFile}, a *.fixtures.* file - production code may not import test support (AGENTS.md: "Don't give production code those names")`;
 	}
-	return `${violation.fixturesFile} cannot be verified as test-only: it does not import "vitest", and no real *.test.* file references it`;
+	return `${violation.fixturesFile} cannot be verified as test-only: it does not import "vitest", and no real *.test.* file or __tests__/__mocks__-directory file references it`;
 }
 
 /** Every violation of the two rules this file's header describes, found by scanning every

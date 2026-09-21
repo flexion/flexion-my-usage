@@ -981,37 +981,19 @@ function fakeDayBar(day: string): FakeDayBar {
 }
 
 /**
- * `runClientScript`'s optional knobs for reaching the defensive guards a plain run can't:
- * `dayBar` overrides which day the fake `.day-bar` reports as its own `data-day` (default:
- * "2026-09-07", the fixture's busiest day), and `omitIds` drops one or more element ids from the
- * fake `document` entirely - `getElementById` then returns `null` for that id, exactly as a real
- * `document.getElementById` does for an id no element carries, whether that's because the page
- * was served without that element or because something upstream removed it. `initialTitle` seeds
- * the fake `#chart-title`'s starting text so a guard that's SUPPOSED to skip the write leaves an
- * unmistakable, deliberately-chosen value behind instead of a value that could coincidentally
- * match what a correct write would have produced anyway.
- */
-interface RunClientScriptOptions {
-	dayBar?: string;
-	omitIds?: string[];
-	initialTitle?: string;
-}
-
-/**
  * Runs the ACTUAL `<script>` block extracted from real `renderHtml(html)` output in a `node:vm`
  * context, against a fake DOM built from plain objects (never jsdom, per this repo's
  * zero-dependency convention). The two data elements (`panel-cost-data`/`panel-tokens-data`) hand
  * back the page's own real embedded JSON text, so `readJson`'s real call site - untyped and
  * unexercised before myusage-cq8 - parses genuine data, not a test-authored stand-in for it. The
- * day bar is fixed to "2026-09-07", the fixture's busiest day (see `buildWindow`), unless
- * overridden via `opts.dayBar`.
+ * day bar is fixed to "2026-09-07", the fixture's busiest day (see `buildWindow`).
  */
-function runClientScript(html: string, opts: RunClientScriptOptions = {}) {
+function runClientScript(html: string) {
 	const panels = { cost: { hidden: false }, tokens: { hidden: true } };
 	const buttons = { cost: fakeButton(), tokens: fakeButton() };
-	const titleEl = { textContent: opts.initialTitle ?? "Daily cost" };
+	const titleEl = { textContent: "Daily cost" };
 	const detailEl = fakeDetail();
-	const dayBar = fakeDayBar(opts.dayBar ?? "2026-09-07");
+	const dayBar = fakeDayBar("2026-09-07");
 
 	const elementsById: Record<string, unknown> = {
 		"panel-cost": panels.cost,
@@ -1023,7 +1005,6 @@ function runClientScript(html: string, opts: RunClientScriptOptions = {}) {
 		"panel-cost-data": { textContent: panelDataText(html, "panel-cost") },
 		"panel-tokens-data": { textContent: panelDataText(html, "panel-tokens") },
 	};
-	for (const id of opts.omitIds ?? []) delete elementsById[id];
 
 	const document = {
 		getElementById(id: string) {
@@ -1156,93 +1137,5 @@ describe("renderHtml: client script execution (vm)", () => {
 
 		expect(detailEl.hidden).toBe(true);
 		expect(detailEl.children).toHaveLength(0);
-	});
-
-	// myusage-6j1: PR #51's reviewer (myusage-9en) found the keydown handler and hideDetail's
-	// hide-and-clear body, but four more defensive guards still read as covered without ever
-	// running their TRUE leg (the short-circuit itself): showDay's `!found` after a day that isn't
-	// in the payload, hideDetail's own `!detailEl`, the `!data` half of showDay's
-	// `!data || !detailEl`, and both halves of setMeasure's `titleEl && toggle.title`. Each test
-	// below drives the real call site into exactly the state that guard exists for and asserts the
-	// early return/skip - not just "nothing crashed" but that the SPECIFIC write past the guard
-	// never happened - so deleting or weakening that one guard (and no other change) fails that one
-	// test. Hand-verified per AGENTS.md's mutation-check convention: temporarily deleting/weakening
-	// each guard in src/render.ts made exactly the matching test below fail with a real
-	// TypeError/assertion mismatch, not a silent pass.
-
-	it("skips the drill-down when the clicked day has no matching entry in the active payload (showDay's !found guard)", () => {
-		const html = renderHtml(buildWindow());
-		// "2026-12-31" is not one of buildWindow()'s days, so findDayDetail finds nothing for it
-		// even though the cost payload itself loaded fine - the `!found` guard's own trigger,
-		// distinct from the `!data` guard covered separately below.
-		const { detailEl, dayBar } = runClientScript(html, {
-			dayBar: "2026-12-31",
-		});
-
-		expect(() => dayBar.dispatchClick()).not.toThrow();
-		expect(detailEl.hidden).toBe(true);
-		expect(detailEl.children).toHaveLength(0);
-	});
-
-	it("no-ops instead of throwing when #day-detail is missing from the DOM (hideDetail's !detailEl guard)", () => {
-		const html = renderHtml(buildWindow());
-		// Omitting "day-detail" makes detailEl null. setMeasure calls hideDetail() unconditionally
-		// on every measure change, so clicking either toggle button reaches hideDetail's own
-		// `if (!detailEl) return;` - not showDay's separate `!detailEl` check inside
-		// `!data || !detailEl`, which this scenario never even reaches.
-		const { buttons } = runClientScript(html, { omitIds: ["day-detail"] });
-
-		expect(() => buttons.tokens.dispatchClick()).not.toThrow();
-		expect(buttons.tokens.classList.active).toBe(true);
-		expect(buttons.tokens.ariaPressed).toBe("true");
-	});
-
-	it("skips the drill-down when the active measure's own payload never loaded (showDay's !data guard)", () => {
-		const html = renderHtml(buildWindow());
-		// Omitting "panel-cost-data" makes readJson return null for it (its own documented
-		// "no element with that id" path - see client-script.ts), so payload.cost is null while
-		// state.measure is still "cost" (the default). #day-detail stays present and untouched,
-		// proving showDay returned before ever calling findDayDetail/renderDayDetail, not merely
-		// that nothing crashed.
-		const { detailEl, dayBar } = runClientScript(html, {
-			omitIds: ["panel-cost-data"],
-		});
-
-		expect(() => dayBar.dispatchClick()).not.toThrow();
-		expect(detailEl.hidden).toBe(true);
-		expect(detailEl.children).toHaveLength(0);
-	});
-
-	it("skips the title update instead of throwing when #chart-title is missing from the DOM (titleEl half of setMeasure's guard)", () => {
-		const html = renderHtml(buildWindow());
-		// Tokens' payload is present and titled, so toggle.title is truthy here - isolating the
-		// titleEl half of `titleEl && toggle.title` from the toggle.title half covered by the next
-		// test. Assigning to a null titleEl would throw; the toggle otherwise completing (buttons,
-		// panels) proves the guard skipped the write and let execution continue, not that an
-		// uncaught throw happened to leave everything else looking untouched.
-		const { buttons, panels } = runClientScript(html, {
-			omitIds: ["chart-title"],
-		});
-
-		expect(() => buttons.tokens.dispatchClick()).not.toThrow();
-		expect(panels.tokens.hidden).toBe(false);
-		expect(buttons.tokens.classList.active).toBe(true);
-	});
-
-	it("leaves the chart title untouched when the active measure's payload never loaded (toggle.title half of setMeasure's guard)", () => {
-		const html = renderHtml(buildWindow());
-		// Omitting "panel-cost-data" makes payload.cost null, so measureToggleState's
-		// `title: payload[measure]?.title` is undefined for the "cost" click below - a falsy
-		// toggle.title with titleEl very much present, isolating this half from the titleEl half
-		// above. "UNTOUCHED" is a value a correct write could never coincidentally produce, so this
-		// fails loudly (`undefined` !== "UNTOUCHED") if the guard stops checking toggle.title.
-		const { buttons, titleEl } = runClientScript(html, {
-			omitIds: ["panel-cost-data"],
-			initialTitle: "UNTOUCHED",
-		});
-
-		buttons.cost.dispatchClick();
-
-		expect(titleEl.textContent).toBe("UNTOUCHED");
 	});
 });

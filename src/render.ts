@@ -459,6 +459,18 @@ h2 { font-size: 16px; margin: 0; font-weight: 600; }
 const CLIENT_SCRIPT = `(function () {
   "use strict";
 
+  // Nothing below guards against a missing element or an unmatched day: renderHtml emits every
+  // id this script looks up unconditionally - "panel-cost"/"panel-tokens" and their "-data"
+  // siblings (renderMeasurePanel's own <div id> and embedJson call), "measure-cost"/
+  // "measure-tokens", "chart-title" and "day-detail" (renderHtml's own static markup) - and
+  // every ".day-bar"'s data-day has a matching entry in both panels' payloads, because both
+  // panels' days come from one stackByModel(days, measure) call over the same input days array
+  // (ModelStacks.days is "one entry per input DayBucket, in input order," per chart-model.ts).
+  // This script is also the last node in <body>, so the DOM it queries is always fully parsed by
+  // the time it runs. Anything capable of tampering with the DOM before this script executes
+  // ships inside the same self-contained document and could tamper with the script just as
+  // easily, so there is no boundary here worth defending with a guard.
+
   ${measureToggleState.toString()}
 
   ${findDayDetail.toString()}
@@ -482,7 +494,6 @@ const CLIENT_SCRIPT = `(function () {
   var detailEl = document.getElementById("day-detail");
 
   function hideDetail() {
-    if (!detailEl) return;
     detailEl.hidden = true;
     while (detailEl.firstChild) detailEl.removeChild(detailEl.firstChild);
   }
@@ -493,21 +504,24 @@ const CLIENT_SCRIPT = `(function () {
     var keys = ["cost", "tokens"];
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i];
-      if (panels[key]) panels[key].hidden = toggle.panelHidden[key];
-      if (buttons[key]) {
-        buttons[key].classList.toggle("active", toggle.buttonActive[key]);
-        buttons[key].setAttribute("aria-pressed", toggle.buttonAriaPressed[key]);
-      }
+      panels[key].hidden = toggle.panelHidden[key];
+      buttons[key].classList.toggle("active", toggle.buttonActive[key]);
+      buttons[key].setAttribute("aria-pressed", toggle.buttonAriaPressed[key]);
     }
-    if (titleEl && toggle.title) titleEl.textContent = toggle.title;
+    // toggle.title is payload[measure]?.title; payload[measure] is always the real loaded
+    // payload for the active measure (see the invariant above), so toggle.title is always that
+    // payload's own title string here, never undefined despite the wider MeasureToggleState type.
+    titleEl.textContent = toggle.title;
     hideDetail();
   }
 
   function showDay(day) {
+    // data is payload[state.measure], always the real loaded payload for the active measure
+    // (see the invariant above - readJson's null path never triggers against real renderHtml
+    // output), and findDayDetail always finds "day" in it, since every .day-bar's data-day has
+    // a matching entry in both panels' payloads.
     var data = payload[state.measure];
-    if (!data || !detailEl) return;
     var found = findDayDetail(data.days, day);
-    if (!found) return;
     renderDayDetail(document, detailEl, day, found);
   }
 
@@ -526,8 +540,8 @@ const CLIENT_SCRIPT = `(function () {
     })(dayBars[k]);
   }
 
-  if (buttons.cost) buttons.cost.addEventListener("click", function () { setMeasure("cost"); });
-  if (buttons.tokens) buttons.tokens.addEventListener("click", function () { setMeasure("tokens"); });
+  buttons.cost.addEventListener("click", function () { setMeasure("cost"); });
+  buttons.tokens.addEventListener("click", function () { setMeasure("tokens"); });
 })();`;
 
 export function renderHtml(days: DayBucket[]): string {

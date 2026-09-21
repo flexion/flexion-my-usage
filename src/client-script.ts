@@ -72,6 +72,32 @@ export function findDayDetail(
 }
 
 /**
+ * The minimal DOM surface `readJson` needs: a document-like object exposing `getElementById`,
+ * returning an element-like object exposing `textContent` (or `null` when no element with that
+ * id exists), satisfied by the real `document` in the browser and by a plain-object fake in
+ * tests (see client-script.test.ts).
+ */
+export interface DomGetElementByIdLike {
+	getElementById(id: string): { textContent: string } | null;
+}
+
+/**
+ * Reads and `JSON.parse`s the payload embedded in the element with id `id` (see render.ts's
+ * `embedJson`). Returns `null` - never throws - on any of three distinct paths: no element with
+ * that id, an element whose `textContent` is empty, or content that fails `JSON.parse` (a
+ * truncated or corrupt embedded payload).
+ */
+export function readJson(doc: DomGetElementByIdLike, id: string): unknown {
+	const el = doc.getElementById(id);
+	if (!el?.textContent) return null;
+	try {
+		return JSON.parse(el.textContent);
+	} catch {
+		return null;
+	}
+}
+
+/**
  * The minimal DOM surface `renderDayDetail` needs, satisfied by a real `Element` in the browser
  * and by a plain-object fake in tests (see client-script.test.ts) - never jsdom, per this repo's
  * zero-dependency convention.

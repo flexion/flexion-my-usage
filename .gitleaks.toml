@@ -1,13 +1,32 @@
 # gitleaks config for the IP-leak guardrail (myusage-6d9).
 # Extends the default ruleset; allowlists generated files whose integrity hashes
 # would otherwise read as high-entropy secrets.
+#
+# myusage-akq: the pricing.fixtures.ts entry below used to exempt the whole file (`paths =
+# ['''src/pricing\.fixtures\.ts$''']`), which would have silently suppressed a genuinely new
+# secret too, if one were ever added to that same file later. It's now two `regexes` entries
+# pinned to specific throwaway keys' own content, so it allows only those known, non-secret
+# private keys - not the file they live in. Confirmed empirically: with this entry in place, a
+# fake unrelated secret appended to pricing.fixtures.ts is still flagged by gitleaks. Two entries
+# because `scripts/guardrail-scan.sh tree`'s `gitleaks detect` (unlike the `--no-git` checks used
+# while developing this) scans full git history against today's config: the first line pins the
+# regenerated CA:FALSE key now in pricing.fixtures.ts, the second pins the original CA:TRUE key
+# (myusage-1cj) still present in two earlier commits' blobs - also inert, never anything but this
+# same loopback-only fixture's key, but a different value that the first regex does not match.
+# NB: gitleaks 8.30.1 (this repo's installed version) requires a single `[allowlist]` table -
+# not the `[[allowlist]]` array-of-tables form some gitleaks docs/examples show for per-rule
+# allowlists - so both the lockfile path exemption and these key-content regexes live in the one
+# table below.
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Generated lockfiles (integrity hashes) and pricing.fixtures.ts's throwaway self-signed test cert/key (myusage-1cj) - none are secrets. The fixtures.ts cert TLS-terminates a loopback-only test server, signs nothing else, and grants no real access."
+description = "Generated lockfiles (integrity hashes) are not secrets. The two regexes below allow pricing.fixtures.ts's throwaway self-signed TEST_ORIGIN_KEY (myusage-1cj), current and prior value, by its own content - not the whole file - since that fixture TLS-terminates a loopback-only test server, signs nothing else, and grants no real access."
 paths = [
   '''yarn\.lock$''',
-  '''src/pricing\.fixtures\.ts$''',
+]
+regexes = [
+  '''MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCZYNwCxVkl0dOR''',
+  '''MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC42fLxI/WJOcrU''',
 ]

@@ -484,63 +484,68 @@ export function startRecordingProxy(): Promise<RecordingProxy> {
 	});
 }
 
-// Throwaway 10-year self-signed test certificate (generated 2026-09-21 via `openssl req -x509
-// -newkey rsa:2048 -days 3650 -nodes -subj "/CN=raw.githubusercontent.com" -addext
-// "subjectAltName=DNS:raw.githubusercontent.com"`), used only to TLS-terminate
-// startTunnelingProxy's local fake origin below. Not a secret: it signs nothing but this
-// fixture's own loopback server, and a test process trusts it only by pointing
-// NODE_EXTRA_CA_CERTS at it directly (see loadThroughRealProxy.fixtures.ts) - it grants no
-// access to anything real. Committed rather than generated at test time so the suite never
-// depends on `openssl` being present in CI.
+// Throwaway 10-year self-signed test certificate (regenerated 2026-09-21, myusage-akq, via
+// `openssl req -x509 -newkey rsa:2048 -days 3650 -nodes -keyout key.pem -out cert.pem -subj
+// "/CN=raw.githubusercontent.com" -addext "subjectAltName=DNS:raw.githubusercontent.com"
+// -addext "basicConstraints=critical,CA:FALSE"`), used only to TLS-terminate
+// startTunnelingProxy's local fake origin below. A plain end-entity leaf (CA:FALSE, not
+// openssl's CA:TRUE default) - verified via `openssl x509 -in cert.pem -noout -text | grep -A2
+// "Basic Constraints"` - since this fixture only ever needs to present the right SAN, not CA
+// authority: a CA:TRUE key trusted more broadly than this test's own loopback origin (say, via a
+// system trust store) would be trusted for any hostname, not just this one. Not a secret: it
+// signs nothing but this fixture's own loopback server, and a test process trusts it only by
+// pointing NODE_EXTRA_CA_CERTS at it directly (see src/load-price-table-via-proxy.fixtures.ts) -
+// it grants no access to anything real. Committed rather than generated at test time so the
+// suite never depends on `openssl` being present in CI.
 export const TEST_ORIGIN_CERT = `-----BEGIN CERTIFICATE-----
-MIIDTzCCAjegAwIBAgIUSrVe9CdtIA/+cM4+fYZRwCbZaAEwDQYJKoZIhvcNAQEL
+MIIDTDCCAjSgAwIBAgIUA/NC2tGW3LJH5gS/Sav7wHkHatcwDQYJKoZIhvcNAQEL
 BQAwJDEiMCAGA1UEAwwZcmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbTAeFw0yNjA5
-MjEwODM2MjZaFw0zNjA5MTgwODM2MjZaMCQxIjAgBgNVBAMMGXJhdy5naXRodWJ1
-c2VyY29udGVudC5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC4
-2fLxI/WJOcrU+GkN5gXTgK/TKAs6A8NP89rUHxPdBOaeSJ+qWig/a50seylqRs/q
-CZ/CRthEqeZ51RE7unZZchXxk0I3NGDXYACzXwFGyIJuLOpxtT7g61FhQPBBe3AU
-asjRNBIJlTHq8kQ1L1YIL+IoketkZIJdnAz5cKaa+TAHsWAedJnpzgnuqputwQK7
-nrY3n6V0UzILIqaW02Vn7ZB6UHhThtfHBFBZqFKM2WrkOLTGsE37+ad4t5abGD+i
-twARlJ9jieOtDUlMmkDL/gf0m418WZIpnd3lRn8mYu+Y3zAVoT+Os1W5nz5D4HDz
-hqruH1ton1gZaNNqkfpLAgMBAAGjeTB3MB0GA1UdDgQWBBTISuE4hVmc0orvWcUh
-mz0K+araojAfBgNVHSMEGDAWgBTISuE4hVmc0orvWcUhmz0K+araojAPBgNVHRMB
-Af8EBTADAQH/MCQGA1UdEQQdMBuCGXJhdy5naXRodWJ1c2VyY29udGVudC5jb20w
-DQYJKoZIhvcNAQELBQADggEBADJ0i286te4RBTvY97pGgzPSSdWa5uy2VzhmRq3a
-g0ZPCElszPzQnP7NKRFVJrT8S0MbH3ydSJjV6UCFGw7pn5wJbZTQxuDZX9cWwxwN
-NVKW7GSwiPC8WicVp5M6MOgqI95JsUpmXnd+GnYpKUfz8NYFfWEO6BPifr+Xnffo
-5/AnOGC6azz3JWILlRh9uJrCDW5OdJJle6x4lOdlr87dYWhHHzJmTWvHiuupHG0v
-SDpZDhoUIiXQCzH/rzGy9rjzOLCbMwsOFJR7ztlUlpGJ7disuiV+ua5LzhwsNYwj
-NUSVnjaga33aIdIuhJEH1dyDgJoqwfpYEVPnTXBVP3vuseM=
+MjExMDUyMjJaFw0zNjA5MTgxMDUyMjJaMCQxIjAgBgNVBAMMGXJhdy5naXRodWJ1
+c2VyY29udGVudC5jb20wggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCZ
+YNwCxVkl0dORvZ1jZ1VDDQOdjK+Rfj52Uqi/hnywCVGUOkbSZuPDennI1PDir5w+
+oemzjqXrgEUTSeBC6rlrVF7Wk/oZPX1gU5nHxOLa9O+suTjBBZYmehs9Kxm4eCE9
+DPVdOlDsXsF7RrHZcSN6KSqOShvOzIuFyvsIFN9TTOl8n44kwnzo3ZC9oV5up8Dj
+ZlokSP2y9/45XzWiNITGoZnUTvvtRSrHnQPp2Hv5lWCf/oUxo4TRnzyHZMrsMyv7
+hoZY9c+RgzyKqHo32kKF+q1QgsVxq2i9ARymg7d43iOafyWj8xPnBDLPwnxAyQqy
+jFe5pWz0V4kqAkaNPBO9AgMBAAGjdjB0MB0GA1UdDgQWBBQvRZq6DQ63qVVnkm38
+Lr5PD5REOzAfBgNVHSMEGDAWgBQvRZq6DQ63qVVnkm38Lr5PD5REOzAkBgNVHREE
+HTAbghlyYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tMAwGA1UdEwEB/wQCMAAwDQYJ
+KoZIhvcNAQELBQADggEBAFFiZErCZRSNj/XgsWaZomR1ioq7dUFJ8y8qv/WOMpX1
+Ys2O9mnZaCfjcEVpmPs9jFbdhRwg2IXjIwFwvJzmIPYyLNdvYtd1fTZ4DNZQD+2m
+VHt5ftW9bfqdIZqs1SvsCpB0WNQvf6/Rio8DA/p1KKJ14toawMO8TrZNr6zAH8DO
+dlzG5+5TcviqJ4wsmIjfKS1q1T8JqK+EyWyk+r3JQHM0yTsS91rXn+xvps7WcdFk
+McxLdxO3u/9JGqNkDhHQ5L4ojK8oZ7Niuqc5flzZczMMLEZNqnb4G6nzHx88NCXe
+BHPBOZFP8iCrioyHzTP3Iz6FEDPuLPoj36Q2nORodAA=
 -----END CERTIFICATE-----
 `;
 
 export const TEST_ORIGIN_KEY = `-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC42fLxI/WJOcrU
-+GkN5gXTgK/TKAs6A8NP89rUHxPdBOaeSJ+qWig/a50seylqRs/qCZ/CRthEqeZ5
-1RE7unZZchXxk0I3NGDXYACzXwFGyIJuLOpxtT7g61FhQPBBe3AUasjRNBIJlTHq
-8kQ1L1YIL+IoketkZIJdnAz5cKaa+TAHsWAedJnpzgnuqputwQK7nrY3n6V0UzIL
-IqaW02Vn7ZB6UHhThtfHBFBZqFKM2WrkOLTGsE37+ad4t5abGD+itwARlJ9jieOt
-DUlMmkDL/gf0m418WZIpnd3lRn8mYu+Y3zAVoT+Os1W5nz5D4HDzhqruH1ton1gZ
-aNNqkfpLAgMBAAECggEAW4zF/5v5nU8cH8Iv9Yw40nlnm0K33LHEZ7K0bF4/7jTh
-Kv945FvmlxJrM36EEnijvJurngKMVeV3mltmP5inyMDyEUUHhGPSmpiXgD7LWQ0x
-W/Ou4UYMsESbd3k8BJJn/hStBL+vN0PHBz+ZfGXHTCK69bDfTkdhMY959YhPW2y4
-tDeRCyDnFrHSYPrIIGDx7C7UMXUrkZST92K/zakPY4CF7ROyM65yYaT8/i6CT/sk
-KsEc3/DGZVqNdJfu2XhNIn78WfFHEngLtQAojOK21db3+C/GZEVbDuNiwXUy394C
-gED3/vXfoZqYdx6+/R6oDWtoNuE4JHTWBS6+jBkI8QKBgQD+fXi9zPRQaVmDRqK4
-JwhypJd/5APPfmMiwBNQquXgGSpDRGIL6icQkx9ajCIWJ+/RBzcym5lWMszQS+66
-TnXH5rC4LsNcrSj1x9MOBkVhDZIoiLDGjNCQ0+hn4vT7yGDiOt2T9ekbHAFVDvnb
-mgU1pmRgorX0v8YXJLxTUzAwPwKBgQC58rUlWXOmdmZaLrfDQkCY8jiRGuO+Dotc
-Ua3vp23mIB6DQZ9+suiSX8R52v/d+0bba/08kGkN6oOv41g4nWfIZckuNsldj+mI
-YUbu71u02W2sKXZXykM9t3VPWwRr/0bbRCQG+qag2QVebkzP7sLR1Y3DT+14eKKH
-d2eVuhiy9QKBgQC7GRgJwoLkE2/h2a6L4PaPAn73YXWDuRG9XKVWqy4x4Y52wfGr
-fMyXnPJyKZBt5ZKkhL+KD2dePh7iDNFIW6KwAuRtpMOwgQYaHH0IVIfxYH7SGhyM
-/L3hnEnDBtLBwYGpEUoSG7rzWVWJaWc8kjG+TcSCX12SwOMr5LAoOoK1FQKBgFb2
-lZVkIlxFn1Sp6LNe9ssQ7TeftccbEj4YzRn52cH4X4zPUgJ1NaPPOhorO+LbM6ZG
-+OYsO5WQignmb0n7A6CLSe1dHgut1HA93mi8dM09qrcLpRcltxDUDf8Q+B5yAvdl
-BNxmuSsclBA30aClb2OnVmdzqAHhmVF1nHI/2HFJAoGBAKiLqtPmqfvl3ZzxBPOc
-ON6Fd6YLRJYD6RglgAHRMLwerAh0WW7wDyaBLXl/Ds6pSSrVW0EFweJ3AxAyVOFS
-zKX97FyWWwP3Lkz9FYo8Z3u2VuTMtHlxpFD2gtERxSzc3LsGqSWaQ9VCdgogrC57
-/zAFpYvu65ck/Fvryih8E1e+
+MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCZYNwCxVkl0dOR
+vZ1jZ1VDDQOdjK+Rfj52Uqi/hnywCVGUOkbSZuPDennI1PDir5w+oemzjqXrgEUT
+SeBC6rlrVF7Wk/oZPX1gU5nHxOLa9O+suTjBBZYmehs9Kxm4eCE9DPVdOlDsXsF7
+RrHZcSN6KSqOShvOzIuFyvsIFN9TTOl8n44kwnzo3ZC9oV5up8DjZlokSP2y9/45
+XzWiNITGoZnUTvvtRSrHnQPp2Hv5lWCf/oUxo4TRnzyHZMrsMyv7hoZY9c+RgzyK
+qHo32kKF+q1QgsVxq2i9ARymg7d43iOafyWj8xPnBDLPwnxAyQqyjFe5pWz0V4kq
+AkaNPBO9AgMBAAECggEAFRBs1sKUpjGFbWANo++2kXFRnEsMd55PZL+gZkFJkYGO
+Hx3LySyRPjDtVcwM0w0MF7vz1RGTrt6cXfRI5NfIpDlflveWou3DcL26gmmDQE/g
+NKfxZ+zk/J7La+Cl9SQmaHSFpAqUv4mZ59zDIxo7JZVOv2DlJccIqFTCmg8HxrA0
+dA0UzlBQMryHSDZLoOzmQ6Ao661BPqJY06tXKUnUrMxeO23vGO0vYbTnBEn3qiNP
+8/r/RTtKnmwCh05AyZbUAHFLPIDMKItGqqF7goMtzB+vfdoutddstqMJe218aVlQ
+NC+gEOQHikBJtFBkya+nAZS1pK0lXEMfvCZxioV6oQKBgQDLrdAFtYTCmGSyg/BO
+CMfKm/DN3Jp+CWlLR8QJROZAtMWA+Tv2PioKoaYZiCCsWz7W9SKk5joA8sOZo3Ly
+YtZ2bKZlAVJkwLajri4bIayK07i0S4uRiupHw4KP3V+ZQOyWYdf5+vOamedltO7u
+tkWkgvu3ndpKlTtjrK3UNCVFDQKBgQDAxzcnhLnv/A++Io0aQudPIklYsHXM0Rcj
++ao5ccyNojEcqJyoDddSwFDcGRNMfnClTjjOWtc1k1MDLLx4XIwQYfhUfQaJOb2z
+h3GfCmI22xLeOaMJ3LXSOpCCGz4IuG2Es+L26ZMjDfIfunkv4F6o5FPSin/GGwED
+FINJYIa9cQKBgQCt3+yk4we5w7S6/I1JYI+GdEdGxluQ2uHrZRGCRDI37NpqNtos
+ZXcoakTMqPwThzWG9e+kS/IaWyQF5ZW8PAoPQMNvmIhJAIcqBgjQGpgcT4/vQkqc
+bbWAm/O6cuYog1c1LcPdYJFTWq1Ckwoh+LJNNZBDeNsgLnNrrL8cV4O1hQKBgQCJ
+xZYYSxXrefPySZUYIJpZBsLufGYj84abMlHCbh7nVfPNbH9Q51tsi37+XXlaYL62
+lRmp+Gf3pQtdqHoldtau2qV0FEo4hiiaBoFgTTZ1x8lLQlvPr4nN7gbaxQdnig7T
+GRBqr/F0ywGwRT9YxPxBrbRuMocwmJn3jpBpP2/sMQKBgQDBhTeE+JzH56iZNMov
+jwhTdW2zQm99ct2eF4Js/CM53edQfsqovF5Rd/joG/8R7YlM1VNEHp0ugwGySXyR
+L9eCXVkDvTdWTWzuQxC7W7LOQ4Ks6CdgQNAgB5Fj1luaZemG6TnXZF7Dg49DwSpK
+4deEJ5unU7yU61i57/iCzva3wg==
 -----END PRIVATE KEY-----
 `;
 

@@ -19,6 +19,7 @@ import {
 	type DayDetail,
 	findDayDetail,
 	measureToggleState,
+	readJson,
 	renderDayDetail,
 } from "./client-script.js";
 
@@ -449,11 +450,12 @@ h2 { font-size: 16px; margin: 0; font-weight: 600; }
 [hidden] { display: none !important; }`;
 
 // The cost/token toggle and day drill-down. The decisions - what the toggle changes, what a
-// click shows - are `measureToggleState`/`findDayDetail`/`renderDayDetail` from client-script.ts,
-// covered by that module's own tests; this template embeds each one's own compiled source
-// (`.toString()`) verbatim, so what runs in the browser is exactly what those tests exercise, not
-// a hand-copied second implementation that could drift. What's left below is genuinely humble
-// DOM-wiring glue: look up elements, apply the already-decided state to them, wire up events.
+// click shows, how the embedded JSON payload is read - are `measureToggleState`/`findDayDetail`/
+// `renderDayDetail`/`readJson` from client-script.ts, covered by that module's own tests; this
+// template embeds each one's own compiled source (`.toString()`) verbatim, so what runs in the
+// browser is exactly what those tests exercise, not a hand-copied second implementation that
+// could drift. What's left below is genuinely humble DOM-wiring glue: look up elements, apply
+// the already-decided state to them, wire up events.
 const CLIENT_SCRIPT = `(function () {
   "use strict";
 
@@ -463,19 +465,11 @@ const CLIENT_SCRIPT = `(function () {
 
   ${renderDayDetail.toString()}
 
+  ${readJson.toString()}
+
   var state = { measure: "cost" };
 
-  function readJson(id) {
-    var el = document.getElementById(id);
-    if (!el || !el.textContent) return null;
-    try {
-      return JSON.parse(el.textContent);
-    } catch (err) {
-      return null;
-    }
-  }
-
-  var payload = { cost: readJson("panel-cost-data"), tokens: readJson("panel-tokens-data") };
+  var payload = { cost: readJson(document, "panel-cost-data"), tokens: readJson(document, "panel-tokens-data") };
   var panels = {
     cost: document.getElementById("panel-cost"),
     tokens: document.getElementById("panel-tokens")

@@ -193,6 +193,11 @@ export function stackByModel(
 	);
 
 	const stackedDays: StackedDay[] = days.map((day) => {
+		// Unlike windowTotalsByModel's `+=` above, this `.set` overwrites rather than accumulates
+		// a second value for the same (provider, model) pair within one day. The real
+		// aggregateDaily pipeline never produces that shape (byModel is keyed uniquely per pair),
+		// so this is unreachable today - but the "keys are opaque" contract on DayBucket doesn't
+		// itself rule out a hand-built one that does.
 		const dayValues = new Map<string, number>();
 		for (const model of Object.values(day.byModel)) {
 			dayValues.set(

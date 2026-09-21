@@ -89,6 +89,27 @@ describe("stackByModel: series ranking", () => {
 		]);
 	});
 
+	it("breaks a tie in window total by model id alone, independent of input order", () => {
+		// Same provider on both sides, so the provider tie-break can't discriminate this order
+		// on its own (unlike the sonnet/gemini fixture above, where "anthropic" < "google"
+		// would have produced the same order even without the model comparison). Fed
+		// zebra-then-alpha on purpose: a stable sort that fell back to input order once the
+		// model comparison was gone would keep zebra first, so this pins that clause itself.
+		const days = [
+			day("2026-09-19", [
+				series({ provider: "anthropic", model: "model-zebra", cost: 5 }),
+				series({ provider: "anthropic", model: "model-alpha", cost: 5 }),
+			]),
+		];
+
+		const stacks = stackByModel(days, "cost");
+
+		expect(stacks.series.map((s) => s.label)).toEqual([
+			"model-alpha",
+			"model-zebra",
+		]);
+	});
+
 	it("keeps eight named series by default and folds the rest into a trailing Other", () => {
 		const models = Array.from({ length: 10 }, (_, i) =>
 			series({ model: `model-${String(i).padStart(2, "0")}`, cost: 10 - i }),

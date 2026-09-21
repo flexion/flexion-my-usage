@@ -70,6 +70,9 @@ function num(n: number): string {
  */
 function buildColorLookup(series: StackSeries[]): Map<StackSeries, string> {
 	const colors = new Map<StackSeries, string>();
+	// `slot` is unbounded past `--series-8`: safe only because this file always calls
+	// stackByModel with its default topN of 8, so `series` never carries more than 8 named
+	// entries. A caller passing a larger topN would need this guarded.
 	let slot = 0;
 	for (const s of series) {
 		if (s.kind === "other") {
@@ -137,7 +140,7 @@ const MARGIN_TOP = 16;
 const MARGIN_RIGHT = 16;
 const MARGIN_BOTTOM = 32;
 const MARGIN_LEFT = 64;
-/** Stacked-bar segment gap, and rounded-top-corner radius, from the dataviz mark spec. */
+/** Stacked-bar segment gap (a visible seam between segments) and rounded-top-corner radius. */
 const SEGMENT_GAP = 2;
 const CORNER_RADIUS = 4;
 
@@ -333,9 +336,9 @@ function renderKpiRow(totals: WindowTotals): string {
 	return `<div class="kpi-row">\n${cards}\n</div>`;
 }
 
-// Palette slots and chart chrome from the reference dataviz palette (see the dataviz skill):
-// eight categorical hues in a fixed, CVD-checked order, never cycled or reassigned by rank, plus
-// a shared muted gray for the Other roll-up so it never impersonates a named series.
+// A categorical palette in a fixed, CVD-checked order: eight named-series hues, never cycled or
+// reassigned by rank, plus a shared muted gray for the Other roll-up so it never impersonates a
+// named series.
 const STYLE = `:root {
   color-scheme: light;
   --page: #f9f9f7;

@@ -118,6 +118,50 @@ function dayBarMarkup(html: string, dayLabel: string): string {
 	return match?.[0] ?? "";
 }
 
+interface SegmentGeometry {
+	topY: number;
+	bottomY: number;
+	height: number;
+}
+
+/** Every floating-point number in `text`, in the order they appear. */
+function numbersIn(text: string): number[] {
+	return (text.match(/-?\d+\.\d+/g) ?? []).map(Number);
+}
+
+/**
+ * A day-bar group's filled stack segments (its `<rect>`s and rounded-top `<path>`), bottom to
+ * top in the same order `renderChartSvg` emits them (cumulative low to high). Reads real y/height
+ * geometry straight out of the markup: a `<rect>`'s own `y`/`height` attributes, or a `<path>`'s
+ * `d` attribute, whose numbers alternate x, y throughout `roundedTopRectPath`'s commands - so
+ * every odd-indexed number is a y coordinate, and their min/max are the path's top and bottom.
+ */
+function segmentGeometries(group: string): SegmentGeometry[] {
+	const elements =
+		group.match(/<(?:rect|path)\b[^>]*fill="var\(--[^)]+\)"[^>]*\/>/g) ?? [];
+	return elements.map((el) => {
+		if (el.startsWith("<rect")) {
+			const y = Number(el.match(/\sy="(-?[\d.]+)"/)?.[1]);
+			const height = Number(el.match(/\sheight="(-?[\d.]+)"/)?.[1]);
+			return { topY: y, bottomY: y + height, height };
+		}
+		const d = el.match(/\sd="([^"]+)"/)?.[1] ?? "";
+		const ys = numbersIn(d).filter((_, i) => i % 2 === 1);
+		const topY = Math.min(...ys);
+		const bottomY = Math.max(...ys);
+		return { topY, bottomY, height: bottomY - topY };
+	});
+}
+
+/** The chart's baseline y, read from a day-bar group's own hit-target rect (its `y` + `height`). */
+function baselineYOf(group: string): number {
+	const y = Number(group.match(/class="hit-target"[^>]*\sy="(-?[\d.]+)"/)?.[1]);
+	const height = Number(
+		group.match(/class="hit-target"[^>]*\sheight="(-?[\d.]+)"/)?.[1],
+	);
+	return y + height;
+}
+
 interface DayDetailPayload {
 	title: string;
 	days: { day: string; total: string; entries: DayDetailEntryPayload[] }[];
@@ -251,6 +295,81 @@ describe("renderHtml: daily chart", () => {
 			group.match(/<rect x="[^"]*" y="[^"]*"[^>]*fill="var\(--/g) ?? [];
 		expect(fillPaths).toHaveLength(1);
 		expect(fillRects).toHaveLength(0);
+	});
+});
+
+describe("renderHtml: chart geometry", () => {
+	it("stacks segments upward from the baseline instead of drawing every one from it", () => {
+		const group = dayBarMarkup(renderHtml(buildWindow()), "2026-09-07");
+		const baselineY = baselineYOf(group);
+		const [bottom, middle, top] = segmentGeometries(group);
+		if (!bottom || !middle || !top) throw new Error("fixture has 3 segments");
+
+		// The bottommost segment sits right on the baseline. If every segment did too (as
+		// `cumulative += 0` inside the bars fold would cause), the next two would match it as
+		// well, and neither would sit above the one before it.
+		expect(bottom.bottomY).toBeCloseTo(baselineY, 1);
+		expect(middle.bottomY).not.toBeCloseTo(baselineY, 1);
+		expect(top.bottomY).not.toBeCloseTo(baselineY, 1);
+
+		// Each segment's top is a smaller y (higher up the chart) than the one below it: real
+		// stacking, not three bars independently drawn from the baseline and overlapping.
+		expect(middle.topY).toBeLessThan(bottom.topY);
+		expect(top.topY).toBeLessThan(middle.topY);
+
+		// The stack's total height (baseline to the topmost segment's top) is close to the sum
+		// of the individual segment heights - short by the two inter-segment gaps, never by more.
+		const stackedHeight = baselineY - top.topY;
+		const summedHeights = bottom.height + middle.height + top.height;
+		expect(summedHeights).toBeLessThanOrEqual(stackedHeight);
+		expect(summedHeights).toBeGreaterThan(stackedHeight - 20);
+	});
+
+	it("leaves a visible gap between adjacent stacked segments", () => {
+		const group = dayBarMarkup(renderHtml(buildWindow()), "2026-09-07");
+		const [bottom, middle, top] = segmentGeometries(group);
+		if (!bottom || !middle || !top) throw new Error("fixture has 3 segments");
+
+		const gapBelowMiddle = bottom.topY - middle.bottomY;
+		const gapBelowTop = middle.topY - top.bottomY;
+
+		expect(gapBelowMiddle).toBeGreaterThan(0);
+		expect(gapBelowTop).toBeGreaterThan(0);
+		// Both seams come from the same SEGMENT_GAP constant.
+		expect(gapBelowMiddle).toBeCloseTo(gapBelowTop, 1);
+	});
+
+	it("gives a bigger day's total a taller bar (a lower topmost y) than a smaller day's", () => {
+		const html = renderHtml(buildWindow());
+		const biggerDay = segmentGeometries(dayBarMarkup(html, "2026-09-07")); // $24 total
+		const smallerDay = segmentGeometries(dayBarMarkup(html, "2026-09-08")); // $9 total
+		const biggerTop = biggerDay.at(-1);
+		const smallerTop = smallerDay.at(-1);
+		if (!biggerTop || !smallerTop) throw new Error("fixture has both days");
+
+		// An inverted scale would give the bigger day the smaller bar (or none at all); a
+		// correct one gives it a topmost y closer to the plot's top margin.
+		expect(biggerTop.topY).toBeLessThan(smallerTop.topY);
+	});
+
+	it("floors a clamped segment's height at zero instead of going negative", () => {
+		// A day whose upper segment's raw scaled height (a sliver of the max-value day) is far
+		// smaller than SEGMENT_GAP: Math.max(0, rawHeight - SEGMENT_GAP) must floor it at zero
+		// rather than emitting a negative height.
+		const days = [
+			day("2026-01-01", [series({ model: "big", cost: 100_000 })]),
+			day("2026-01-02", [
+				series({ model: "base", cost: 5_000 }),
+				series({ model: "tiny", cost: 100 }),
+			]),
+		];
+
+		const group = dayBarMarkup(renderHtml(days), "2026-01-02");
+		const clamped = segmentGeometries(group).at(-1);
+		if (!clamped) throw new Error("fixture has a tiny top segment");
+
+		expect(clamped.height).toBe(0);
+		expect(group).not.toMatch(/height="-/);
 	});
 });
 

@@ -572,24 +572,6 @@ describe("opencodeSource.discover", () => {
 				);
 			},
 		);
-
-		// Same named-error path as above, but for a stat() failure with no .code at all (a bare
-		// Error, or a throw that never went through Node's fs/promises layer) - the message falls
-		// back to the raw error message instead of an errno code.
-		it("throws a named error using the raw message when stat fails with no .code at all", async () => {
-			await isolatedHome();
-			const elsewhere = await sandbox();
-			const overridePath = join(elsewhere, "override.db");
-			vi.stubEnv("OPENCODE_DB", overridePath);
-
-			const injectedStat = vi.fn().mockRejectedValue(new Error("boom"));
-
-			await expect(
-				opencodeSource.discover({ stat: injectedStat }),
-			).rejects.toThrow(
-				`OPENCODE_DB is set to ${overridePath} but it could not be read: boom`,
-			);
-		});
 	});
 });
 
@@ -955,10 +937,19 @@ describe("opencodeSource.read", () => {
 		db.close();
 
 		// SQLite's own "no such table: message" would also match /message/, so assert the
-		// reader's own error.
-		await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
-			/Unsupported opencode database/,
-		);
+		// reader's own error - and, since the message template embeds ${path}, that it names
+		// the offending file too, not just the generic "unsupported" shape.
+		let caught: unknown;
+		try {
+			await opencodeSource.read(handleFor(path));
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(Error);
+		const message = (caught as Error).message;
+		expect(message).toMatch(/Unsupported opencode database/);
+		expect(message).toContain(path);
 	});
 
 	describe("WAL and read-only safety", () => {

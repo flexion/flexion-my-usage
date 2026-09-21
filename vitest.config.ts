@@ -209,7 +209,22 @@ const config = {
 				"src/sources/types.ts", // type-only: compiles to no runtime code
 			]),
 
-			reporter: ["text", "html"],
+			// The "text" entry is a [name, options] tuple, not the bare string, to pin
+			// `skipFull: false` (myusage-4xu.49). Vitest's own agent-detection (std-env's
+			// `isAgent`, tripped by env vars like CLAUDECODE that Claude Code sets on every
+			// subprocess it runs) silently rewrites a bare "text" reporter to skipFull: true
+			// - it assumes an agent only wants to see files below 100%. That assumption
+			// inverts here: this repo's gate requires 100% on every file, so under that
+			// rewrite *every* row reads as "full" and the whole per-file table vanishes,
+			// leaving only the aggregate totals vitest also auto-appends via "text-summary".
+			// Verified empirically: unsetting CLAUDECODE/CLAUDE_CODE/AI_AGENT restores the
+			// full table even with the bare string, and vitest's own merge
+			// (`text[1] = { skipFull: true, ...text[1] }`, in the isAgent branch of
+			// resolveConfig in vitest/dist/chunks/index.*.js) lets an explicit `skipFull`
+			// here win over its forced default, because it spreads our options *after* its
+			// own. This is a reporter-output setting only; it has no effect on
+			// `thresholds.perFile` below, which still fails the run on any file under 100%.
+			reporter: [["text", { skipFull: false }], "html"],
 			// Still write the report when the gate fails, so the misses are visible.
 			reportOnFailure: true,
 

@@ -222,22 +222,27 @@ async function fetchTable(
 		signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 	};
 
-	let response: Response;
-	if (options.fetch) {
-		// An injected fetch is used exactly as given: it is the seam every other test in this
-		// file relies on, and it bypasses the proxy question entirely (see LoadOptions.fetch).
-		response = await options.fetch(PRICE_TABLE_URL, fetchOptions);
-	} else {
-		// Node's global fetch does not honor HTTPS_PROXY/HTTP_PROXY on its own (undici only
-		// reads them when NODE_USE_ENV_PROXY is set, which this repo's Node floor cannot rely
-		// on - see resolveProxy's doc comment). Routing through a proxy when one is configured
-		// means dispatching through an explicit undici ProxyAgent instead.
-		const proxyUrl = resolveProxy(env, PRICE_TABLE_URL);
-		// New URL(...) inside ProxyAgent throws synchronously on an unusable value, before any
-		// request - proxied or direct - is ever attempted; the caller's catch turns that into
-		// the module's normal "price table unavailable" warning.
-		const agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
-		try {
+	// Scoped out here, not inside the proxied branch below, because closing it has to wait
+	// until this function's whole body - including reading the response - is done (see the
+	// finally block at the bottom for why).
+	let agent: ProxyAgent | undefined;
+	try {
+		let response: Response;
+		if (options.fetch) {
+			// An injected fetch is used exactly as given: it is the seam every other test in
+			// this file relies on, and it bypasses the proxy question entirely (see
+			// LoadOptions.fetch).
+			response = await options.fetch(PRICE_TABLE_URL, fetchOptions);
+		} else {
+			// Node's global fetch does not honor HTTPS_PROXY/HTTP_PROXY on its own (undici only
+			// reads them when NODE_USE_ENV_PROXY is set, which this repo's Node floor cannot
+			// rely on - see resolveProxy's doc comment). Routing through a proxy when one is
+			// configured means dispatching through an explicit undici ProxyAgent instead.
+			const proxyUrl = resolveProxy(env, PRICE_TABLE_URL);
+			// New URL(...) inside ProxyAgent throws synchronously on an unusable value, before
+			// any request - proxied or direct - is ever attempted; the caller's catch turns
+			// that into the module's normal "price table unavailable" warning.
+			agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
 			if (agent) {
 				// Node's global fetch (globalThis.fetch) is backed by an internal undici fork
 				// bundled with Node itself, a different build from the "undici" package this
@@ -259,21 +264,31 @@ async function fetchTable(
 			} else {
 				response = await globalThis.fetch(PRICE_TABLE_URL, fetchOptions);
 			}
-		} finally {
-			await agent?.close();
 		}
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => {});
+			throw new Error(`HTTP ${response.status}`);
+		}
+		const text = await readCapped(
+			response,
+			options.maxBytes ?? DEFAULT_MAX_BYTES,
+		);
+		const table = parseBody(text);
+		if (!table) throw new Error("response is not a usable price table");
+		return { table, text };
+	} finally {
+		// ProxyAgent#close() waits for every in-flight request on its pool to finish; a
+		// fetch() call resolves as soon as headers arrive, well before the body is read, so
+		// the request is still "in flight" by the agent's own accounting until readCapped
+		// above has fully consumed (or cancelled) the body. Closing first leaves the body
+		// stream paused with backpressure and close() itself never resolves until the
+		// AbortSignal above fires - reproduced directly against a real local proxy tunneling a
+		// real ~620KB body: closing before reading hung for the full timeout every time,
+		// closing after took under 100ms. This finally wraps the whole fetch-and-read sequence
+		// specifically so close() only ever runs once the body is already spoken for, on every
+		// path (success, a cancelled oversized body, an HTTP error's own cancel() above).
+		await agent?.close();
 	}
-	if (!response.ok) {
-		await response.body?.cancel().catch(() => {});
-		throw new Error(`HTTP ${response.status}`);
-	}
-	const text = await readCapped(
-		response,
-		options.maxBytes ?? DEFAULT_MAX_BYTES,
-	);
-	const table = parseBody(text);
-	if (!table) throw new Error("response is not a usable price table");
-	return { table, text };
 }
 
 /** Temp file + rename, so a reader never sees a half-written cache. */

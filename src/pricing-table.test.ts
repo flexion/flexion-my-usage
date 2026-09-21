@@ -1,12 +1,17 @@
+import { spawn } from "node:child_process";
 import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	failingFetch,
 	fakeFetch,
 	forbiddenFetch,
 	LITELLM_FIXTURE,
+	startFakeOrigin,
 	startRecordingProxy,
+	startTunnelingProxy,
+	TEST_ORIGIN_CERT,
 	useTempCacheDirs,
 } from "./pricing.fixtures.js";
 import {
@@ -275,6 +280,100 @@ describe("loadPriceTable: HTTPS_PROXY (real fetch, local proxy fixture)", () => 
 			expect(proxy.connects).toEqual([]);
 		} finally {
 			await proxy.close();
+		}
+	});
+});
+
+// myusage-1cj: every test above routes through startRecordingProxy, which answers every
+// CONNECT with a 502 and never actually forwards anything - so no existing test streams a real
+// response body through a real proxy tunnel. That gap hid a real bug: fetchTable awaited
+// agent.close() in a finally block BEFORE reading the response body. ProxyAgent#close() waits
+// for in-flight requests to finish, and a fetch() call resolves as soon as headers arrive, well
+// before the body is read - so the still-unread body left the request "in flight" from the
+// agent's own accounting, and close() itself hung until the AbortSignal fired. Confirmed by
+// hand against a real local proxy tunneling a real ~620KB body: closing before reading hung the
+// full 15s timeout on Node 22.13.0, 22.23.2, 26.7.0, and 26.8.2 alike (a design-order bug, not
+// a Node-version one); closing after reading took under 100ms.
+//
+// This test runs as a real `tsx` subprocess (load-price-table-via-proxy.fixtures.ts), not
+// in-process, because the only way to make the client trust the fixture's self-signed
+// TEST_ORIGIN_CERT is NODE_EXTRA_CA_CERTS, which Node reads once at startup - setting it from
+// inside an already-running process has no effect.
+describe("loadPriceTable: a real proxy tunneling a real response body", () => {
+	const RUNNER = fileURLToPath(
+		new URL("./load-price-table-via-proxy.fixtures.ts", import.meta.url),
+	);
+	const TSX = fileURLToPath(
+		new URL("../node_modules/.bin/tsx", import.meta.url),
+	);
+	// Comfortably past the ~15s stall this test guards against, and comfortably past the
+	// fixed path's real latency (well under 100ms on loopback) - a regression shows up as a
+	// timeout warning, not a slow pass.
+	const TIMEOUT_MS = 20_000;
+
+	it("parses the full table instead of hanging until the timeout", async () => {
+		// Large enough to land well past the size where the original bug always reproduced
+		// (200KB and up, by hand-testing while diagnosing this): the real LiteLLM table is
+		// roughly 2.8-3MB, so this fixture body is sized to be decisively over the failure
+		// threshold without needing the real file.
+		const bigTable: Record<string, unknown> = {};
+		for (let i = 0; i < 6000; i++) {
+			bigTable[`model-${i}`] = {
+				litellm_provider: "openai",
+				input_cost_per_token: 0.00001,
+				output_cost_per_token: 0.00002,
+			};
+		}
+		const body = JSON.stringify(bigTable);
+		expect(body.length).toBeGreaterThan(256 * 1024);
+
+		const origin = await startFakeOrigin(body);
+		const proxy = await startTunnelingProxy(origin.port);
+		try {
+			const cacheDir = await newCacheDir();
+			// NODE_EXTRA_CA_CERTS only exists as a file path, and is read once at Node
+			// startup, so it has to be a real file on disk in the CHILD's env, set before
+			// that child process starts.
+			const certPath = join(cacheDir, "test-origin-ca.pem");
+			await writeFile(certPath, TEST_ORIGIN_CERT);
+
+			// Deliberately spawn(), not spawnSync(): this test's fake origin and tunneling
+			// proxy run as event listeners IN THIS SAME PROCESS. spawnSync blocks the whole
+			// event loop until the child exits, so neither server could ever accept the
+			// child's connection - confirmed by hand while building this fixture (the child
+			// hung until spawnSync's own external timeout killed it, well past
+			// loadPriceTable's own internal timeout, with no output at all). Async spawn()
+			// keeps this process's event loop - and so its origin/proxy servers - running
+			// while the child talks to them.
+			const child = spawn(TSX, [RUNNER, proxy.url, cacheDir, "18000"], {
+				env: { ...process.env, NODE_EXTRA_CA_CERTS: certPath },
+			});
+			let stdout = "";
+			let stderr = "";
+			child.stdout.on("data", (chunk: Buffer) => {
+				stdout += chunk;
+			});
+			child.stderr.on("data", (chunk: Buffer) => {
+				stderr += chunk;
+			});
+			const exitCode = await new Promise<number | null>((resolve, reject) => {
+				const timer = setTimeout(() => {
+					child.kill();
+					reject(new Error(`runner did not exit within ${TIMEOUT_MS}ms`));
+				}, TIMEOUT_MS);
+				child.on("exit", (code) => {
+					clearTimeout(timer);
+					resolve(code);
+				});
+			});
+
+			expect(exitCode, stderr).toBe(0);
+			expect(JSON.parse(stdout)).toEqual({
+				table: Object.keys(bigTable).length,
+			});
+		} finally {
+			await proxy.close();
+			await origin.close();
 		}
 	});
 });

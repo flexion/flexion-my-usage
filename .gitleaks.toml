@@ -6,7 +6,8 @@
 useDefault = true
 
 [allowlist]
-description = "Generated lockfiles - integrity hashes, not secrets"
+description = "Generated lockfiles (integrity hashes) and pricing.fixtures.ts's throwaway self-signed test cert/key (myusage-1cj) - none are secrets. The fixtures.ts cert TLS-terminates a loopback-only test server, signs nothing else, and grants no real access."
 paths = [
   '''yarn\.lock$''',
+  '''src/pricing\.fixtures\.ts$''',
 ]

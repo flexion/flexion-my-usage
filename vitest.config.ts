@@ -145,6 +145,38 @@ function requireCoveragePattern<const T extends readonly string[]>(
 	return [...patterns];
 }
 
+// --- test.include: the widened glob must stay present (myusage-4xu.56) ---
+//
+// myusage-9os (see the comment on `include:` below) widened test.include from the literal
+// "src/**/*.test.ts" to "src/**/*.test.*" so .test.mts/.cts/.tsx files actually run, instead of
+// being silently invisible to both the test runner and, via coverage.exclude's own matching
+// glob, the coverage gate too. That fix had nothing pinning it in place: narrowing test.include
+// back to the old literal compiled clean under `tsc -p tsconfig.config.json` and left `yarn
+// test` green, since no .test.mts/.cts/.tsx file exists in this repo today - confirmed by hand
+// before this guard existed. requireTestIncludePattern below is CoveragePatterns/
+// requireCoveragePattern's own shape, for the identical reason: `satisfies ViteUserConfig`
+// widens `include` to plain `string[]` by the time anything reads `config.test.include` back,
+// so the required literal has to be checked where the array is actually written, not after.
+const REQUIRED_TEST_INCLUDE = "src/**/*.test.*";
+
+type TestIncludePatterns<T extends readonly string[]> = T extends readonly [
+	typeof REQUIRED_TEST_INCLUDE,
+	...string[],
+]
+	? T
+	: readonly [typeof REQUIRED_TEST_INCLUDE, ...string[]];
+
+/** Requires REQUIRED_TEST_INCLUDE as `patterns`' first element - narrowing it away fails `tsc`
+ * with a tuple mismatch that names the required literal. Mirrors requireCoveragePattern above
+ * in every particular but the literal it pins; see that function's own doc comment for why the
+ * `satisfies string[]` line near the bottom of this file (here, on `config.test.include`) is
+ * what closes the other half of the same gap - the key deleted outright, not just narrowed. */
+function requireTestIncludePattern<const T extends readonly string[]>(
+	patterns: TestIncludePatterns<T>,
+): string[] {
+	return [...patterns];
+}
+
 const config = {
 	test: {
 		// Only this checkout's tests. Vitest's default glob also matches other agents'
@@ -157,8 +189,10 @@ const config = {
 		// blind spot that let a whole `*.spec.ts` file go unrun - see coverage.exclude's own
 		// comment below for that half of the story). Matching coverage.exclude's own
 		// `src/**/*.test.*` keeps include and exclude symmetric on the one convention they both
-		// still recognize.
-		include: ["src/**/*.test.*"],
+		// still recognize. requireTestIncludePattern (myusage-4xu.56, above) now pins this
+		// literal at typecheck time, the same way requireCoveragePattern pins coverage.include's
+		// own required literal below.
+		include: requireTestIncludePattern(["src/**/*.test.*"]),
 
 		// Pinned, not left to vitest's default. src/aggregate.test.ts's beforeEach mutates
 		// process.env.TZ to exercise daylight-saving edge cases, then asserts a known
@@ -296,6 +330,12 @@ config.test.coverage.thresholds satisfies CoverageGate;
 // shape where the array is written) - see that function's own doc comment for why this
 // second, deliberately trivial line is what actually fails when `include` is deleted.
 config.test.coverage.include satisfies string[];
+
+// Same presence check as coverage.include's own line above, for test.include (myusage-4xu.56):
+// requireTestIncludePattern already checked the array's content where it's written; this line's
+// only job is to exist and go missing - "Property 'include' does not exist" - the moment the
+// key, and the call wrapping it, are deleted outright.
+config.test.include satisfies string[];
 
 // Same shape as the thresholds check above, for `pool` (myusage-7j2): PoolGate names the one
 // literal this repo actually wants, so a typo like "forkz" - which `satisfies ViteUserConfig`

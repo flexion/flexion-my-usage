@@ -53,7 +53,8 @@ if (violations.length > 0) {
 	console.error(
 		[
 			"A *.fixtures.* file may only be referenced by test code or test support, and must be",
-			'verifiable as test-only itself (import "vitest", or a real *.test.* referencer).',
+			'verifiable as test-only itself (import "vitest", or a real *.test.* or',
+			"__tests__/__mocks__-directory referencer).",
 			'See AGENTS.md\'s "Testing & coverage policy".',
 		].join(" "),
 	);

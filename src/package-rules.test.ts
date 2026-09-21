@@ -47,6 +47,63 @@ describe("filterTestOrSupportPaths: the test-or-support name pattern and its off
 			"src/my.test.dir/index.test.ts",
 		]);
 	});
+
+	it("flags any file under a __tests__ directory, regardless of its own name", () => {
+		// bead myusage-4xu.20: a test-support directory catches everything under it, even a
+		// file whose own basename would otherwise pass the name-pattern check clean.
+		const paths = ["dist/__tests__/helpers.js", "dist/index.js"];
+
+		expect(filterTestOrSupportPaths(paths)).toEqual([
+			"dist/__tests__/helpers.js",
+		]);
+	});
+
+	it("flags any file under a __mocks__ directory, regardless of its own name", () => {
+		const paths = ["dist/__mocks__/x.js", "dist/index.js"];
+
+		expect(filterTestOrSupportPaths(paths)).toEqual(["dist/__mocks__/x.js"]);
+	});
+
+	it("flags any file under a fixtures directory, regardless of its own name", () => {
+		const paths = ["dist/fixtures/sample.js", "dist/index.js"];
+
+		expect(filterTestOrSupportPaths(paths)).toEqual([
+			"dist/fixtures/sample.js",
+		]);
+	});
+
+	it("flags a test-support directory nested several levels deep", () => {
+		const paths = ["dist/sources/__mocks__/opencode.js"];
+
+		expect(filterTestOrSupportPaths(paths)).toEqual([
+			"dist/sources/__mocks__/opencode.js",
+		]);
+	});
+
+	it("flags a test-support directory on a Windows-style backslash path", () => {
+		// Same separator-independence isUnderDir already gives the packed-file side (see
+		// below) - the pack list can arrive backslash-separated on a Windows runner.
+		const paths = ["dist\\__mocks__\\x.js"];
+
+		expect(filterTestOrSupportPaths(paths)).toEqual(["dist\\__mocks__\\x.js"]);
+	});
+
+	it("does not flag a directory whose name merely contains __mocks__ as a substring", () => {
+		// Exact segment match, the same discipline the basename pattern already applies: a
+		// directory named `my__mocks__ish` is a real name, not the __mocks__ convention.
+		const paths = ["dist/my__mocks__ish/index.js"];
+
+		expect(filterTestOrSupportPaths(paths)).toEqual([]);
+	});
+
+	it("does not flag the bare directory name itself with nothing under it", () => {
+		// "fixtures" as a FILE's own basename (no extension) is not the fixtures directory
+		// convention this rule targets - only a path that has fixtures as one of its
+		// directory segments counts.
+		const paths = ["dist/fixtures"];
+
+		expect(filterTestOrSupportPaths(paths)).toEqual([]);
+	});
 });
 
 describe("isUnderDir: separator-safe directory-prefix check", () => {

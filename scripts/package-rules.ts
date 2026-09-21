@@ -23,15 +23,40 @@ export const DIST = "dist";
 // in one of those names so the build leaves it out.
 const TEST_OR_SUPPORT = /\.(test|spec|fixtures)\./;
 
-/** The paths whose basename matches the test-or-support name pattern - a directory segment
- * that happens to contain one of these markers (e.g. `my.test.dir/index.ts`) does not count;
- * only the file's own name decides. */
-export function filterTestOrSupportPaths(paths: string[]): string[] {
-	return paths.filter((path) => TEST_OR_SUPPORT.test(basename(path)));
-}
+// bead myusage-4xu.20: a second, independent way a path can be test support - living under one
+// of these directories, regardless of the file's own name inside it (test-utils.ts under
+// __mocks__/ has a name the pattern above would never catch on its own). Exact segment match
+// only, the same discipline TEST_OR_SUPPORT already applies to basenames: a directory named
+// `my__mocks__ish` is a real name, not this convention. tsconfig.build.json excludes
+// __tests__/** and __mocks__/** so a real build never emits them into dist/ in the first place;
+// it does NOT exclude a plain `fixtures/` directory (too generic a name to blanket-exclude from
+// every build), so this filter is the only thing standing between a `fixtures/` directory and
+// the published package.
+const TEST_OR_SUPPORT_DIR = new Set(["__tests__", "__mocks__", "fixtures"]);
 
 function normalizeSeparators(path: string): string {
 	return path.replaceAll("\\", "/");
+}
+
+/** Whether `path` has one of TEST_OR_SUPPORT_DIR as a directory segment - the file's own
+ * basename never counts, only what sits above it, and separators are normalized first so a
+ * backslash-separated path (e.g. from npm's JSON output on Windows) is checked the same way as
+ * a POSIX one. */
+function hasTestSupportDir(path: string): boolean {
+	const segments = normalizeSeparators(path).split("/");
+	segments.pop(); // the basename itself is not a directory segment
+	return segments.some((segment) => TEST_OR_SUPPORT_DIR.has(segment));
+}
+
+/** The paths that are test code or test support, either by the TEST_OR_SUPPORT basename
+ * pattern (e.g. `pricing.fixtures.ts`) or by living under a TEST_OR_SUPPORT_DIR directory (e.g.
+ * anything under `__mocks__/`) - a directory segment that merely contains one of these markers
+ * (e.g. `my.test.dir/index.ts`, `my__mocks__ish/index.ts`) does not count either way; only an
+ * exact basename match or an exact directory-segment match decides. */
+export function filterTestOrSupportPaths(paths: string[]): string[] {
+	return paths.filter(
+		(path) => TEST_OR_SUPPORT.test(basename(path)) || hasTestSupportDir(path),
+	);
 }
 
 /** Whether `path` sits strictly under `dir` - a same-prefix sibling directory (`distant/` vs

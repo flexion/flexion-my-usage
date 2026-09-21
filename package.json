@@ -14,7 +14,7 @@
 		"dist"
 	],
 	"scripts": {
-		"build": "tsc -p tsconfig.build.json",
+		"build": "node scripts/clean-dist.mjs && tsc -p tsconfig.build.json",
 		"dev": "tsx src/index.ts",
 		"typecheck": "tsc --noEmit && tsc -p tsconfig.config.json",
 		"check:package": "yarn build && tsx scripts/check-package.mjs",

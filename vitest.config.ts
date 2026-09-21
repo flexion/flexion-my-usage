@@ -18,6 +18,21 @@ type CoverageGate = {
 	lines: 100;
 };
 
+// pool: "forks" (see the comment on that line below for why it's pinned) has the same gap
+// CoverageGate closes above, for a different reason: vitest's own `Pool` type is `BuiltinPool |
+// (string & {})` - a structural escape hatch so a custom pool package can supply its own string -
+// and that escape hatch widens the field to accept ANY string, typo included. Verified by hand
+// (myusage-7j2): `pool: "forkz"` compiles clean under `tsc -p tsconfig.config.json` with no
+// PoolGate check in place. Unlike CoverageGate, this needs no `as const` on the value itself -
+// a plain string literal in an object literal already infers as its own fresh literal type
+// (`"forks"`, not widened to `string`) when the contextual type from `satisfies ViteUserConfig`
+// offers that literal as one branch of a union, which BuiltinPool does. `config.test.pool
+// satisfies PoolGate` below is the same post-hoc-reference shape as `thresholds satisfies
+// CoverageGate`: naming the one literal this repo actually wants turns a silently-accepted typo
+// into a `tsc` diagnostic that quotes the bad value directly (TS1360, "does not satisfy the
+// expected type").
+type PoolGate = "forks";
+
 // --- coverage.exclude: every entry must be an explicit path, never a glob (myusage-c2a) ---
 //
 // CoverageGate above pins the four threshold numbers by name, but says nothing about the
@@ -139,6 +154,9 @@ const config = {
 		// lookups in a process pool.forks owns, so pool: "threads" makes the assertion
 		// fail loudly instead of silently skipping TZ isolation. Pinning here means a
 		// future vitest default change can't move that failure from loud to silent.
+		// A typo'd value here (e.g. "forkz") still fails loudly at runtime - vitest throws
+		// "Runner ... is not supported" - but PoolGate above (see its own comment) also
+		// catches it at typecheck time now, before the test run gets that far.
 		pool: "forks",
 
 		coverage: {
@@ -230,5 +248,11 @@ config.test.coverage.thresholds satisfies CoverageGate;
 // shape where the array is written) - see that function's own doc comment for why this
 // second, deliberately trivial line is what actually fails when `include` is deleted.
 config.test.coverage.include satisfies string[];
+
+// Same shape as the thresholds check above, for `pool` (myusage-7j2): PoolGate names the one
+// literal this repo actually wants, so a typo like "forkz" - which `satisfies ViteUserConfig`
+// alone accepts via vitest's own `(string & {})` escape hatch - fails here instead, with a
+// diagnostic that quotes the bad value directly.
+config.test.pool satisfies PoolGate;
 
 export default defineConfig(config);

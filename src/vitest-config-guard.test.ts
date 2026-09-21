@@ -215,26 +215,50 @@ function graftIntoExcludeArray(
 	};
 }
 
+/** Blanks out `//`-to-end-of-line comments and block comments (`/*`, paired with its own closing
+ * marker) in `text`, replacing every non-newline character of a comment with a space - so every
+ * OTHER character keeps its exact offset. `findStringLiteralsInRange` below scans this blanked
+ * output instead of the raw source
+ * (myusage-4xu.51) so a quoted word inside a comment (e.g. `// NOTE: keep this list sorted
+ * "alphabetically"`) can never be mistaken for a real array entry: a space can't open or close a
+ * string literal, so blanking only ever removes a would-be match, never adds one. Deliberately
+ * naive, matching this file's other helpers' own conventions: doesn't distinguish a `//` or `/*`
+ * that appears inside a real string literal from a genuine comment start, which would misfire on
+ * a path containing those characters - safe here because, by this repo's own convention
+ * (AGENTS.md), every coverage.exclude/coverage.include entry is a plain `src/`- or `scripts/`-
+ * rooted path or negation, and none of those contain `//` or `/*`. Textual on purpose, not a real
+ * parse: this repo's installed TypeScript (see package.json) doesn't expose
+ * createSourceFile/forEachChild, so an AST-based fix isn't available here (confirmed by hand). */
+function stripComments(text: string): string {
+	return text.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (comment) =>
+		comment.replace(/[^\n]/g, " "),
+	);
+}
+
 /** Finds every top-level string-literal element within `[start, end)` of `source` - the same
  * span `findKeyedArray` returns for coverage.exclude's own array literal - in source order.
  * `replaceEntryInPlace` and `findExcludeEntryIndex` use this to locate an entry by its position
  * in the array rather than by its (mutable) text, so replacing entry 0's value doesn't require
- * already knowing what entry 0 currently says. Deliberately naive (a plain `"..."` regex, no
- * comment-awareness): safe here because every comment inside this specific array is prose, never
- * a quoted string, so it cannot produce a false match; a general-purpose source parser would need
- * to be more careful. */
+ * already knowing what entry 0 currently says. Scans `stripComments`' blanked output, not the raw
+ * slice (myusage-4xu.51), so a comment's own quoted text is never counted as an entry; every
+ * returned offset is still relative to the ORIGINAL `source`, since `stripComments` preserves
+ * length and position one-for-one and this adds `start` back onto each match index - callers
+ * that slice `source` with these offsets need no adjustment. */
 function findStringLiteralsInRange(
 	source: string,
 	start: number,
 	end: number,
 ): { start: number; end: number }[] {
+	const scanned = stripComments(source.slice(start, end));
 	const literals: { start: number; end: number }[] = [];
 	const pattern = /"(?:[^"\\]|\\.)*"/g;
-	pattern.lastIndex = start;
-	let match = pattern.exec(source);
-	while (match !== null && match.index < end) {
-		literals.push({ start: match.index, end: match.index + match[0].length });
-		match = pattern.exec(source);
+	let match = pattern.exec(scanned);
+	while (match !== null) {
+		literals.push({
+			start: start + match.index,
+			end: start + match.index + match[0].length,
+		});
+		match = pattern.exec(scanned);
 	}
 	return literals;
 }

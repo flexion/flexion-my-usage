@@ -122,6 +122,20 @@ function attr(tag: string, name: string): string | undefined {
 	return tag.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1];
 }
 
+/**
+ * The full `<svg ...>...</svg>` markup for the panel whose `aria-label` matches, or "" if not
+ * found. Found by NAME, same convention as `attr`/`dayBarMarkup` above, so this stays correct
+ * however render.ts orders the `<svg>` tag's own attributes.
+ */
+function svgMarkup(html: string, ariaLabel: string): string {
+	const svgs = html.match(/<svg\b[^>]*>[\s\S]*?<\/svg>/g) ?? [];
+	const svg = svgs.find((s) => {
+		const openTag = s.match(/^<svg\b[^>]*>/)?.[0] ?? "";
+		return attr(openTag, "aria-label") === ariaLabel;
+	});
+	return svg ?? "";
+}
+
 /** The `<g class="day-bar" data-day="...">...</g>` markup for one day, or "" if not found. */
 function dayBarMarkup(html: string, dayLabel: string): string {
 	const groups = html.match(/<g\b[^>]*>[\s\S]*?<\/g>/g) ?? [];
@@ -257,7 +271,7 @@ describe("renderHtml: document shape", () => {
 });
 
 describe("renderHtml: KPI row", () => {
-	it("pairs each tile's own label with its own formatter's output, not another tile's", () => {
+	it("pairs each tile's own label with its own formatter's output, not another tile's, in the documented Notional cost / Tokens / Responses order", () => {
 		// Hand-computed literal expectations, not a re-run of windowTotals/the formatters
 		// under test (the self-referential shape myusage-4xu.29 flagged: that version
 		// stayed green under both a label swap and a formatter swap). notionalCost 12.25,
@@ -266,6 +280,12 @@ describe("renderHtml: KPI row", () => {
 		// tile's label with another's value, or swapping any tile's formatter for
 		// another's, changes what's asserted here - unlike the original fixture, where
 		// formatCount and formatTokens happened to agree on the response count.
+		//
+		// Asserted as one contiguous literal spanning all three tiles in sequence, rather
+		// than three independent `toContain`s: three separate checks each pass regardless of
+		// which order the tiles render in, so reversing renderKpiRow's tile order used to
+		// survive this test untouched (myusage-4xu.43). One literal covering all three, back
+		// to back, pins the order too.
 		const days = [
 			day("2026-09-01", [series({ cost: 5, tokens: 1_000_000 })], 600),
 			day("2026-09-02", [series({ cost: 7.25, tokens: 1_340_000 })], 634),
@@ -274,13 +294,11 @@ describe("renderHtml: KPI row", () => {
 		const html = renderHtml(days);
 
 		expect(html).toContain(
-			'<div class="kpi-tile">\n<div class="kpi-label">Notional cost</div>\n<div class="kpi-value">$12.25</div>\n</div>',
-		);
-		expect(html).toContain(
-			'<div class="kpi-tile">\n<div class="kpi-label">Tokens</div>\n<div class="kpi-value">2.34M</div>\n</div>',
-		);
-		expect(html).toContain(
-			'<div class="kpi-tile">\n<div class="kpi-label">Responses</div>\n<div class="kpi-value">1,234</div>\n</div>',
+			[
+				'<div class="kpi-tile">\n<div class="kpi-label">Notional cost</div>\n<div class="kpi-value">$12.25</div>\n</div>',
+				'<div class="kpi-tile">\n<div class="kpi-label">Tokens</div>\n<div class="kpi-value">2.34M</div>\n</div>',
+				'<div class="kpi-tile">\n<div class="kpi-label">Responses</div>\n<div class="kpi-value">1,234</div>\n</div>',
+			].join("\n"),
 		);
 	});
 });
@@ -465,40 +483,111 @@ describe("renderHtml: chart axis", () => {
 	});
 
 	it("draws three y-axis gridlines per panel, at 0%, 50% and 100% of the max value, each labeled", () => {
-		const html = renderHtml(buildWindow());
+		// Assertions below are on the meaningful properties (count, relative fraction-based
+		// position, and label text computed the same way the source computes it) rather than
+		// literal pixel coordinates - a deliberate margin/layout tweak must not break this
+		// test even though nothing would actually be wrong (myusage-4xu.43).
+		const days = buildWindow();
+		const html = renderHtml(days);
 
 		// Two panels, three fractions each - dropping the 0.5 fraction (down to just [0, 1])
 		// would halve this to 4.
 		const gridlines = html.match(/<line[^>]*class="gridline"[^>]*\/>/g) ?? [];
 		expect(gridlines).toHaveLength(6);
 
-		// The cost panel's busiest day (2026-09-07) totals $24: the 50% gridline sits at
-		// half the plot height and is labeled at half that max value.
-		expect(html).toContain(
-			'<line x1="64.00" y1="172.00" x2="824.00" y2="172.00" class="gridline" />',
+		const svg = svgMarkup(html, "Daily cost");
+		const lines = svg.match(/<line[^>]*class="gridline"[^>]*\/>/g) ?? [];
+		const baseline = svg.match(/<line[^>]*class="baseline"[^>]*\/>/)?.[0] ?? "";
+		const labels =
+			svg.match(
+				/<text[^>]*class="axis-label axis-label-y"[^>]*>[^<]*<\/text>/g,
+			) ?? [];
+		expect(lines).toHaveLength(3);
+		expect(labels).toHaveLength(3);
+
+		// Every gridline spans the exact same horizontal extent as the chart's own baseline -
+		// the full plot width - whatever x the margins land on.
+		for (const line of lines) {
+			expect(attr(line, "x1")).toBe(attr(baseline, "x1"));
+			expect(attr(line, "x2")).toBe(attr(baseline, "x2"));
+		}
+
+		// The 0% gridline sits exactly on the baseline; the 100% gridline sits above it; the
+		// 50% gridline sits exactly halfway between them - the same fraction-of-plot-height
+		// math the source uses, verified here as a relationship instead of a pinned pixel
+		// value.
+		const [zeroY, halfY, fullY] = lines.map((line) => Number(attr(line, "y1")));
+		if (zeroY === undefined || halfY === undefined || fullY === undefined) {
+			throw new Error("fixture has 3 gridlines");
+		}
+		expect(zeroY).toBe(Number(attr(baseline, "y1")));
+		expect(fullY).toBeLessThan(zeroY);
+		expect(halfY).toBeCloseTo((zeroY + fullY) / 2, 5);
+
+		// Each gridline's label sits on the same row as its line (same y) and reads the
+		// window's max cost at that line's own fraction, formatted the same way the source
+		// formats it - not a hardcoded dollar literal that would go stale the moment the
+		// fixture's totals change.
+		const stacks = stackByModel(days, "cost");
+		const maxValue = Math.max(0, ...stacks.days.map((d) => d.total));
+		const labelYs = labels.map((label) => Number(attr(label, "y")));
+		const labelTexts = labels.map(
+			(label) => label.match(/>([^<]*)<\/text>/)?.[1],
 		);
-		expect(html).toContain(
-			'<text x="56.00" y="172.00" class="axis-label axis-label-y" text-anchor="end" dominant-baseline="middle">$12.00</text>',
+		expect(labelYs).toEqual(lines.map((line) => Number(attr(line, "y1"))));
+		expect(labelTexts).toEqual(
+			[0, 0.5, 1].map((fraction) => formatCurrency(maxValue * fraction)),
 		);
 	});
 });
 
 /**
+ * One CSS declaration's value out of a `style` attribute's value, found by property NAME rather
+ * than assuming it's the only (or first) declaration present - so `styleDeclaration(s,
+ * "background")` keeps working whatever else `style` carries, or what order the declarations
+ * are in. `""` when `style` doesn't carry that property at all.
+ */
+function styleDeclaration(style: string, property: string): string {
+	const declaration = style
+		.split(";")
+		.map((part) => part.trim())
+		.find((part) => part.startsWith(`${property}:`));
+	return declaration?.slice(property.length + 1).trim() ?? "";
+}
+
+/**
  * Every `<li class="legend-row">...</li>` block in the rendered legend, as `[label, color]`
- * pairs. Reads the swatch's `style` attribute and the label span's text by NAME - via `attr`
- * for the swatch tag, and a class-scoped match for the label - so this stays correct however
- * `renderLegend` orders the swatch span's `class`/`style` attributes, or where the label span
- * falls relative to it (myusage-4xu.42, closing the same coupling myusage-4xu.31 removed from
- * the day-bar markup helpers above, but missed here).
+ * pairs. Finds the row scope, the swatch's `style` attribute, and the label span all by
+ * attribute NAME via the shared `attr` reader - the same pattern the day-bar markup helpers
+ * above use - rather than a fixed-shape regex or exact-class match, so this stays correct
+ * however `renderLegend` orders attributes, whatever unrelated attributes it adds to the row or
+ * label tags, and whatever else the swatch's `style` attribute carries besides `background`
+ * (myusage-4xu.42, myusage-4xu.44).
  */
 function legendPairs(html: string): [label: string, color: string][] {
-	const rows = html.match(/<li class="legend-row">[\s\S]*?<\/li>/g) ?? [];
+	const items = html.match(/<li\b[^>]*>[\s\S]*?<\/li>/g) ?? [];
+	const rows = items.filter((li) => {
+		const openTag = li.match(/^<li\b[^>]*>/)?.[0] ?? "";
+		return attr(openTag, "class") === "legend-row";
+	});
 	return rows.map((row) => {
-		const swatchTag = row.match(/<span\b[^>]*class="swatch"[^>]*>/)?.[0] ?? "";
-		const style = attr(swatchTag, "style") ?? "";
-		const color = style.match(/^background:(.*)$/)?.[1] ?? "";
-		const label =
-			row.match(/<span class="legend-label">([^<]*)<\/span>/)?.[1] ?? "";
+		const spans = row.match(/<span\b[^>]*>[^<]*<\/span>/g) ?? [];
+		const swatch =
+			spans.find((span) => {
+				const openTag = span.match(/^<span\b[^>]*>/)?.[0] ?? "";
+				return attr(openTag, "class") === "swatch";
+			}) ?? "";
+		const swatchOpenTag = swatch.match(/^<span\b[^>]*>/)?.[0] ?? "";
+		const style = attr(swatchOpenTag, "style") ?? "";
+		const color = styleDeclaration(style, "background");
+
+		const labelSpan =
+			spans.find((span) => {
+				const openTag = span.match(/^<span\b[^>]*>/)?.[0] ?? "";
+				return attr(openTag, "class") === "legend-label";
+			}) ?? "";
+		const label = labelSpan.match(/^<span\b[^>]*>([^<]*)<\/span>$/)?.[1] ?? "";
+
 		return [label, color];
 	});
 }
@@ -516,6 +605,10 @@ describe("renderHtml: chart color assignment", () => {
 
 		// Ranked by cost: model-a (10) first, model-b (5) second - buildColorLookup assigns
 		// palette slots in that rank order, one each, never repeating a slot.
+		// Pinned as an exact literal deliberately: unlike the gridline test above, this isn't
+		// a layout coordinate a margin/spacing tweak could move - `var(--series-N)` is the
+		// rank-to-palette-slot mapping itself, the user-visible behavior this test exists to
+		// protect (myusage-4xu.43).
 		expect(legendPairs(html)).toEqual([
 			["model-a", "var(--series-1)"],
 			["model-b", "var(--series-2)"],
@@ -536,6 +629,8 @@ describe("renderHtml: chart color assignment", () => {
 
 		const otherPair = pairs.find(([label]) => label === OTHER_LABEL);
 		if (!otherPair) throw new Error("fixture folds a tail into Other");
+		// Same reasoning as the test above: `var(--other)` is the documented, fixed color for
+		// the roll-up, not a coordinate a layout tweak could shift - an intentional exact pin.
 		expect(otherPair[1]).toBe("var(--other)");
 
 		const namedColors = pairs

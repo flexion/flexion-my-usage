@@ -572,6 +572,57 @@ describe("opencodeSource.discover", () => {
 				);
 			},
 		);
+
+		// Same shape as the WAL-readonly-directory .cause assertion in the read() describe block
+		// below: the original stat() failure must be chained, not dropped, so whatever actually
+		// broke (permissions, a stale mount, ...) stays inspectable from the rewritten error.
+		it("chains the original stat() failure as .cause when OPENCODE_DB cannot be read", async () => {
+			await isolatedHome();
+			const elsewhere = await sandbox();
+			const overridePath = join(elsewhere, "override.db");
+			vi.stubEnv("OPENCODE_DB", overridePath);
+
+			const error = Object.assign(new Error("EIO"), {
+				code: "EIO",
+			}) as NodeJS.ErrnoException;
+			const injectedStat = vi.fn().mockRejectedValue(error);
+
+			let caught: unknown;
+			try {
+				await opencodeSource.discover({ stat: injectedStat });
+			} catch (thrown) {
+				caught = thrown;
+			}
+
+			expect(caught).toBeInstanceOf(Error);
+			expect((caught as Error).cause).toBe(error);
+		});
+
+		// The it.each fixtures above build their error as `Object.assign(new Error(code), {
+		// code })`, so `.message` is literally the bare code - every one of those cases would
+		// pass just as well under the old "code ?? message" fallback. A real errno's message is
+		// normally a strict superset of its code (confirmed directly against Node's own
+		// fs.promises.stat() rejections, e.g. "ENOTDIR: not a directory, stat '/x'"), so this
+		// fixture shapes .message the same way: different from .code, to prove the full message
+		// is used rather than the bare code alone.
+		it("uses the errno's real message, not just its bare code, when OPENCODE_DB cannot be read", async () => {
+			await isolatedHome();
+			const elsewhere = await sandbox();
+			const overridePath = join(elsewhere, "override.db");
+			vi.stubEnv("OPENCODE_DB", overridePath);
+
+			const message = `ENOTDIR: not a directory, stat '${overridePath}'`;
+			const error = Object.assign(new Error(message), {
+				code: "ENOTDIR",
+			}) as NodeJS.ErrnoException;
+			const injectedStat = vi.fn().mockRejectedValue(error);
+
+			await expect(
+				opencodeSource.discover({ stat: injectedStat }),
+			).rejects.toThrow(
+				`OPENCODE_DB is set to ${overridePath} but it could not be read: ${message}`,
+			);
+		});
 	});
 });
 
@@ -1338,10 +1389,10 @@ describe("compareRows", () => {
 		tokens: { input: 1, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
 	});
 
-	it("orders by completion time before message id", () => {
-		expect(compareRows(row(1, "z"), row(2, "a"))).toBeLessThan(0);
-		expect(compareRows(row(2, "a"), row(1, "z"))).toBeGreaterThan(0);
-	});
+	// Pure-time ordering (independent of message id) is already covered end to end by
+	// "orders rows by completion time, then message id, regardless of insert order" above,
+	// which reads real rows out of SQLite (verified: an always-0 compareRows mutation fails
+	// that test). A duplicate unit case here would add no incremental coverage.
 
 	it("breaks a time tie by message id, comparing code units rather than locale order", () => {
 		expect(compareRows(row(1, "a"), row(1, "b"))).toBe(-1);

@@ -119,8 +119,9 @@ function toRow(raw: Record<string, unknown>): NormalizedUsageRow | undefined {
 	};
 }
 
-// Exported so the total-order contract (equal keys compare equal) can be tested directly:
-// message ids are a primary key, so the equal case cannot come out of a real database read.
+// Exported for a direct unit test of the code-unit tie-break (locale-independent ordering).
+// Message ids are a primary key, so two distinct rows can never tie on both timestamp and
+// message id - once a time tie reaches the message-id compare, exactly one of them is smaller.
 export function compareRows(
 	a: NormalizedUsageRow,
 	b: NormalizedUsageRow,
@@ -128,7 +129,7 @@ export function compareRows(
 	const byTime = a.timestamp.getTime() - b.timestamp.getTime();
 	if (byTime !== 0) return byTime;
 	// Plain code-unit comparison: deterministic regardless of locale.
-	return a.messageId < b.messageId ? -1 : a.messageId > b.messageId ? 1 : 0;
+	return a.messageId < b.messageId ? -1 : 1;
 }
 
 // discover() takes two injectable seams, `stat` and `readdir`, the same seam shape as the

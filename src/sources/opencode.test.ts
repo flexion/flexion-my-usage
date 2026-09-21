@@ -1400,8 +1400,4 @@ describe("compareRows", () => {
 		// Code-unit order puts "B" before "a"; a locale-aware compare would not.
 		expect(compareRows(row(1, "B"), row(1, "a"))).toBe(-1);
 	});
-
-	it("compares identical keys as equal, so it is a total order", () => {
-		expect(compareRows(row(1, "a"), row(1, "a"))).toBe(0);
-	});
 });

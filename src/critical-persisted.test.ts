@@ -114,6 +114,21 @@ describe("sameCriticalFlag: the identity rule itself", () => {
 		expect(sameCriticalFlag(a, b)).toBe(false);
 	});
 
+	it("does not match when only one side's evidence is blank, in either argument order", () => {
+		// Pins the one-sided-blank case specifically: a mutant that returned `true` (a match)
+		// for exactly this shape - a blank-evidence flag paired with a real-evidence flag - is
+		// the precise false-positive-escalation bug class this whole module exists to prevent
+		// (myusage-4xu.25), and it would otherwise survive the rest of the suite: the fallthrough
+		// `normalizedA === normalizedB` comparison is exercised by other tests, but never in a
+		// way that would catch this specific wrong answer. Both argument orders are asserted
+		// since the blank side can land on either parameter.
+		const blank: CriticalFlag = { evidence: "" };
+		const real: CriticalFlag = { evidence: "real evidence" };
+
+		expect(sameCriticalFlag(blank, real)).toBe(false);
+		expect(sameCriticalFlag(real, blank)).toBe(false);
+	});
+
 	it("does not match when one evidence string is merely a substring of the other", () => {
 		// Pins the evidence comparison as an EXACT match, not `.includes()` - mutation testing
 		// on PR #55 found the entire existing suite stays green even if this comparison is

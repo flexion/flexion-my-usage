@@ -23,13 +23,14 @@
 // rounds running, so an id match only counts when it's a comparison of two ids that both
 // actually exist AND are non-empty; an empty string is not a real id, so it is treated as
 // absent, same as no id at all - see myusage-4xu.48) or, failing that, by an exact (never
-// substring) match on `evidence` (trimmed, and only when that trimmed evidence is non-empty -
-// blank evidence carries no more identity information than a missing id, so two flags that both
-// merely lack real evidence never count as a match either) - the reviewer's own description of
-// what the flag is about. Merely having a critical in both rounds' lists is not enough; one of
-// the current round's flags must be the SAME flag as one of the previous round's by one of
-// those two keys. No prior-round criticals, or no current-round criticals, can never count as
-// "persisted" - there is nothing for a current flag to match against.
+// substring) match on `evidence` (trimmed; blank evidence never counts as a match against
+// anything - not against another blank, since blank carries no more identity information than
+// a missing id, and not against real evidence, since a blank string can never equal a non-blank
+// one) - the reviewer's own description of what the flag is about. Merely having a critical in
+// both rounds' lists is not enough; one of the current round's flags must be the SAME flag as
+// one of the previous round's by one of those two keys. No prior-round criticals, or no
+// current-round criticals, can never count as "persisted" - there is nothing for a current flag
+// to match against.
 
 /** One critical-severity flag a test-review round raised. `evidence` is required - even a
  * flag that carries a stable `id` still has its own description - because `evidence` is the
@@ -83,6 +84,13 @@ export function sameCriticalFlag(a: CriticalFlag, b: CriticalFlag): boolean {
 	}
 	const normalizedA = normalizeEvidence(a.evidence);
 	const normalizedB = normalizeEvidence(b.evidence);
+	// Both conjuncts here are individually droppable with the full test suite staying green:
+	// whenever exactly one side is blank, the fallthrough `normalizedA === normalizedB` below
+	// already returns false on its own (a blank string can never equal a non-blank one), so only
+	// the both-blank case strictly needs this guard. Kept as a two-sided `&&` rather than
+	// collapsed to a single-sided check for readability - a lone `normalizedA === ""` (or the
+	// mirror `normalizedB === ""`) would read as an asymmetric, likely-buggy guard to a future
+	// maintainer, even though it would be behaviorally equivalent to this one.
 	if (normalizedA === "" && normalizedB === "") {
 		return false;
 	}

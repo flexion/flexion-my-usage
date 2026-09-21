@@ -10,6 +10,7 @@ import {
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	failingFetch,
 	fakeFetch,
 	forbiddenFetch,
 	LITELLM_FIXTURE,
@@ -18,6 +19,7 @@ import {
 	useTempCacheDirs,
 } from "./pricing.fixtures.js";
 import { price } from "./pricing.js";
+import { DEFAULT_MAX_CACHE_AGE_MS } from "./pricing-table.js";
 
 const newCacheDir = useTempCacheDirs();
 
@@ -64,18 +66,78 @@ describe("price table: fetch once, then stay offline", () => {
 		expect(row?.notionalCost).toBeCloseTo(3, 9);
 	});
 
-	it("does not expire the cache: an old cache is used without any fetch", async () => {
+	it("a cache within the max age is used immediately, with no fetch attempt", async () => {
 		const cacheDir = await newCacheDir();
 		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });
 		const file = await cacheFile(cacheDir);
-		const twoYearsAgo = new Date(Date.now() - 2 * 365 * 24 * 3600 * 1000);
-		await utimes(file, twoYearsAgo, twoYearsAgo);
+		// Comfortably inside DEFAULT_MAX_CACHE_AGE_MS (24h), not just "freshly written" - proves
+		// the fast path survives real age, not only a brand-new cache.
+		const anHourAgo = new Date(Date.now() - 3600 * 1000);
+		await utimes(file, anHourAgo, anHourAgo);
 
 		const offline = forbiddenFetch();
 		const [row] = await price([sonnetRow()], { cacheDir, fetch: offline });
 
 		expect(offline).not.toHaveBeenCalled();
 		expect(row?.unpriced).toBe(false);
+		expect(row?.notionalCost).toBeCloseTo(3, 9);
+	});
+
+	/** Older than DEFAULT_MAX_CACHE_AGE_MS by a comfortable margin, not just past it. */
+	function ageCacheFile(file: string): Promise<void> {
+		const wellPastMaxAge = new Date(
+			Date.now() - DEFAULT_MAX_CACHE_AGE_MS - 3600 * 1000,
+		);
+		return utimes(file, wellPastMaxAge, wellPastMaxAge);
+	}
+
+	it("fetches fresh data and rewrites the cache when the refresh succeeds", async () => {
+		const cacheDir = await newCacheDir();
+		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });
+		const file = await cacheFile(cacheDir);
+		await ageCacheFile(file);
+		const repriced = {
+			...LITELLM_FIXTURE,
+			"claude-sonnet-4-5": {
+				...LITELLM_FIXTURE["claude-sonnet-4-5"],
+				input_cost_per_token: 0.000004,
+			},
+		};
+		const fetch = fakeFetch(repriced);
+
+		const [row] = await price([sonnetRow()], { cacheDir, fetch });
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(row?.unpriced).toBe(false);
+		expect(row?.notionalCost).toBeCloseTo(4, 9);
+		expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
+			"claude-sonnet-4-5": { input_cost_per_token: 0.000004 },
+		});
+	});
+
+	it("attempts one refresh, then falls back to the stale cache with a single warning when it fails", async () => {
+		const cacheDir = await newCacheDir();
+		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });
+		const file = await cacheFile(cacheDir);
+		await ageCacheFile(file);
+		const before = await readFile(file, "utf8");
+		const fetch = failingFetch();
+		const warn = vi.fn();
+
+		const [row] = await price([sonnetRow()], { cacheDir, fetch, warn });
+
+		// The refresh was attempted exactly once (this is what distinguishes "never expires" from
+		// "expires and retries once") ...
+		expect(fetch).toHaveBeenCalledTimes(1);
+		// ... it failed, so the stale cache's own data still prices the row ...
+		expect(row?.unpriced).toBe(false);
+		expect(row?.notionalCost).toBeCloseTo(3, 9);
+		// ... the cache file itself is untouched (the failed fetch never overwrote it) ...
+		expect(await readFile(file, "utf8")).toBe(before);
+		// ... and exactly one warning was raised about it - not zero (silent staleness) and not
+		// more than one.
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(String(warn.mock.calls[0]?.[0])).toMatch(/refresh failed/i);
 	});
 
 	it("shows a model missing from the cached table as unpriced until a refresh", async () => {

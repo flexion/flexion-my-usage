@@ -147,4 +147,33 @@ describe("withSqliteWarningSuppressed", () => {
 
 		expect(process.emitWarning).toBe(installed);
 	});
+
+	it("throws instead of restoring in the wrong order when a second call overlaps", async () => {
+		let releaseOuter: (() => void) | undefined;
+		const outerGate = new Promise<void>((resolve) => {
+			releaseOuter = resolve;
+		});
+
+		const outer = withSqliteWarningSuppressed(async () => {
+			await outerGate;
+			return "outer";
+		});
+
+		// The outer call has already installed its patched emitWarning and set the in-flight
+		// flag by the time it suspends on outerGate, so this overlapping call must fail loudly
+		// instead of silently reinstalling on top of it.
+		await expect(
+			withSqliteWarningSuppressed(async () => "inner"),
+		).rejects.toThrow(/not re-entrant/);
+
+		releaseOuter?.();
+		await expect(outer).resolves.toBe("outer");
+		expect(process.emitWarning).toBe(installed);
+
+		// The guard releases once the outer call finishes, so a later, non-overlapping call
+		// still works.
+		await expect(
+			withSqliteWarningSuppressed(async () => "again"),
+		).resolves.toBe("again");
+	});
 });

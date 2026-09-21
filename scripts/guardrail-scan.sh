@@ -23,7 +23,7 @@
 # directly rather than tracked files. That's safe: src/pricing.fixtures.ts's throwaway
 # TEST_ORIGIN_KEY never appears there, because vitest.config.ts excludes *.fixtures.*
 # files from coverage instrumentation and reporting entirely (see the comment there) -
-# not because of the .gitleaks.toml allowlist below, which only applies to gitleaks'
+# not because of the allowlist in .gitleaks.toml, which only applies to gitleaks'
 # own scans of tracked source and has no bearing on coverage/'s contents. Tracked:
 # myusage-qhc (corrects a wrong claim about this in PR #48's own body).
 #

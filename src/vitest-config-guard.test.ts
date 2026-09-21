@@ -217,22 +217,56 @@ function graftIntoExcludeArray(
 	};
 }
 
-/** Blanks out `//`-to-end-of-line comments and block comments (`/*`, paired with its own closing
- * marker) in `text`, replacing every non-newline character of a comment with a space - so every
- * OTHER character keeps its exact offset. `findStringLiteralsInRange` below scans this blanked
- * output instead of the raw source
- * (myusage-4xu.51) so a quoted word inside a comment (e.g. `// NOTE: keep this list sorted
- * "alphabetically"`) can never be mistaken for a real array entry: a space can't open or close a
- * string literal, so blanking only ever removes a would-be match, never adds one. Deliberately
- * naive, matching this file's other helpers' own conventions: doesn't distinguish a `//` or `/*`
- * that appears inside a real string literal from a genuine comment start, which would misfire on
- * a path containing those characters - safe here because, by this repo's own convention
- * (AGENTS.md), every coverage.exclude/coverage.include entry is a plain `src/`- or `scripts/`-
- * rooted path or negation, and none of those contain `//` or `/*`. Textual on purpose, not a real
- * parse: this repo's installed TypeScript (see package.json) doesn't expose
- * createSourceFile/forEachChild, so an AST-based fix isn't available here (confirmed by hand). */
+/** Inserts `comment` (a full `//`-prefixed line, no leading whitespace of its own) as the very
+ * first line inside coverage.exclude's array, right after its opening `[` - the same position
+ * real explanatory comments already occupy in this array today (see vitest.config.ts's own "Test
+ * code and test support" and "Humble objects" comments). Exists to plant a comment containing a
+ * quoted word (myusage-4xu.54) ahead of a real entry, so `stripComments`/`findStringLiteralsInRange`
+ * are exercised against the real, on-disk array - not just proven by a standalone reproduction -
+ * for the same class of bug myusage-4xu.51 fixed and myusage-4xu.53 fixed a second half of. */
+function insertCommentIntoExcludeArray(
+	source: string,
+	comment: string,
+): string {
+	const { arrayStart } = findKeyedArray(
+		source,
+		"exclude",
+		findCoverageBlock(source),
+	);
+	const afterBracket = source.slice(arrayStart + 1);
+	const indentMatch = afterBracket.match(/^\n([ \t]*)/);
+	const indent = indentMatch?.[1] ?? "";
+	return `${source.slice(0, arrayStart + 1)}\n${indent}${comment}${afterBracket}`;
+}
+
+/** Blanks out `//`-to-end-of-line comments in `text`, replacing every non-newline character of a
+ * comment with a space - so every OTHER character keeps its exact offset. `findStringLiteralsInRange`
+ * below scans this blanked output instead of the raw source (myusage-4xu.51) so a quoted word
+ * inside a comment (e.g. `// NOTE: keep this list sorted "alphabetically"`) can never be mistaken
+ * for a real array entry: a space can't open or close a string literal, so blanking only ever
+ * removes a would-be match, never adds one. Deliberately naive, matching this file's other
+ * helpers' own conventions: doesn't distinguish a `//` that appears inside a real string literal
+ * from a genuine comment start, which would misfire on a path containing that character - safe
+ * here because, by this repo's own convention (AGENTS.md), every coverage.exclude/coverage.include
+ * entry is a plain `src/`- or `scripts/`-rooted path or negation, and none of those contain `//`.
+ *
+ * Line comments only - no `/* *\/` block-comment handling (myusage-4xu.53, removed after a
+ * review found it unsound): the block-comment branch this file originally shipped with (PR #61,
+ * myusage-4xu.51) didn't respect string-literal boundaries, so a `/*`-like substring inside one
+ * array entry's string content could pair with a `*\/`-like substring inside a LATER, separate
+ * entry, blanking everything between them - including the comma and quotes that actually separate
+ * two distinct literals - as if it were one comment. Demonstrated with a hypothetical
+ * coverage.include of `["src/**\/*.ts", "scripts/*.ts", "src/**\/*.bench.ts"]`: the array-close
+ * "*\/" inside "src/**\/*.bench.ts" paired with the "/*" inside "scripts/*.ts", and the scanner
+ * found 2 literals instead of 3. Dropping the branch entirely, rather than hardening it, is safe
+ * because no block comment has ever existed anywhere in this array (verified: `grep -n '/\*'
+ * vitest.config.ts` around coverage.exclude/coverage.include turns up nothing but `/**` glob
+ * segments inside string literals and JSDoc-style `/**` doc comments elsewhere in the file, never
+ * a `/* ... *\/` comment written between array entries) - every real in-array comment here is a
+ * `//` line comment. Narrowing to only what's ever actually occurred removes real, demonstrated
+ * risk and adds none: there's no "can't-happen state" left to defend against speculatively. */
 function stripComments(text: string): string {
-	return text.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (comment) =>
+	return text.replace(/\/\/[^\n]*/g, (comment) =>
 		comment.replace(/[^\n]/g, " "),
 	);
 }
@@ -423,6 +457,84 @@ function removeCoverageInclude(source: string): string {
 	const lineEnd = source.indexOf("\n", commaIndex);
 	const end = lineEnd === -1 ? source.length : lineEnd + 1;
 	return source.slice(0, keyStart) + source.slice(end);
+}
+
+/** Replaces `pool`'s own quoted value (`pool: "forks"`) with `value` (already quoted) - the
+ * scalar-field mirror of `replaceEntryInPlace` above, needed because PoolGate (vitest.config.ts,
+ * myusage-7j2) guards a single string field, not an array, so there's no `findKeyedArray` span to
+ * reuse. Also returns the replaced value's own 1-indexed line number, for `expectDiagnosticNaming`
+ * the same way the array helpers do - though PoolGate's real diagnostic (see the test below) lands
+ * on the `satisfies` expression elsewhere in the file, not this line; `expectDiagnosticNaming`
+ * already accepts either as evidence.
+ *
+ * The pattern requires `pool:` to be the first non-whitespace text on its own line (`^[ \t]*pool:`,
+ * multiline): this file's header comments quote `pool: "forks"` and `pool: "forkz"` verbatim
+ * (explaining PoolGate itself, above), and a comment near the real field also mentions `pool:
+ * "threads"` in prose - a plain `/pool:\s*"[^"]*"/` search with no such anchor matches the FIRST
+ * of those comment lines instead of the real field (verified by hand: it silently mutates a
+ * comment, and the "mutated" config then typechecks cleanly, making this test fail for the wrong
+ * reason - a false pass on a no-op mutation, not proof PoolGate works). None of those comment
+ * lines start with `pool:` after their own leading whitespace - they all start with `//` first -
+ * so this anchor can only ever land on the actual field. */
+function replacePoolValue(
+	source: string,
+	value: string,
+): { source: string; entryLine: number } {
+	const match = source.match(/^[ \t]*pool:\s*"[^"]*"/m);
+	expect(
+		match,
+		'expected a `pool: "..."` field (not inside a comment) in vitest.config.ts (fixture anchor stale?)',
+	).not.toBeNull();
+	const startIndex = match?.index ?? -1;
+	expect(
+		startIndex,
+		'expected a `pool: "..."` field (not inside a comment) in vitest.config.ts (fixture anchor stale?)',
+	).toBeGreaterThan(-1);
+	const entryLine = source.slice(0, startIndex).split("\n").length;
+	const matched = match?.[0] ?? "";
+	const fieldStart = startIndex + matched.indexOf("pool:");
+	const fieldLength = matched.length - matched.indexOf("pool:");
+	return {
+		source: `${source.slice(0, fieldStart)}pool: ${value}${source.slice(fieldStart + fieldLength)}`,
+		entryLine,
+	};
+}
+
+function findThresholdsBlock(source: string): number {
+	const start = source.indexOf("thresholds: {");
+	expect(
+		start,
+		'expected a "thresholds: {" block in vitest.config.ts (fixture anchor stale?)',
+	).toBeGreaterThan(-1);
+	return start;
+}
+
+/** Replaces one of `thresholds`' own four numeric fields (`statements: 100`, say) with `value` -
+ * the scalar mirror of `replacePoolValue` above, for CoverageGate instead of PoolGate. Scoped to
+ * start searching after `thresholds: {` (`findThresholdsBlock`) so this can never match
+ * CoverageGate's own type declaration near the top of the file, which repeats the same four field
+ * names as TYPE members, not values - an unscoped search would silently rewrite the type instead
+ * of the config, turning "weaken the threshold" into "weaken the guard", a very different, much
+ * more dangerous mutation this helper isn't meant to make. */
+function replaceThresholdValue(
+	source: string,
+	field: "statements" | "branches" | "functions" | "lines",
+	value: string,
+): { source: string; entryLine: number } {
+	const blockStart = findThresholdsBlock(source);
+	const fieldPattern = new RegExp(`\\b${field}\\s*:\\s*\\d+`);
+	const match = source.slice(blockStart).match(fieldPattern);
+	expect(
+		match,
+		`expected "${field}: <number>" inside coverage.thresholds in vitest.config.ts (fixture anchor stale?)`,
+	).not.toBeNull();
+	const startIndex = blockStart + (match?.index ?? -1);
+	const entryLine = source.slice(0, startIndex).split("\n").length;
+	const matchLength = match?.[0].length ?? 0;
+	return {
+		source: `${source.slice(0, startIndex)}${field}: ${value}${source.slice(startIndex + matchLength)}`,
+		entryLine,
+	};
 }
 
 /** Confirms a typecheck failure is the real thing, not a spurious failure for an unrelated
@@ -626,6 +738,38 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 			).toBe(0);
 		});
 
+		// Directly exercises stripComments/findStringLiteralsInRange (myusage-4xu.54), rather than
+		// relying on a coincidental workaround: PR #57 already had to reword a "BEGIN PRIVATE KEY"
+		// comment in vitest.config.ts to single quotes to dodge the ORIGINAL version of this bug
+		// (before myusage-4xu.51's fix), and that workaround is still in place today - so nothing
+		// in the real, unmodified config exercises a `//` comment containing a double-quoted word
+		// inside coverage.exclude's array. This plants one on purpose. If stripComments regressed
+		// (the myusage-4xu.51 bug, or the myusage-4xu.53 block-comment variant), the planted
+		// comment's own quoted text would either get miscounted as an array entry or merge two
+		// real entries together - either way `assertLooksLikeCoveragePathArray` (called from
+		// `findKeyedArray`, itself called by `graftIntoExcludeArray` below) would throw its own
+		// "fixture anchor stale" assertion before typecheck ever runs, failing this test loudly
+		// for the right reason.
+		it("still scans coverage.exclude correctly when a comment containing a quoted word sits inside the array", async () => {
+			const real = await realConfigSource();
+			const withComment = insertCommentIntoExcludeArray(
+				real,
+				'// NOTE: keep this list sorted "alphabetically"',
+			);
+			const { source: mutated } = graftIntoExcludeArray(
+				withComment,
+				'"src/cli-entry.ts"',
+			);
+			const dir = await typecheckProjectWith(mutated);
+
+			const result = runTypecheck(dir);
+
+			expect(
+				result.status,
+				`expected a legitimate new entry to typecheck cleanly alongside a // comment containing a quoted word elsewhere in the array; got:\n${result.stdout}${result.stderr}`,
+			).toBe(0);
+		});
+
 		it("still typechecks when emptied to `[]`", async () => {
 			const real = await realConfigSource();
 			const mutated = emptyCoverageExclude(real);
@@ -780,5 +924,59 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 				"coverage.include removed entirely - the easiest complete hollowing",
 			);
 		});
+	});
+});
+
+// PoolGate and CoverageGate (both above, in vitest.config.ts) each pin a value by name the same
+// way explicitPaths/requireCoveragePattern pin coverage.exclude/coverage.include's shape above -
+// but unlike those two, neither had its own mutation test in this file (myusage-4xu.54, found
+// reviewing PR #61/myusage-4xu.51). Confirmed by hand for both: widening `type PoolGate =
+// "forks"` to `type PoolGate = string`, and separately widening CoverageGate's `statements: 100`
+// field to `statements: number`, each leave every one of this file's 18 pre-existing tests green
+// - neither gate had anything grafting a bad value in and requiring tsc to reject it, the same
+// technique explicitPaths/requireCoveragePattern's own tests already use above.
+describe("vitest.config.ts: test.pool and coverage.thresholds stay guarded", () => {
+	// PoolGate (myusage-7j2) exists because vitest's own `Pool` type is `BuiltinPool | (string &
+	// {})` - a structural escape hatch that accepts any string, typo included - so `satisfies
+	// ViteUserConfig` alone lets `pool: "forkz"` through. This grafts that exact typo into the
+	// real, on-disk config and requires tsc to reject it, closing the gap confirmed above.
+	it("fails typecheck when pool is typo'd", async () => {
+		const real = await realConfigSource();
+		const { source: mutated, entryLine } = replacePoolValue(real, '"forkz"');
+		const dir = await typecheckProjectWith(mutated);
+
+		const result = runTypecheck(dir);
+
+		expectDiagnosticNaming(
+			result,
+			'"forkz"',
+			entryLine,
+			'test.pool typo\'d to "forkz"',
+		);
+	});
+
+	// CoverageGate (PR #9/myusage-2xv) pins all four threshold numbers by name via a post-hoc
+	// `satisfies` reference, the same shape PoolGate's own check mirrors - but, unlike
+	// explicitPaths/requireCoveragePattern, had never had a test graft a bad value in and confirm
+	// tsc rejects it. This weakens `statements` by one and requires tsc to reject it; the other
+	// three thresholds (`branches`, `functions`, `lines`) go through the identical `satisfies
+	// CoverageGate` check, so a regression in any of them would fail exactly the same way.
+	it("fails typecheck when a coverage threshold is weakened below 100", async () => {
+		const real = await realConfigSource();
+		const { source: mutated, entryLine } = replaceThresholdValue(
+			real,
+			"statements",
+			"99",
+		);
+		const dir = await typecheckProjectWith(mutated);
+
+		const result = runTypecheck(dir);
+
+		expectDiagnosticNaming(
+			result,
+			"statements: 99",
+			entryLine,
+			"coverage.thresholds.statements weakened to 99",
+		);
 	});
 });

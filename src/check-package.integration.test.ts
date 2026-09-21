@@ -136,6 +136,25 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		expect(result.status).toBe(1);
 	});
 
+	it("still fails, for the separate and already-correct reason, on a file left under a stale dist/__mocks__/ directory", async () => {
+		// bead myusage-4xu.20: tsconfig.build.json now excludes __mocks__/** from a real
+		// build, but this guard is the backstop for a file that reaches dist/ some other
+		// way (a stale build predating that exclude, for one) - and its own basename
+		// ("x.js") would never trip the old name-pattern check on its own. Reproduced
+		// directly against the pre-fix script: it exits 0, because neither the basename
+		// pattern nor anything else noticed the __mocks__/ directory.
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await mkdir(`${dir}/dist/__mocks__`, { recursive: true });
+		await writeFile(`${dir}/dist/__mocks__/x.js`, "export const x = 1;\n");
+		await writeFixturePackageJson(dir, ["dist"]);
+
+		const result = runCheckPackage(dir);
+
+		expect(result.status).toBe(1);
+	});
+
 	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {
 		// npm never packs .DS_Store - it is on npm's own always-ignored list, regardless of
 		// `files`. Reproduced directly against the pre-fix script: with a correct

@@ -10,11 +10,21 @@
 // Invoked via tsx (not a bare `node`), so it can import fixtures-guard.ts directly - the same
 // reason check-package.mjs imports package-rules.ts this way. Run by `yarn lint`, not
 // `yarn test`: this is static analysis, no build and no vitest run required first.
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, sep } from "node:path";
 import { checkFixturesGuard, formatViolation } from "./fixtures-guard.ts";
 
 const SRC_DIR = "src";
+
+// myusage-4xu.58: without this, a missing src/ surfaced as a raw ENOENT stack trace from
+// readdirSync below - still a non-zero exit (fails closed either way), just unclear about why.
+// Matches check-coverage-pragmas.sh's own refusal for the same condition.
+if (!existsSync(SRC_DIR)) {
+	console.error(
+		`check-fixtures-guard: ${SRC_DIR}/ not found; refusing to pass a check that scanned nothing.`,
+	);
+	process.exit(1);
+}
 
 function listTsFiles(dir) {
 	const found = [];

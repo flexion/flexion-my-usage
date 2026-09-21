@@ -367,4 +367,26 @@ describe("checkFixturesGuard", () => {
 			{ kind: "unverified-fixtures", fixturesFile: "src/thing.fixtures.ts" },
 		]);
 	});
+
+	it("does not false-positive an unverified-fixtures violation when the only referencer is a __tests__-directory helper without '.test.' in its own basename", () => {
+		// myusage-4xu.58: isRealTestFile required ".test." in the basename, so a legitimate
+		// test-support helper shaped like src/__tests__/helper.ts (no ".test." in "helper.ts")
+		// didn't count as a valid referencer on its own. REPRODUCED by hand against the pre-fix
+		// isRealTestFile (basename-only, no directory check): this exact input produced a
+		// false-positive unverified-fixtures violation for src/thing.fixtures.ts. The importer
+		// itself is exempt from banned-import already (package-rules.ts's own __tests__/
+		// directory convention), so this isolates the unverified-fixtures half of the fix.
+		const files = [
+			{
+				path: "src/__tests__/helper.ts",
+				text: 'import { helper } from "../thing.fixtures.js";\nhelper();\n',
+			},
+			{
+				path: "src/thing.fixtures.ts",
+				text: "export function helper() {\n\treturn 1;\n}\n",
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([]);
+	});
 });

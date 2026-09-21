@@ -63,7 +63,7 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 ```bash
 yarn install --immutable   # install
 yarn typecheck             # tsc --noEmit
-yarn lint                  # Biome + inline coverage-pragma guard
+yarn lint                  # Biome + inline coverage-pragma guard + fixtures-import guard
 yarn test                  # the gate: all tests + 100% coverage (see below)
 yarn vitest run <path>     # fast loop on one file, no coverage
 ```

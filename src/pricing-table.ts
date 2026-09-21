@@ -65,6 +65,13 @@ export interface LoadOptions {
 	env?: Readonly<Record<string, string | undefined>>;
 	/** Home directory used when XDG_CACHE_HOME is unusable; defaults to `os.homedir()`. */
 	homeDir?: string;
+	/**
+	 * Filesystem remove implementation, used only to delete a failed cache write's stray temp
+	 * file; defaults to `node:fs/promises`' `rm`. The same injected-seam shape as `fetch`,
+	 * so the cleanup-failure path can be proven with a real, rejecting fake instead of a mock
+	 * of `node:fs/promises` itself.
+	 */
+	rm?: typeof rm;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -191,11 +198,7 @@ async function readCapped(
 		throw new Error("response too large");
 	}
 	if (!response.body) {
-		const text = await response.text();
-		if (Buffer.byteLength(text, "utf8") > maxBytes) {
-			throw new Error("response too large");
-		}
-		return text;
+		throw new Error("response has no body");
 	}
 	const reader = response.body.getReader();
 	const chunks: Uint8Array[] = [];
@@ -296,6 +299,7 @@ async function writeCache(
 	dir: string,
 	path: string,
 	text: string,
+	removeFn: typeof rm,
 ): Promise<void> {
 	// 0700 (owner-only): the file itself is already written 0600, so the directory should not
 	// be world- or group-readable under the default umask either.
@@ -305,8 +309,9 @@ async function writeCache(
 		await writeFile(temp, text, { mode: 0o600 });
 		await rename(temp, path);
 	} catch (error) {
-		// Best effort: a failed cleanup must not mask the write error.
-		await Promise.allSettled([rm(temp, { force: true })]);
+		// Best effort: a failed cleanup must not mask the write error. See "Failed cleanup"
+		// in AGENTS.md - the swallow is proven by a real test that injects a rejecting `rm`.
+		await removeFn(temp, { force: true }).catch(() => {});
 		throw error;
 	}
 }
@@ -353,7 +358,7 @@ export async function loadPriceTable(
 	}
 
 	try {
-		await writeCache(cacheDir, cachePath, fetched.text);
+		await writeCache(cacheDir, cachePath, fetched.text, options.rm ?? rm);
 	} catch (error) {
 		warn(`my-usage: could not cache the price table (${describeError(error)})`);
 	}

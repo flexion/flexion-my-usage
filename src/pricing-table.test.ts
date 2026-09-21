@@ -445,69 +445,22 @@ describe("loadPriceTable: a cache hit makes no network calls, even with a proxy 
 	});
 });
 
-/** A response that exposes no body stream, only text(): the shape some fetch polyfills return. */
-function bodylessFetch(text: string) {
-	return vi.fn<typeof fetch>(
-		async () =>
-			({
-				ok: true,
-				status: 200,
-				headers: new Headers(),
-				body: null,
-				text: async () => text,
-			}) as unknown as Response,
-	);
-}
-
-describe("loadPriceTable: response without a body stream", () => {
-	it("reads the table from text() and caches it", async () => {
+describe("loadPriceTable: a response with no body", () => {
+	it("rejects a null body rather than treating it as empty text, using a real Response", async () => {
 		const cacheDir = await newCacheDir();
 		const warn = vi.fn();
 
+		// `new Response(null)` (or no init at all) is how a real Fetch-API Response reports "no
+		// body" - `.body` comes back null, same as this would from a genuine fetch(). No cast.
 		const table = await loadPriceTable(
-			{ cacheDir, fetch: bodylessFetch(JSON.stringify(LITELLM_FIXTURE)) },
-			warn,
-		);
-
-		expect(table?.size).toBeGreaterThan(0);
-		expect(warn).not.toHaveBeenCalled();
-		expect(await readdir(cacheDir)).toHaveLength(1);
-	});
-
-	it("still enforces the size cap", async () => {
-		const cacheDir = await newCacheDir();
-		const warn = vi.fn();
-
-		const table = await loadPriceTable(
-			{
-				cacheDir,
-				fetch: bodylessFetch(JSON.stringify(LITELLM_FIXTURE)),
-				maxBytes: 10,
-			},
+			{ cacheDir, fetch: async () => new Response(null, { status: 200 }) },
 			warn,
 		);
 
 		expect(table).toBeUndefined();
 		expect(warn).toHaveBeenCalledTimes(1);
-		expect(warn.mock.calls[0]?.[0]).toContain("response too large");
+		expect(warn.mock.calls[0]?.[0]).toContain("response has no body");
 		expect(await readdir(cacheDir)).toEqual([]);
-	});
-
-	it("rejects a multibyte body whose UTF-16 code-unit length is within the cap but whose real UTF-8 byte length is not", async () => {
-		const text = multibyteBodyAtCharBudget(600);
-		const maxBytes = text.length;
-		// Sanity check on the fixture itself, so a future edit that breaks the property fails
-		// loudly here rather than producing a confusing failure below.
-		expect(Buffer.byteLength(text, "utf8")).toBeGreaterThan(maxBytes);
-		const warn = vi.fn();
-
-		const table = await loadPriceTable(
-			{ cacheDir: await newCacheDir(), fetch: bodylessFetch(text), maxBytes },
-			warn,
-		);
-
-		expect(table).toBeUndefined();
-		expect(warn.mock.calls[0]?.[0]).toContain("response too large");
 	});
 });
 
@@ -564,50 +517,73 @@ describe("loadPriceTable: cache directory permissions", () => {
 	});
 });
 
-/** A body whose cancel() rejects, to show a failed cleanup never hides the real failure. */
+/**
+ * A body whose cancel() rejects, to prove cleanup runs and a failed cleanup never hides the
+ * real failure. Returns the cancel spy alongside the stream so a test can assert cleanup was
+ * actually invoked, not just that its rejection stayed silent (see "Failed cleanup" in
+ * AGENTS.md).
+ */
 function stubbornBody(start?: (c: ReadableStreamDefaultController) => void) {
-	return new ReadableStream({
-		start,
-		cancel: () => Promise.reject(new Error("cancel failed")),
-	});
+	const cancel = vi.fn(() => Promise.reject(new Error("cancel failed")));
+	const stream = new ReadableStream({ start, cancel });
+	return { stream, cancel };
 }
 
 describe("loadPriceTable: cleanup failures do not mask the real failure", () => {
 	it.each([
 		[
 			"a declared size over the cap",
-			() =>
-				new Response(stubbornBody(), {
-					headers: { "content-length": "999999" },
-				}),
+			() => {
+				const body = stubbornBody();
+				return {
+					response: new Response(body.stream, {
+						headers: { "content-length": "999999" },
+					}),
+					cancel: body.cancel,
+				};
+			},
 			"response too large",
 		],
 		[
 			"a streamed size over the cap",
-			() =>
-				new Response(
-					stubbornBody((controller) => controller.enqueue(new Uint8Array(600))),
-				),
+			() => {
+				const body = stubbornBody((controller) =>
+					controller.enqueue(new Uint8Array(600)),
+				);
+				return {
+					response: new Response(body.stream),
+					cancel: body.cancel,
+				};
+			},
 			"response too large",
 		],
 		[
 			"an HTTP error status",
-			() => new Response(stubbornBody(), { status: 500 }),
+			() => {
+				const body = stubbornBody();
+				return {
+					response: new Response(body.stream, { status: 500 }),
+					cancel: body.cancel,
+				};
+			},
 			"HTTP 500",
 		],
-	])("%s", async (_name, response, reason) => {
+	])("%s", async (_name, makeCase, reason) => {
+		const { response, cancel } = makeCase();
 		const warn = vi.fn();
 
 		const table = await loadPriceTable(
 			{
 				cacheDir: await newCacheDir(),
-				fetch: async () => response(),
+				fetch: async () => response,
 				maxBytes: 500,
 			},
 			warn,
 		);
 
 		expect(table).toBeUndefined();
+		// Proves cleanup actually ran, not just that a rejection (if any) stayed silent.
+		expect(cancel).toHaveBeenCalledTimes(1);
 		expect(warn).toHaveBeenCalledTimes(1);
 		expect(warn.mock.calls[0]?.[0]).toContain(reason);
 		expect(warn.mock.calls[0]?.[0]).not.toContain("cancel failed");
@@ -639,5 +615,38 @@ describe("loadPriceTable: cache write failure after a good fetch", () => {
 		);
 		// Only the blocking directory remains: no leftover .tmp file.
 		expect(await readdir(cacheDir)).toEqual([cacheFile]);
+	});
+
+	it("a failed cleanup does not mask the real cache-write failure", async () => {
+		const cacheDir = await newCacheDir();
+		await loadPriceTable(
+			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
+			() => {},
+		);
+		const [cacheFile] = await readdir(cacheDir);
+		// Same setup as the previous test: a directory where the cache file belongs makes the
+		// rename fail, so writeCache's catch block (and its temp-file cleanup) actually runs.
+		await rm(join(cacheDir, cacheFile as string));
+		await mkdir(join(cacheDir, cacheFile as string));
+		const warn = vi.fn();
+		const failingRm = vi.fn<typeof rm>(async () => {
+			throw new Error("rm failed");
+		});
+
+		const table = await loadPriceTable(
+			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE), rm: failingRm },
+			warn,
+		);
+
+		// The fetch still succeeded, so the table is still usable despite the cache write (and
+		// its cleanup) both failing.
+		expect(table?.size).toBeGreaterThan(0);
+		// Proves cleanup actually ran, not just that a rejection (if any) stayed silent.
+		expect(failingRm).toHaveBeenCalledTimes(1);
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(warn.mock.calls[0]?.[0]).toContain(
+			"could not cache the price table",
+		);
+		expect(warn.mock.calls[0]?.[0]).not.toContain("rm failed");
 	});
 });

@@ -21,6 +21,7 @@
 - Don't lower thresholds, add an exclusion to turn a build green, or write a test that asserts nothing just to touch lines.
 - Don't reach 100% by mocking a vendor module (`vi.mock` on a driver, `fs`, `fetch`). Use a real local fixture (a throwaway SQLite file, a temp directory) or a small fake behind a seam we own, like the injected `fetch` in the price table. If neither works, extract the logic.
 - Coverage must not depend on the runtime. If a line only runs on some Node versions (for example, the `node:sqlite` warning), move the decision into a pure function and test it directly.
+- **Failed cleanup** (a stream `cancel()`, an `rm()` of a stray temp file, or similar best-effort teardown after a real error) is swallowed, not left to replace the operation's own error with a less useful one - but only when a real test proves the swallow does what it claims. Give the cleanup call a seam that can genuinely fail without mocking a vendor module (a real `ReadableStream` whose `cancel()` rejects, or an injected function like the price table's `LoadOptions.rm`), then assert two things: the cleanup call actually ran, and the operation's original error still surfaces unchanged. A `.catch(() => {})` (or `Promise.allSettled`) with no such test is unproven defensive code - either earn it with that test or delete the swallow so the failure surfaces.
 
 ### The invasive-species rule
 

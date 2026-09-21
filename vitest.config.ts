@@ -154,9 +154,14 @@ const config = {
 			// explicit path, matching the humble-object exclusions' own convention below,
 			// not a scripts/**/*.ts glob - a future non-logic .ts file added under scripts/
 			// should not be swept into the coverage gate by accident.
+			//
+			// scripts/critical-persisted.ts (bead myusage-4xu.25) is the same shape of file
+			// for the same reason: non-product tooling that must not ship in dist/, listed
+			// here explicitly rather than folded into a glob.
 			include: requireCoveragePattern([
 				"src/**/*.ts",
 				"scripts/package-rules.ts",
+				"scripts/critical-persisted.ts",
 			]),
 
 			exclude: explicitPaths([

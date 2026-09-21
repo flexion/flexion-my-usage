@@ -1,0 +1,92 @@
+// Pure decision logic for the round-cap/critical-persisted check bead-drain.md's clause (a)
+// describes: "stop the instant a CRITICAL flag survives a fix round" - the SAME critical,
+// by identity, still present after a fix round. That is NOT the same thing as "a critical
+// exists this round AND a critical existed last round" (a boolean AND with no identity
+// check) - the bug this module fixes (bead myusage-4xu.25). That boolean-AND shape caused
+// three false escalations in one day (myusage-4xu.19, myusage-c2a twice) across
+// independently-authored, ephemeral pipeline scripts, because there was no shared, tested
+// implementation and every session re-derived the check from bead-drain.md's prose from
+// scratch. See myusage-5ai for the decision to fix this structurally with a shared module
+// instead of patching any one script.
+//
+// Lives under scripts/, not src/ - same convention, and the same reasoning, as
+// scripts/package-rules.ts (see that file's header comment): this is tooling for the
+// bead-drain automation loop itself, not part of the my-usage-standalone product, and src/'s
+// rootDir feeds `yarn build` - nothing under src/ should ship in dist/ unless it's actually
+// part of the product. Still type-checked (tsconfig.config.json's `include`) and covered at
+// 100% (vitest.config.ts's coverage.include) like everything else in this repo, via the same
+// non-src explicit-path precedent package-rules.ts already established.
+//
+// Identity rule (the exact thing the original bug got wrong): two critical flags are the SAME
+// critical only when they match by `id` (when BOTH sides carry one - a reviewer-assigned
+// per-round label like "F1" is not guaranteed to mean the same defect two rounds running, so
+// an id match only counts when it's a comparison of two ids that both actually exist) or,
+// failing that, by an exact match on `evidence` (trimmed) - the reviewer's own description of
+// what the flag is about. Merely having a critical in both rounds' lists is not enough; one of
+// the current round's flags must be the SAME flag as one of the previous round's by one of
+// those two keys. No prior-round criticals, or no current-round criticals, can never count as
+// "persisted" - there is nothing for a current flag to match against.
+
+/** One critical-severity flag a test-review round raised. `evidence` is required - even a
+ * flag that carries a stable `id` still has its own description - because `evidence` is the
+ * identity fallback whenever `id` can't be trusted for comparison (see the header comment
+ * above for exactly when that is). */
+export interface CriticalFlag {
+	/** A stable identifier for this flag, when one exists (e.g. a tracked issue id, not a
+	 * reviewer's per-round slot label). Compared for equality only when BOTH the current and
+	 * previous flag carry one. */
+	id?: string;
+	/** The reviewer's evidence or description of what the flag is about. Used as the identity
+	 * key whenever `id` is missing on either side. */
+	evidence: string;
+}
+
+/** The result of comparing a round's critical flag(s) against the immediately preceding
+ * round's. `current` and `previous` are the matched pair when `persisted` is true, so a
+ * caller can build an escalation message that names the actual surviving flag instead of just
+ * reporting a boolean. */
+export interface CriticalPersistenceResult {
+	/** Whether a current-round critical flag is the SAME critical (by identity) as a
+	 * previous-round one. */
+	persisted: boolean;
+	/** The current-round flag that persisted. Present only when `persisted` is true. */
+	current?: CriticalFlag;
+	/** The previous-round flag `current` matched. Present only when `persisted` is true. */
+	previous?: CriticalFlag;
+}
+
+function normalizeEvidence(evidence: string): string {
+	return evidence.trim();
+}
+
+/** Whether `a` and `b` are the SAME critical flag, per the identity rule in this file's
+ * header comment: matched by `id` when both sides carry one, otherwise by an exact (trimmed)
+ * match on `evidence`. A flag with an `id` on only one side still falls back to `evidence` -
+ * a one-sided id proves nothing about identity, since there is no matching id on the other
+ * side to compare it against. */
+export function sameCriticalFlag(a: CriticalFlag, b: CriticalFlag): boolean {
+	if (a.id !== undefined && b.id !== undefined) {
+		return a.id === b.id;
+	}
+	return normalizeEvidence(a.evidence) === normalizeEvidence(b.evidence);
+}
+
+/** Whether a critical genuinely "persisted" from the previous round into the current one: the
+ * SAME critical (by `sameCriticalFlag`) appears in both `currentRoundCriticals` and
+ * `previousRoundCriticals`. A different, unrelated critical appearing after a prior one was
+ * fixed does NOT count - see the header comment's identity rule. Either list being empty
+ * (no critical this round, or none last round) can never yield `persisted: true`: there is
+ * nothing on one side for the other side to match. */
+export function criticalPersisted(
+	currentRoundCriticals: readonly CriticalFlag[],
+	previousRoundCriticals: readonly CriticalFlag[],
+): CriticalPersistenceResult {
+	for (const current of currentRoundCriticals) {
+		for (const previous of previousRoundCriticals) {
+			if (sameCriticalFlag(current, previous)) {
+				return { persisted: true, current, previous };
+			}
+		}
+	}
+	return { persisted: false };
+}

@@ -44,7 +44,7 @@ Reuses a proven daily cost-over-time chart pattern, fed from the local aggregati
 
 ## Delivery
 
-- `npx` entrypoint: scan local data, run the pipeline, start a local server serving the forked internal person-page dashboard (data layer swapped for the opencode adapter), and open it in the browser.
+- `npx` entrypoint: scan local data, run the pipeline, start a local server serving the forked dashboard (data layer swapped for the opencode adapter), and open it in the browser.
 - The server binds to localhost only and exits when the process is stopped; no database writes.
 - TypeScript/Node.
 

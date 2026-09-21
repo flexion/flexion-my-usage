@@ -937,24 +937,45 @@ function fakeDetail(): FakeDetail {
 	};
 }
 
-interface FakeDayBar {
-	getAttribute(name: string): string | null;
-	addEventListener(type: string, cb: () => void): void;
-	dispatchClick(): void;
+/** A fake keyboard event: just enough surface for CLIENT_SCRIPT's day-bar keydown handler (`evt.key`, `evt.preventDefault()`), with the call to `preventDefault` observable afterward. */
+interface FakeKeydownEvent {
+	key: string;
+	preventDefaultCalled: boolean;
+	preventDefault(): void;
 }
 
-/** A fake `.day-bar` element for one `day`, whose only real datum is its own `data-day` attribute. */
+interface FakeDayBar {
+	getAttribute(name: string): string | null;
+	addEventListener(type: string, cb: (evt?: FakeKeydownEvent) => void): void;
+	dispatchClick(): void;
+	dispatchKeydown(key: string): FakeKeydownEvent;
+}
+
+/** A fake `.day-bar` element for one `day`, whose only real datum is its own `data-day` attribute. Tracks the "click" and "keydown" listeners CLIENT_SCRIPT registers as two independent slots, the way a real `EventTarget` would. */
 function fakeDayBar(day: string): FakeDayBar {
-	let onClick: (() => void) | undefined;
+	let onClick: ((evt?: FakeKeydownEvent) => void) | undefined;
+	let onKeydown: ((evt?: FakeKeydownEvent) => void) | undefined;
 	return {
 		getAttribute(name) {
 			return name === "data-day" ? day : null;
 		},
 		addEventListener(type, cb) {
 			if (type === "click") onClick = cb;
+			if (type === "keydown") onKeydown = cb;
 		},
 		dispatchClick() {
 			onClick?.();
+		},
+		dispatchKeydown(key) {
+			const evt: FakeKeydownEvent = {
+				key,
+				preventDefaultCalled: false,
+				preventDefault() {
+					this.preventDefaultCalled = true;
+				},
+			};
+			onKeydown?.(evt);
+			return evt;
 		},
 	};
 }
@@ -1053,5 +1074,68 @@ describe("renderHtml: client script execution (vm)", () => {
 			expect(label?.textContent).toBe(entry?.label);
 			expect(value?.textContent).toBe(entry?.value);
 		});
+	});
+
+	// myusage-9en: the day bar's keydown handler and hideDetail()'s hide-and-clear behavior are
+	// two more real CLIENT_SCRIPT call sites the tests above never reach - the click tests only
+	// ever dispatch "click", and no existing test opens a detail panel and then closes it. Both
+	// ran (statements inside them execute whenever setMeasure/the keydown listener registration
+	// runs) without ever being proven: breaking the Enter/Space check, dropping preventDefault, or
+	// making hideDetail a no-op all left the full suite green before these tests existed.
+
+	it("drills down on Enter keydown the same way a click does, and calls preventDefault", () => {
+		const html = renderHtml(buildWindow());
+		const costPayload = readPanelData(html, "panel-cost");
+		const busyDay = costPayload.days.find((d) => d.day === "2026-09-07");
+		if (!busyDay) throw new Error("fixture has 2026-09-07");
+
+		const { detailEl, dayBar } = runClientScript(html);
+		const evt = dayBar.dispatchKeydown("Enter");
+
+		expect(evt.preventDefaultCalled).toBe(true);
+		expect(detailEl.hidden).toBe(false);
+		expect(detailEl.children).toHaveLength(1 + busyDay.entries.length);
+		expect(detailEl.children[0]?.textContent).toBe(
+			`2026-09-07 - ${busyDay.total}`,
+		);
+	});
+
+	it("drills down on Space keydown the same way a click does, and calls preventDefault", () => {
+		const html = renderHtml(buildWindow());
+		const costPayload = readPanelData(html, "panel-cost");
+		const busyDay = costPayload.days.find((d) => d.day === "2026-09-07");
+		if (!busyDay) throw new Error("fixture has 2026-09-07");
+
+		const { detailEl, dayBar } = runClientScript(html);
+		const evt = dayBar.dispatchKeydown(" ");
+
+		expect(evt.preventDefaultCalled).toBe(true);
+		expect(detailEl.hidden).toBe(false);
+		expect(detailEl.children).toHaveLength(1 + busyDay.entries.length);
+	});
+
+	it("ignores an unrelated keydown: no drill-down, no preventDefault", () => {
+		const html = renderHtml(buildWindow());
+
+		const { detailEl, dayBar } = runClientScript(html);
+		const evt = dayBar.dispatchKeydown("Tab");
+
+		expect(evt.preventDefaultCalled).toBe(false);
+		expect(detailEl.hidden).toBe(true);
+		expect(detailEl.children).toHaveLength(0);
+	});
+
+	it("hides the day detail panel and clears its rendered rows when the measure toggle changes (hideDetail)", () => {
+		const html = renderHtml(buildWindow());
+		const { buttons, detailEl, dayBar } = runClientScript(html);
+
+		dayBar.dispatchClick();
+		expect(detailEl.hidden).toBe(false);
+		expect(detailEl.children.length).toBeGreaterThan(0);
+
+		buttons.tokens.dispatchClick();
+
+		expect(detailEl.hidden).toBe(true);
+		expect(detailEl.children).toHaveLength(0);
 	});
 });

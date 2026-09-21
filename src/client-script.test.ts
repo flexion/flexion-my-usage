@@ -4,8 +4,10 @@ import {
 	type DomContainerLike,
 	type DomDocumentLike,
 	type DomElementLike,
+	type DomGetElementByIdLike,
 	findDayDetail,
 	measureToggleState,
+	readJson,
 	renderDayDetail,
 } from "./client-script.js";
 
@@ -35,16 +37,16 @@ describe("measureToggleState", () => {
 	});
 
 	it("leaves the title undefined when that measure's payload never loaded", () => {
-		// render.ts's readJson (embedded in CLIENT_SCRIPT) has three paths that return null: a
-		// missing panel-cost-data/panel-tokens-data element, empty textContent, or a JSON.parse
-		// throw on corrupt content - so a null payload IS reachable in production from a
-		// truncated or corrupt embedded payload, not merely a hypothetical. That makes this test
-		// load-bearing on its own terms: it pins measureToggleState's own documented general
-		// contract - its `payload` parameter is typed `Record<Measure, DayDetailPayload |
-		// null>`, and `MeasureToggleState.title`'s own doc comment calls out the null case by
-		// name. This module is deliberately its own independently-testable unit (see this
-		// file's header comment), not a mirror restricted to what render.ts's exact call
-		// sites can reach (myusage-4xu.43).
+		// readJson (below, embedded in CLIENT_SCRIPT) has three paths that return null: a missing
+		// panel-cost-data/panel-tokens-data element, empty textContent, or a JSON.parse throw on
+		// corrupt content - so a null payload is reachable once the HTML is written and opened
+		// (myusage-4xu.7), not merely a hypothetical - CLIENT_SCRIPT runs in no real browser
+		// today. That makes this test load-bearing on its own terms regardless: it pins
+		// measureToggleState's own documented general contract - its `payload` parameter is
+		// typed `Record<Measure, DayDetailPayload | null>`, and `MeasureToggleState.title`'s own
+		// doc comment calls out the null case by name. This module is deliberately its own
+		// independently-testable unit (see this file's header comment), not a mirror restricted
+		// to what render.ts's exact call sites can reach (myusage-4xu.43).
 		const state = measureToggleState("cost", { cost: null, tokens: null });
 
 		expect(state.title).toBeUndefined();
@@ -75,6 +77,51 @@ describe("findDayDetail", () => {
 
 	it("returns undefined for an empty list", () => {
 		expect(findDayDetail([], "2026-09-07")).toBeUndefined();
+	});
+});
+
+function fakeGetElementByIdDoc(
+	el: { textContent: string } | null,
+): DomGetElementByIdLike {
+	return { getElementById: () => el };
+}
+
+describe("readJson", () => {
+	it("parses and returns the JSON payload from the element's textContent", () => {
+		const doc = fakeGetElementByIdDoc({
+			textContent: '{"title":"Daily cost","days":[]}',
+		});
+
+		expect(readJson(doc, "panel-cost-data")).toEqual({
+			title: "Daily cost",
+			days: [],
+		});
+	});
+
+	// The three null-return paths below are real branches, not humble DOM-wiring: each is a
+	// distinct way render.ts's embedded payload can fail to reach measureToggleState as parsed
+	// data once the HTML is written and opened (myusage-4xu.7) - a page saved or served without
+	// its data script, a script tag present but emptied, or a payload truncated mid-write. None
+	// of the three throws past readJson; each is pinned separately since a fix to one (e.g.
+	// tightening the `!el?.textContent` guard) must not silently paper over another.
+	it("returns null when no element with that id exists", () => {
+		const doc = fakeGetElementByIdDoc(null);
+
+		expect(readJson(doc, "panel-cost-data")).toBeNull();
+	});
+
+	it("returns null when the element's textContent is empty", () => {
+		const doc = fakeGetElementByIdDoc({ textContent: "" });
+
+		expect(readJson(doc, "panel-cost-data")).toBeNull();
+	});
+
+	it("returns null, not a thrown error, when textContent is truncated/corrupt JSON", () => {
+		const doc = fakeGetElementByIdDoc({
+			textContent: '{"title": "Daily cost", "days": [',
+		});
+
+		expect(readJson(doc, "panel-cost-data")).toBeNull();
 	});
 });
 

@@ -10,6 +10,7 @@ import {
 import {
 	findDayDetail,
 	measureToggleState,
+	readJson,
 	renderDayDetail,
 } from "./client-script.js";
 import { renderHtml } from "./render.js";
@@ -815,12 +816,14 @@ describe("renderHtml: client script embedding", () => {
 	// left the full gate green (myusage-4xu.41). Asserting the literal compiled source is
 	// present is a direct, precise pin - no vm execution needed here, since client-script.test.ts
 	// already proves what these functions do; this test only proves the shipped page still
-	// contains them.
+	// contains them. readJson (myusage-3ef) joined the other three the same way, after living
+	// untested inside CLIENT_SCRIPT's own string literal, invisible to v8 coverage.
 	it("embeds each toggle/drill-down function's own compiled source, not a hand-copied duplicate", () => {
 		const html = renderHtml(buildWindow());
 
 		expect(html).toContain(measureToggleState.toString());
 		expect(html).toContain(findDayDetail.toString());
 		expect(html).toContain(renderDayDetail.toString());
+		expect(html).toContain(readJson.toString());
 	});
 });

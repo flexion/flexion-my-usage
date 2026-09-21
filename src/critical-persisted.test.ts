@@ -86,8 +86,8 @@ describe("sameCriticalFlag: the identity rule itself", () => {
 	it("does not match two flags that both carry an empty-string id, even though evidence differs", () => {
 		// An empty-string id is not `undefined`, so a naive `!== undefined` guard treats it as a
 		// real, present id and matches any two empty-id flags against each other - a false
-		// positive the original bug got wrong (myusage-4xu.48). Empty-string id must be treated
-		// as absent, same as no id at all.
+		// positive PR #55's fix let through, closed by myusage-4xu.48. Empty-string id must be
+		// treated as absent, same as no id at all.
 		const a: CriticalFlag = { id: "", evidence: "totally unrelated defect A" };
 		const b: CriticalFlag = { id: "", evidence: "totally unrelated defect B" };
 
@@ -117,11 +117,15 @@ describe("sameCriticalFlag: the identity rule itself", () => {
 	it("does not match when one evidence string is merely a substring of the other", () => {
 		// Pins the evidence comparison as an EXACT match, not `.includes()` - mutation testing
 		// on PR #55 found the entire existing suite stays green even if this comparison is
-		// weakened to a substring check (myusage-4xu.48).
+		// weakened to a substring check (myusage-4xu.48). Both argument orders are asserted:
+		// a mutant weakening the comparison to `normalizedA.includes(normalizedB)` would still
+		// pass the first assertion below (the shorter string never contains the longer one), so
+		// only the swapped order catches it.
 		const a: CriticalFlag = { evidence: "foo bar" };
 		const b: CriticalFlag = { evidence: "foo bar baz" };
 
 		expect(sameCriticalFlag(a, b)).toBe(false);
+		expect(sameCriticalFlag(b, a)).toBe(false);
 	});
 });
 

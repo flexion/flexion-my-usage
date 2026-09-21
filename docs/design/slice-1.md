@@ -9,7 +9,7 @@ Over-time visibility into your own AI coding-agent usage, plus a cost figure eve
 ## Non-goals (this slice)
 
 - No sources beyond opencode (the adapter seam exists; other agents come later).
-- No write-back anywhere, no network egress beyond a one-time price-table fetch.
+- No write-back anywhere, no network egress beyond the price-table fetch (a cache no older than 24 hours skips it; an older cache triggers one refresh attempt per run - see [Cost model](#cost-model)).
 - No central deployment or hosted service - the server runs on your machine for this invocation only.
 
 ## Data source
@@ -21,9 +21,9 @@ Over-time visibility into your own AI coding-agent usage, plus a cost figure eve
 ## Cost model
 
 - Notional cost = tokens x published per-model rate, with cache-read and cache-write priced at their own rates.
-- Rates come from the LiteLLM public price table, fetched once and cached locally; if offline, fall back to the cached copy.
+- Rates come from the LiteLLM public price table, fetched and cached locally. A cache no older than 24 hours is reused with no fetch; an older cache triggers exactly one refresh attempt per run, and if that fetch fails (including offline), the run falls back to the stale cache with one warning.
 - Matching is exact-key, on purpose: each (provider, model) row is looked up under a fixed per-provider prefix rule (for example `vertex_ai/` or `azure/`, or the bare id) and the resulting entry's `litellm_provider` field, with no dot/dash rewriting or prefix stripping. Regional ids carry their own real rates - a Bedrock `us.`-prefixed Claude Sonnet id lists $3.30 per million input tokens against $3.00 for the bare and `global.` ids - so normalizing a prefix away would silently underprice those rows. A provider with no explicit rule falls back to the model maker's own list price by bare model id, labeled as approximate. An unknown model still counts its tokens, gets cost 0, and is flagged.
-- The price table caches to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` when `XDG_CACHE_HOME` is set to an absolute path, else `~/.cache/my-usage/litellm-model-prices.json` (on macOS this is NOT `~/Library/Caches`). The cache has no expiry: once fetched, it's reused indefinitely with no further network call, until the file is deleted or reseeded by hand.
+- The price table caches to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` when `XDG_CACHE_HOME` is set to an absolute path, else `~/.cache/my-usage/litellm-model-prices.json` (on macOS this is NOT `~/Library/Caches`). The cache expires after 24 hours: a fresher cache is reused with no network call, an older one triggers one refresh attempt on the next run (a failed refetch falls back to the stale cache with one warning), and reseeding the file by hand resets that 24-hour clock. `--refresh-prices` forces the refresh attempt regardless of age. There's no flag yet to suppress the attempt, so on a machine with no outbound access at all, expect one blocked connection and one warning line on every run once the seeded cache passes 24 hours old.
 
 ## Pipeline
 
@@ -72,4 +72,4 @@ opencode is the first implementation. Additional agents (for example pi) plug in
 
 ## Done when
 
-`npx <tool>` on a machine with opencode history starts a local server and opens a page showing a 30-day daily notional-cost chart (stacked by model) plus the KPI row, and sends nothing over the network once the price table is cached (verifiable offline).
+`npx <tool>` on a machine with opencode history starts a local server and opens a page showing a 30-day daily notional-cost chart (stacked by model) plus the KPI row, and sends nothing over the network on a cache hit within the price table's 24-hour freshness window (verifiable offline). Past that window, one refresh attempt per run is expected, not a defect - see [Cost model](#cost-model).

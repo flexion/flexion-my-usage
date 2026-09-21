@@ -22,7 +22,7 @@ Everything runs on your machine. It reads local files and serves a local page fr
 
 ## Proxies and offline machines
 
-The one network call this tool makes is a one-time fetch of the public [LiteLLM price table](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), cached locally afterward. A cache hit skips the fetch entirely.
+The only network call this tool makes is fetching the public [LiteLLM price table](https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json), cached locally afterward. A cache no older than 24 hours skips the fetch entirely; once it passes 24 hours old, every run makes exactly one refresh attempt - success replaces the cache, failure falls back to the stale cache with one warning line on stderr.
 
 That fetch honors `HTTPS_PROXY` and `HTTP_PROXY` (lowercase forms work too, and take priority over the uppercase ones), so it works behind a mandatory corporate proxy without any extra setup. `NO_PROXY` opts specific hosts out - a bare hostname, a `.`- or `*.`-prefixed one for its subdomains, an optional `:port` qualifier, a comma- or whitespace-separated list, or `*` to bypass every host.
 
@@ -31,7 +31,7 @@ On a machine with no outbound access at all, seed the cache by hand: copy that s
 - macOS / Linux: `~/.cache/my-usage/litellm-model-prices.json` (note: not `~/Library/Caches` on macOS)
 - Windows: `<home>\.cache\my-usage\litellm-model-prices.json`, where `<home>` is your account's home directory
 
-or, on any OS, to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` if `XDG_CACHE_HOME` is set to an absolute path. Once that file is there, this tool never fetches or sends anything over the network.
+or, on any OS, to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` if `XDG_CACHE_HOME` is set to an absolute path. That keeps this tool silent on the network for 24 hours at a time, not indefinitely: once the seeded file passes 24 hours old, every run makes one outbound fetch attempt before falling back to the seeded copy (with a stderr warning) if that attempt fails. There's currently no flag to turn that attempt off, so on a permanently air-gapped machine, expect one blocked connection and one warning line on every run, forever, after the first day.
 
 ## Usage
 

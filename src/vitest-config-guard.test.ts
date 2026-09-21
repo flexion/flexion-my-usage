@@ -215,22 +215,34 @@ function graftIntoExcludeArray(
 	};
 }
 
-/** Blanks out `//`-to-end-of-line comments and block comments (`/*`, paired with its own closing
- * marker) in `text`, replacing every non-newline character of a comment with a space - so every
- * OTHER character keeps its exact offset. `findStringLiteralsInRange` below scans this blanked
- * output instead of the raw source
- * (myusage-4xu.51) so a quoted word inside a comment (e.g. `// NOTE: keep this list sorted
- * "alphabetically"`) can never be mistaken for a real array entry: a space can't open or close a
- * string literal, so blanking only ever removes a would-be match, never adds one. Deliberately
- * naive, matching this file's other helpers' own conventions: doesn't distinguish a `//` or `/*`
- * that appears inside a real string literal from a genuine comment start, which would misfire on
- * a path containing those characters - safe here because, by this repo's own convention
- * (AGENTS.md), every coverage.exclude/coverage.include entry is a plain `src/`- or `scripts/`-
- * rooted path or negation, and none of those contain `//` or `/*`. Textual on purpose, not a real
- * parse: this repo's installed TypeScript (see package.json) doesn't expose
- * createSourceFile/forEachChild, so an AST-based fix isn't available here (confirmed by hand). */
+/** Blanks out `//`-to-end-of-line comments in `text`, replacing every non-newline character of a
+ * comment with a space - so every OTHER character keeps its exact offset. `findStringLiteralsInRange`
+ * below scans this blanked output instead of the raw source (myusage-4xu.51) so a quoted word
+ * inside a comment (e.g. `// NOTE: keep this list sorted "alphabetically"`) can never be mistaken
+ * for a real array entry: a space can't open or close a string literal, so blanking only ever
+ * removes a would-be match, never adds one. Deliberately naive, matching this file's other
+ * helpers' own conventions: doesn't distinguish a `//` that appears inside a real string literal
+ * from a genuine comment start, which would misfire on a path containing that character - safe
+ * here because, by this repo's own convention (AGENTS.md), every coverage.exclude/coverage.include
+ * entry is a plain `src/`- or `scripts/`-rooted path or negation, and none of those contain `//`.
+ *
+ * Line comments only - no `/* *\/` block-comment handling (myusage-4xu.53, removed after a
+ * review found it unsound): the block-comment branch this file originally shipped with (PR #61,
+ * myusage-4xu.51) didn't respect string-literal boundaries, so a `/*`-like substring inside one
+ * array entry's string content could pair with a `*\/`-like substring inside a LATER, separate
+ * entry, blanking everything between them - including the comma and quotes that actually separate
+ * two distinct literals - as if it were one comment. Demonstrated with a hypothetical
+ * coverage.include of `["src/**\/*.ts", "scripts/*.ts", "src/**\/*.bench.ts"]`: the array-close
+ * "*\/" inside "src/**\/*.bench.ts" paired with the "/*" inside "scripts/*.ts", and the scanner
+ * found 2 literals instead of 3. Dropping the branch entirely, rather than hardening it, is safe
+ * because no block comment has ever existed anywhere in this array (verified: `grep -n '/\*'
+ * vitest.config.ts` around coverage.exclude/coverage.include turns up nothing but `/**` glob
+ * segments inside string literals and JSDoc-style `/**` doc comments elsewhere in the file, never
+ * a `/* ... *\/` comment written between array entries) - every real in-array comment here is a
+ * `//` line comment. Narrowing to only what's ever actually occurred removes real, demonstrated
+ * risk and adds none: there's no "can't-happen state" left to defend against speculatively. */
 function stripComments(text: string): string {
-	return text.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, (comment) =>
+	return text.replace(/\/\/[^\n]*/g, (comment) =>
 		comment.replace(/[^\n]/g, " "),
 	);
 }

@@ -57,24 +57,28 @@ describe("scripts/clean-dist.mjs against a real dist/ on disk", () => {
 		await mkdir(`${dir}/dist`, { recursive: true });
 		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
 		await writeFile(`${dir}/dist/old.test.js`, "console.log('stale');\n");
-		// Three siblings of dist/, untouched by a correct clean - a file, a non-empty directory,
-		// and an empty directory - this is what proves the script's blast radius stays scoped to
-		// dist/ instead of the whole cwd, against two different broken-clean shapes. A file-only
-		// sibling would not catch a broken clean that over-broadly deletes every top-level
-		// directory (not just dist/) while leaving files alone. The non-empty directory sibling
-		// holds a real file, not just an empty directory: an empty directory can't distinguish
-		// "sibling survives" from "sibling's subtree got recursively wiped", so a mutation that
-		// empties a sibling's contents instead of leaving it alone would still pass here
-		// otherwise. The empty directory sibling catches the opposite broken shape: a clean that
-		// sweeps only EMPTY top-level directories (leaving non-empty ones and their contents
-		// alone) would pass unnoticed if every sibling here were non-empty, since nothing would
-		// ever be empty enough to trip it. No { recursive: true } on these mkdir calls (unlike
-		// dist/'s, above) - mkdtemp already created dir itself, so there's no missing parent to
-		// create.
+		// Four siblings of dist/, untouched by a correct clean - a file, a non-empty directory, an
+		// empty directory, and a hidden (dot-prefixed) directory - this is what proves the script's
+		// blast radius stays scoped to dist/ instead of the whole cwd, against three different
+		// broken-clean shapes. A file-only sibling would not catch a broken clean that over-broadly
+		// deletes every top-level directory (not just dist/) while leaving files alone. The
+		// non-empty directory sibling holds a real file, not just an empty directory: an empty
+		// directory can't distinguish "sibling survives" from "sibling's subtree got recursively
+		// wiped", so a mutation that empties a sibling's contents instead of leaving it alone would
+		// still pass here otherwise. The empty directory sibling catches the opposite broken shape:
+		// a clean that sweeps only EMPTY top-level directories (leaving non-empty ones and their
+		// contents alone) would pass unnoticed if every sibling here were non-empty, since nothing
+		// would ever be empty enough to trip it. The hidden directory catches a third broken shape:
+		// a clean that widens its sweep to also remove top-level dot-entries - in the real project
+		// cwd that would delete .git, .github, .beads, and .yarnrc.yml - which none of the other
+		// three siblings can catch, since none of them are dot-prefixed. No { recursive: true } on
+		// these mkdir calls (unlike dist/'s, above) - mkdtemp already created dir itself, so there's
+		// no missing parent to create.
 		await writeFile(`${dir}/package.json`, "{}\n");
 		await mkdir(`${dir}/src`);
 		await writeFile(`${dir}/src/index.ts`, "export {};\n");
 		await mkdir(`${dir}/empty-dir`);
+		await mkdir(`${dir}/.hidden`);
 
 		const result = runCleanDist(dir);
 
@@ -84,6 +88,7 @@ describe("scripts/clean-dist.mjs against a real dist/ on disk", () => {
 		expect(await exists(`${dir}/src`)).toBe(true);
 		expect(await exists(`${dir}/src/index.ts`)).toBe(true);
 		expect(await exists(`${dir}/empty-dir`)).toBe(true);
+		expect(await exists(`${dir}/.hidden`)).toBe(true);
 	});
 
 	it("succeeds when dist/ does not exist yet (a first build)", async () => {

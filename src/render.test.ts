@@ -218,22 +218,12 @@ interface DayDetailEntryPayload {
 	value: string;
 }
 
+/**
+ * `panelDataText`'s raw extracted text (see that function, below, for the extraction logic),
+ * `JSON.parse`d into the shape `renderHtml`'s embedded payload has.
+ */
 function readPanelData(html: string, panelId: string): DayDetailPayload {
-	// Finds every application/json script tag first, then filters by id read via `attr` - so
-	// this stays correct however embedJson orders `type` and `id` on the opening tag, the same
-	// order-independence the day-bar markup helpers above already have (myusage-4xu.31,
-	// myusage-4xu.42).
-	const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? [];
-	const target = scripts.find((tag) => {
-		const openTag = tag.match(/^<script\b[^>]*>/)?.[0] ?? "";
-		return (
-			attr(openTag, "type") === "application/json" &&
-			attr(openTag, "id") === `${panelId}-data`
-		);
-	});
-	const match = target?.match(/^<script\b[^>]*>([\s\S]*?)<\/script>$/);
-	if (!match?.[1]) throw new Error(`${panelId}-data script not found`);
-	return JSON.parse(match[1]) as DayDetailPayload;
+	return JSON.parse(panelDataText(html, panelId)) as DayDetailPayload;
 }
 
 describe("renderHtml: document shape", () => {
@@ -822,10 +812,11 @@ describe("renderHtml: client script embedding", () => {
 	//
 	// What this test does NOT prove: that CLIENT_SCRIPT's own call sites invoke these functions
 	// correctly. It pins the embedded TEXT against each function's own source, nothing about the
-	// arguments the surrounding glue passes them - an arity bug or a typo'd element id at a call
-	// site (e.g. readJson(document, "panel-cost-data")) leaves this assertion just as green,
-	// since the compiled source is still byte-for-byte embedded either way (myusage-cq8). See
-	// "renderHtml: client script execution (vm)" below for a test that runs the real call sites.
+	// arguments the surrounding glue passes them - an arity bug (e.g. readJson(document), missing
+	// the id) or a typo'd element id at a call site (e.g. readJson(document, "panel-Cost-data"))
+	// leaves this assertion just as green, since the compiled source is still byte-for-byte
+	// embedded either way (myusage-cq8). See "renderHtml: client script execution (vm)" below for
+	// a test that runs the real call sites.
 	it("embeds each toggle/drill-down function's own compiled source, not a hand-copied duplicate", () => {
 		const html = renderHtml(buildWindow());
 
@@ -836,7 +827,7 @@ describe("renderHtml: client script embedding", () => {
 	});
 });
 
-/** CLIENT_SCRIPT's own source, extracted from real `renderHtml()` output - the plain `<script>` tag (no `type` attribute), which always comes last, right before `</body>`. */
+/** CLIENT_SCRIPT's own source, extracted from real `renderHtml()` output - the plain `<script>` tag (no `type` attribute). The match below takes the FIRST bare `<script>` in the document; that's correct today only because there's exactly one. The load-bearing property is "carries no type attribute," not position - this would need a more specific match if a second bare `<script>` tag were ever added. */
 function clientScriptSource(html: string): string {
 	const match = html.match(/<script>([\s\S]*?)<\/script>/);
 	if (!match?.[1])
@@ -845,10 +836,14 @@ function clientScriptSource(html: string): string {
 }
 
 /**
- * The same `<script type="application/json" id="{panelId}-data">` lookup `readPanelData` uses,
- * but the raw text rather than `JSON.parse`d data - exactly the string a real browser exposes as
- * that element's `textContent`, which is what gets fed to the fake DOM below so `readJson`'s real
- * call site parses genuine embedded data, not a hand-built stand-in for it.
+ * The `<script type="application/json" id="{panelId}-data">` payload's raw text (not
+ * `JSON.parse`d) - exactly the string a real browser exposes as that element's `textContent`,
+ * which is what gets fed to the fake DOM below so `readJson`'s real call site parses genuine
+ * embedded data, not a hand-built stand-in for it. Finds every application/json script tag
+ * first, then filters by id read via `attr` - so this stays correct however embedJson orders
+ * `type` and `id` on the opening tag, the same order-independence the day-bar markup helpers
+ * above already have (myusage-4xu.31, myusage-4xu.42). `readPanelData` (above) is this same
+ * lookup with a `JSON.parse` on top - see that function for the parsed-object form.
  */
 function panelDataText(html: string, panelId: string): string {
 	const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? [];

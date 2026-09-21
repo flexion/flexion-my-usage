@@ -147,4 +147,45 @@ describe("withSqliteWarningSuppressed", () => {
 
 		expect(process.emitWarning).toBe(installed);
 	});
+
+	it("throws instead of restoring in the wrong order when a second call overlaps", async () => {
+		let releaseOuter: (() => void) | undefined;
+		const outerGate = new Promise<void>((resolve) => {
+			releaseOuter = resolve;
+		});
+
+		const outer = withSqliteWarningSuppressed(async () => {
+			await outerGate;
+			return "outer";
+		});
+
+		// releaseOuter always runs, even if an assertion below throws - otherwise a failure here
+		// would leave `outer` pending and the module-level in-flight flag stuck, poisoning every
+		// test that runs after this one in the same file.
+		try {
+			// The outer call has already installed its patched emitWarning and set the in-flight
+			// flag by the time it suspends on outerGate, so this overlapping call must fail loudly
+			// instead of silently reinstalling on top of it.
+			const beforeRejection = process.emitWarning;
+			await expect(
+				withSqliteWarningSuppressed(async () => "inner"),
+			).rejects.toThrow(/not re-entrant/);
+			// The rejected call must never have touched process.emitWarning at all - the guard
+			// check has to run before the patch, not just before `load()`. A version that checked
+			// `inFlight` after already installing its own wrapper would still reject here, but
+			// would leave a second, orphaned wrapper installed on top of the outer call's.
+			expect(process.emitWarning).toBe(beforeRejection);
+		} finally {
+			releaseOuter?.();
+		}
+
+		await expect(outer).resolves.toBe("outer");
+		expect(process.emitWarning).toBe(installed);
+
+		// The guard releases once the outer call finishes, so a later, non-overlapping call
+		// still works.
+		await expect(
+			withSqliteWarningSuppressed(async () => "again"),
+		).resolves.toBe("again");
+	});
 });

@@ -40,19 +40,33 @@ export function withoutSqliteWarning(
 	}) as typeof process.emitWarning;
 }
 
+// Set for the duration of one withSqliteWarningSuppressed call, so a second, overlapping call
+// fails loudly instead of silently restoring process.emitWarning in the wrong order.
+let inFlight = false;
+
 /**
  * Runs `load` with the SQLite experimental warning dropped, then puts `process.emitWarning`
  * back exactly as it was, whether `load` resolves or rejects. Not re-entrant: two overlapping
- * calls would restore in the wrong order, so callers load once and share the result.
+ * calls would restore in the wrong order, so callers load once and share the result (see
+ * opencode.ts's `sqlite ??=`). The `inFlight` guard above turns a would-be second caller into a
+ * thrown error instead of a silently corrupted `process.emitWarning`.
  */
 export async function withSqliteWarningSuppressed<T>(
 	load: () => Promise<T>,
 ): Promise<T> {
+	if (inFlight) {
+		throw new Error(
+			"withSqliteWarningSuppressed is not re-entrant: a call is already in flight. " +
+				"Callers must load once and share the result instead of calling concurrently.",
+		);
+	}
+	inFlight = true;
 	const original = process.emitWarning;
 	process.emitWarning = withoutSqliteWarning(original);
 	try {
 		return await load();
 	} finally {
 		process.emitWarning = original;
+		inFlight = false;
 	}
 }

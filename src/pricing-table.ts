@@ -1,4 +1,5 @@
-// LiteLLM price table: fetch once, cache locally, validate everything.
+// LiteLLM price table: fetch once per 24-hour staleness window (see DEFAULT_MAX_CACHE_AGE_MS,
+// or never at all with LoadOptions.noPriceRefresh), cache locally, validate everything.
 //
 // Source of truth: BerriAI/litellm, model_prices_and_context_window.json (the same URL LiteLLM
 // itself uses as its default price-map URL). Its published JSON Schema
@@ -66,7 +67,11 @@ export interface LoadOptions {
 	fetch?: typeof globalThis.fetch;
 	/** Directory holding the cached table; defaults to `<XDG cache dir>/my-usage`. */
 	cacheDir?: string;
-	/** Fetch even when a usable cache exists. Off by default: with a cache, nothing is sent. */
+	/**
+	 * Fetch even when a usable cache exists. Off by default: a fresh cache sends nothing, but a
+	 * cache older than `maxCacheAgeMs` sends one refresh attempt regardless of this flag - see
+	 * `noPriceRefresh` to suppress that.
+	 */
 	refresh?: boolean;
 	/**
 	 * Maximum cache age, in milliseconds, before a stale cache triggers one refresh attempt on
@@ -74,6 +79,15 @@ export interface LoadOptions {
 	 * immediately, with no fetch, exactly like a cache hit today - unless `refresh` is also set.
 	 */
 	maxCacheAgeMs?: number;
+	/**
+	 * Treat any cache as always fresh, skipping the staleness check entirely: a stale cache no
+	 * longer triggers its automatic refresh attempt. Distinct from `refresh` - that means "fetch
+	 * right now regardless of age," this means "never auto-fetch on age" - so `refresh` still
+	 * forces a fetch even when this is set; the two answer independent questions. For a
+	 * permanently offline caller with a hand-seeded cache that would otherwise retry (and warn)
+	 * forever once it passes `maxCacheAgeMs`.
+	 */
+	noPriceRefresh?: boolean;
 	/** Fetch timeout in milliseconds. */
 	timeoutMs?: number;
 	/** Maximum accepted response size in bytes. */
@@ -379,7 +393,9 @@ async function writeCache(
  *
  * - A usable cached copy no older than `maxCacheAgeMs` (see `DEFAULT_MAX_CACHE_AGE_MS`) is
  *   returned as-is, with no network call.
- * - A cache older than that, or `refresh: true`, triggers exactly one fetch attempt.
+ * - A cache older than that, or `refresh: true`, triggers exactly one fetch attempt - unless
+ *   `noPriceRefresh` is set, in which case an old cache is served as-is (age is never checked)
+ *   and only an explicit `refresh: true` still fetches.
  * - If that fetch succeeds, the fresh table is validated, cached for next time, and used.
  * - If it fails and a cache exists (however old), the cache is used, with one warning line.
  *   If there is no cache, the caller gets undefined. Failures never throw.
@@ -400,6 +416,7 @@ export async function loadPriceTable(
 	);
 	const stale =
 		cached !== undefined &&
+		!options.noPriceRefresh &&
 		isCacheStale(
 			cached.ageMs,
 			options.maxCacheAgeMs ?? DEFAULT_MAX_CACHE_AGE_MS,

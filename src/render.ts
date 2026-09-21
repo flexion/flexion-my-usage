@@ -15,17 +15,23 @@ import {
 	type WindowTotals,
 	windowTotals,
 } from "./chart-model.js";
+import {
+	type DayDetail,
+	findDayDetail,
+	measureToggleState,
+	renderDayDetail,
+} from "./client-script.js";
 
-// Render a single self-contained index.html: KPI row + a daily cost-over-time chart, model-
-// stacked, as inline SVG, with a cost/token toggle and a per-day drill-down. Tracked:
-// myusage-4xu.6 (this file), myusage-4xu.7 (writing it out and opening a browser).
+// Renders the usage page's HTML - KPI row + a daily cost-over-time chart, model-stacked, as
+// inline SVG, with a cost/token toggle and a per-day drill-down - for a local server to serve
+// and open in the browser (see README.md's "How it works"). Tracked: myusage-4xu.6 (this file),
+// myusage-4xu.7 (serving it and opening a browser).
 //
-// Zero-dependency by design (see docs/design/slice-1.md's "Done when"): no React, no chart
-// library, no bundler, no external assets. Markup is plain template strings; the only script is
-// a small hand-written vanilla one, inlined, that never calls out over the network. Every number
-// shown is formatted once, in this file or in chart-model.ts, and carried into the page as
-// already-formatted text - the inline `<script>` never reimplements formatCurrency/formatTokens,
-// it only displays strings this module already produced.
+// No React, no chart library, no bundler, no external assets: markup is plain template strings,
+// and the only script is a small hand-written vanilla one, inlined, that never calls out over
+// the network. Every number shown is formatted once, in this file or in chart-model.ts, and
+// carried into the page as already-formatted text - the inline `<script>` never reimplements
+// formatCurrency/formatTokens, it only displays strings this module already produced.
 
 /** Escapes text for both HTML text nodes and quoted attribute values. */
 function escapeHtml(value: string): string {
@@ -219,7 +225,7 @@ ${tick}`;
 		})
 		.join("\n");
 
-	return `<svg viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}" class="chart-svg" role="img" aria-label="${escapeHtml(fmt.title("Daily usage"))}">
+	return `<svg viewBox="0 0 ${CHART_WIDTH} ${CHART_HEIGHT}" class="chart-svg" role="img" aria-label="${escapeHtml(fmt.title("Daily cost"))}">
 <line x1="${num(MARGIN_LEFT)}" y1="${num(baselineY)}" x2="${num(CHART_WIDTH - MARGIN_RIGHT)}" y2="${num(baselineY)}" class="baseline" />
 ${gridLines}
 ${bars}
@@ -247,18 +253,6 @@ function renderLegend(
 		})
 		.join("\n");
 	return `<ul class="legend">\n${rows}\n</ul>`;
-}
-
-interface DayDetailEntry {
-	label: string;
-	color: string;
-	value: string;
-}
-
-interface DayDetail {
-	day: string;
-	total: string;
-	entries: DayDetailEntry[];
 }
 
 /**
@@ -454,12 +448,21 @@ h2 { font-size: 16px; margin: 0; font-weight: 600; }
 .day-detail-value { margin-left: auto; font-weight: 600; }
 [hidden] { display: none !important; }`;
 
-// The cost/token toggle and day drill-down, as one small vanilla script. It only ever reads the
-// two `<script type="application/json">` payloads this module already formatted (see
-// buildDayDetails) and writes them back with textContent, never innerHTML, for label text that
-// ultimately comes from local session data this file doesn't control.
+// The cost/token toggle and day drill-down. The decisions - what the toggle changes, what a
+// click shows - are `measureToggleState`/`findDayDetail`/`renderDayDetail` from client-script.ts,
+// covered by that module's own tests; this template embeds each one's own compiled source
+// (`.toString()`) verbatim, so what runs in the browser is exactly what those tests exercise, not
+// a hand-copied second implementation that could drift. What's left below is genuinely humble
+// DOM-wiring glue: look up elements, apply the already-decided state to them, wire up events.
 const CLIENT_SCRIPT = `(function () {
   "use strict";
+
+  ${measureToggleState.toString()}
+
+  ${findDayDetail.toString()}
+
+  ${renderDayDetail.toString()}
+
   var state = { measure: "cost" };
 
   function readJson(id) {
@@ -492,63 +495,26 @@ const CLIENT_SCRIPT = `(function () {
 
   function setMeasure(measure) {
     state.measure = measure;
+    var toggle = measureToggleState(measure, payload);
     var keys = ["cost", "tokens"];
     for (var i = 0; i < keys.length; i++) {
       var key = keys[i];
-      var active = key === measure;
-      if (panels[key]) panels[key].hidden = !active;
+      if (panels[key]) panels[key].hidden = toggle.panelHidden[key];
       if (buttons[key]) {
-        buttons[key].classList.toggle("active", active);
-        buttons[key].setAttribute("aria-pressed", String(active));
+        buttons[key].classList.toggle("active", toggle.buttonActive[key]);
+        buttons[key].setAttribute("aria-pressed", toggle.buttonAriaPressed[key]);
       }
     }
-    var data = payload[measure];
-    if (titleEl && data && data.title) titleEl.textContent = data.title;
+    if (titleEl && toggle.title) titleEl.textContent = toggle.title;
     hideDetail();
   }
 
   function showDay(day) {
     var data = payload[state.measure];
     if (!data || !detailEl) return;
-    var found = null;
-    for (var i = 0; i < data.days.length; i++) {
-      if (data.days[i].day === day) {
-        found = data.days[i];
-        break;
-      }
-    }
+    var found = findDayDetail(data.days, day);
     if (!found) return;
-
-    while (detailEl.firstChild) detailEl.removeChild(detailEl.firstChild);
-
-    var title = document.createElement("div");
-    title.className = "day-detail-title";
-    title.textContent = day + " - " + found.total;
-    detailEl.appendChild(title);
-
-    for (var j = 0; j < found.entries.length; j++) {
-      var entry = found.entries[j];
-      var row = document.createElement("div");
-      row.className = "day-detail-row";
-
-      var swatch = document.createElement("span");
-      swatch.className = "swatch";
-      swatch.style.background = entry.color;
-      row.appendChild(swatch);
-
-      var label = document.createElement("span");
-      label.textContent = entry.label;
-      row.appendChild(label);
-
-      var value = document.createElement("span");
-      value.className = "day-detail-value";
-      value.textContent = entry.value;
-      row.appendChild(value);
-
-      detailEl.appendChild(row);
-    }
-
-    detailEl.hidden = false;
+    renderDayDetail(document, detailEl, day, found);
   }
 
   var dayBars = document.querySelectorAll(".day-bar");

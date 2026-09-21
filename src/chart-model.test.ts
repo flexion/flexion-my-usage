@@ -646,6 +646,18 @@ describe("formatCurrency", () => {
 		expect(formatCurrency(12.34)).toBe("$12.34");
 		expect(formatCurrency(1234.5)).toBe("$1234.50");
 	});
+
+	it("falls back to a significant digit instead of rounding a tiny nonzero cost to zero", () => {
+		// Four decimals alone would round 0.00001 to "0.0000", indistinguishable from a
+		// genuinely zero cost - the whole point formatCurrency's own doc comment states.
+		expect(formatCurrency(0.00001)).toBe("$0.00001");
+		expect(formatCurrency(0.00001)).not.toBe("$0.0000");
+	});
+
+	it("formats a negative amount as a minus sign plus the same rules applied to its magnitude", () => {
+		expect(formatCurrency(-1.5)).toBe("-$1.50");
+		expect(formatCurrency(-0.0045)).toBe("-$0.0045");
+	});
 });
 
 describe("formatTokens", () => {
@@ -665,6 +677,18 @@ describe("formatTokens", () => {
 	it("uses M and B with two decimals from a million and a billion", () => {
 		expect(formatTokens(1_200_000)).toBe("1.20M");
 		expect(formatTokens(7_060_000_000)).toBe("7.06B");
+	});
+
+	it("steps up a unit when rounding at the current unit would reach its own threshold", () => {
+		// 999.6 rounds to "1000" under the below-1,000 branch - not a real 4-digit count -
+		// so it must step up and read in thousands instead.
+		expect(formatTokens(999.6)).toBe("1.0k");
+		// 999,950 rounds to "1000.0k" under the thousands branch - not a real 4-digit
+		// thousands value - so it must step up and read in millions instead.
+		expect(formatTokens(999_950)).toBe("1.00M");
+		// Same cascade one unit up: 999,996,000 rounds to "1000.00M" under the millions
+		// branch, so it must step up again and read in billions.
+		expect(formatTokens(999_996_000)).toBe("1.00B");
 	});
 });
 

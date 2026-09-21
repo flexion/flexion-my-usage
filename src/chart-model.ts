@@ -59,8 +59,9 @@ export interface ModelStacks {
 	/**
 	 * Rank order: named model series by window total, largest first, then the Other roll-up last
 	 * when there is one. Empty when no series has a positive total. Other sorting last here lets
-	 * a renderer draw it at the base of each bar straight from this list's order, with no
-	 * separate layout pass.
+	 * a renderer stack straight from this list's order, with no separate layout pass - render.ts's
+	 * `renderChartSvg` draws bottom-to-top in list order, so Other lands at the TOP of each bar,
+	 * not the base.
 	 */
 	series: StackSeries[];
 	/** One entry per input DayBucket, in input order. */
@@ -361,23 +362,62 @@ export function windowTotals(days: DayBucket[]): WindowTotals {
 
 /**
  * Dollars: "$0.00" for zero, four decimals below one cent so a tiny cost still reads as a
- * number, two decimals from a cent up. No thousands separators and no locale data, so the
- * output is the same on every Node build.
+ * number - falling back to `toPrecision(1)` for a value so small that four decimals would
+ * round it to "0.0000", so a genuinely nonzero cost never silently displays as zero - and two
+ * decimals from a cent up. Negative input formats as "-" plus the same rules applied to its
+ * magnitude (e.g. "-$1.50"): today's pricing never produces a negative cost, but a total
+ * function beats one that mangles a future refund or correction figure. No thousands
+ * separators and no locale data, so the output is the same on every Node build.
  */
 export function formatCurrency(usd: number): string {
 	if (usd === 0) return "$0.00";
-	return `$${usd.toFixed(usd < 0.01 ? 4 : 2)}`;
+	if (usd < 0) return `-${formatCurrency(-usd)}`;
+	if (usd < 0.01) {
+		const fourDecimals = usd.toFixed(4);
+		return fourDecimals === "0.0000"
+			? `$${usd.toPrecision(1)}`
+			: `$${fourDecimals}`;
+	}
+	return `$${usd.toFixed(2)}`;
+}
+
+/** `formatTokens` at the thousands unit, stepping up to millions if rounding reaches 1,000k. */
+function formatTokensAtThousands(count: number): string {
+	const thousands = (count / 1_000).toFixed(1);
+	return Number(thousands) < 1_000
+		? `${thousands}k`
+		: formatTokensAtMillions(count);
+}
+
+/** `formatTokens` at the millions unit, stepping up to billions if rounding reaches 1,000M. */
+function formatTokensAtMillions(count: number): string {
+	const millions = (count / 1_000_000).toFixed(2);
+	return Number(millions) < 1_000
+		? `${millions}M`
+		: formatTokensAtBillions(count);
+}
+
+/** `formatTokens` at the billions unit: the top of the ladder, nothing to step up to. */
+function formatTokensAtBillions(count: number): string {
+	return `${(count / 1_000_000_000).toFixed(2)}B`;
 }
 
 /**
  * Token counts with k / M / B suffixes: below 1,000 a rounded integer; thousands to one decimal;
- * millions and billions to two. Zero is "0".
+ * millions and billions to two. Zero is "0". Each unit is chosen from the raw count, then
+ * re-checked after rounding: rounding a value already at a unit's precision can push it up to
+ * the next unit's own threshold (999.6 rounds to "1000", not a real 4-digit token count; 999950
+ * rounds to "1000.0k", not a real value in the thousands), so a boundary value steps up to the
+ * next unit instead of displaying at one it no longer belongs to.
  */
 export function formatTokens(count: number): string {
-	if (count < 1_000) return String(Math.round(count));
-	if (count < 1_000_000) return `${(count / 1_000).toFixed(1)}k`;
-	if (count < 1_000_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
-	return `${(count / 1_000_000_000).toFixed(2)}B`;
+	if (count < 1_000) {
+		const ones = Math.round(count);
+		return ones < 1_000 ? String(ones) : formatTokensAtThousands(count);
+	}
+	if (count < 1_000_000) return formatTokensAtThousands(count);
+	if (count < 1_000_000_000) return formatTokensAtMillions(count);
+	return formatTokensAtBillions(count);
 }
 
 /** Whole counts with comma thousands separators, without locale data. */

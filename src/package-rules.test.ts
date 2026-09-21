@@ -72,14 +72,18 @@ describe("filterTestOrSupportPaths: the test-or-support name pattern and its off
 		]);
 	});
 
-	it("flags a test-support directory nested several levels deep", () => {
-		// __mocks__ sits two real directories above the file (nested/, then deep/, in
-		// between) - a non-immediate ancestor, not the immediate parent segment - so this
-		// only passes if the check walks every ancestor segment, not just the last one.
-		const paths = ["dist/__mocks__/nested/deep/file.js"];
+	it("flags a file nested several levels below a test-support directory", () => {
+		// __mocks__ sits at a fixed, non-first segment (dist/sources/__mocks__/...), not at a
+		// fixed index, and two more real directories (nested/, then deep/) sit between it and
+		// the file - a non-immediate ancestor, not the immediate parent segment. This only
+		// passes if the check walks every ancestor segment, not just the last one, and not
+		// just a fixed index: a fixture with __mocks__ pinned to path-segment index 1 (e.g.
+		// dist/__mocks__/nested/deep/file.js) would also pass a buggy "check only
+		// segments[1]" implementation, so this fixture puts __mocks__ one level deeper.
+		const paths = ["dist/sources/__mocks__/nested/deep/file.js"];
 
 		expect(filterTestOrSupportPaths(paths)).toEqual([
-			"dist/__mocks__/nested/deep/file.js",
+			"dist/sources/__mocks__/nested/deep/file.js",
 		]);
 	});
 

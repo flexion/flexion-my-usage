@@ -57,15 +57,19 @@ describe("scripts/clean-dist.mjs against a real dist/ on disk", () => {
 		await mkdir(`${dir}/dist`, { recursive: true });
 		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
 		await writeFile(`${dir}/dist/old.test.js`, "console.log('stale');\n");
-		// A sibling of dist/, untouched by a correct clean - this is what proves the
-		// script's blast radius stays scoped to dist/ instead of the whole cwd.
+		// Two siblings of dist/, untouched by a correct clean - a file AND a directory - this
+		// is what proves the script's blast radius stays scoped to dist/ instead of the whole
+		// cwd. A file-only sibling would not catch a broken clean that over-broadly deletes
+		// every top-level directory (not just dist/) while leaving files alone.
 		await writeFile(`${dir}/package.json`, "{}\n");
+		await mkdir(`${dir}/src`);
 
 		const result = runCleanDist(dir);
 
 		expect(result.status).toBe(0);
 		expect(await exists(`${dir}/dist`)).toBe(false);
 		expect(await exists(`${dir}/package.json`)).toBe(true);
+		expect(await exists(`${dir}/src`)).toBe(true);
 	});
 
 	it("succeeds when dist/ does not exist yet (a first build)", async () => {

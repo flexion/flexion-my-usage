@@ -216,14 +216,19 @@ describe("loadPriceTable: defaults for what the caller does not inject", () => {
 // `options.env?.HTTPS_PROXY` and never consults NO_PROXY at all would pass both. Which NO_PROXY
 // forms suppress the proxy is proxy.test.ts's job (`resolveProxy`, pure and exhaustive). What
 // would make a real-transport test decisive for NO_PROXY specifically is its mirror case -
-// NO_PROXY that *does* match the real target host, so the proxy must NOT be dialed - and that
-// hits the same wall the deleted "matches the target host" case above did: proving "does not
-// dial the proxy" here would mean either reaching the real public host directly (an
-// external-network dependency this suite does not take) or adding the same `url` seam, both out
-// of scope for a test-only round. Until that seam exists, end-to-end NO_PROXY suppression is
-// guaranteed only by construction: the adapter has exactly one call site that can resolve a
-// proxy at all, so wiring NO_PROXY into that single `resolveProxy(env, url)` call is what GREEN
-// must do to pass proxy.test.ts's table - it is not separately pinned by an executed test here.
+// NO_PROXY that *does* match the real target host, so the proxy must NOT be dialed.
+//
+// myusage-4yx: this comment previously claimed that mirror case couldn't be tested without
+// either reaching the real public host or adding a `url` seam to `LoadOptions` - both wrong.
+// Stubbing the *global* fetch (the same technique "malformed HTTPS_PROXY" below already uses)
+// answers before any real DNS lookup or socket connect happens, so NO_PROXY can be set to
+// PRICE_TABLE_URL's own real hostname with no live-network dependency at all: see "loadPriceTable:
+// NO_PROXY suppression" below, which asserts both that the recording proxy's connect list stays
+// empty and that the stubbed global fetch fires instead - proving NO_PROXY suppression end to
+// end, not just by construction. The HTTP_PROXY fallback (used only when HTTPS_PROXY is unset)
+// gets its own real-transport test alongside "routes the request through HTTPS_PROXY..." below,
+// for the same reason that test exists: proxy.test.ts already proves `resolveProxy` picks the
+// right value, but nothing before myusage-4yx proved the real transport actually dials it.
 describe("loadPriceTable: HTTPS_PROXY (real fetch, local proxy fixture)", () => {
 	// Loopback CONNECT + 502 + socket close is sub-25ms in practice (confirmed directly on
 	// Node 22.13.0/Linux, this repo's actual floor), so 2000ms leaves ample margin for a
@@ -278,6 +283,66 @@ describe("loadPriceTable: HTTPS_PROXY (real fetch, local proxy fixture)", () => 
 			expect(injectedFetch).toHaveBeenCalledTimes(1);
 			expect(table?.size).toBeGreaterThan(0);
 			expect(proxy.connects).toEqual([]);
+		} finally {
+			await proxy.close();
+		}
+	});
+
+	// myusage-4yx: proxy.test.ts already proves `resolveProxy` falls back to HTTP_PROXY when
+	// HTTPS_PROXY is unset; nothing before this test proved the real transport actually dials
+	// the proxy that fallback resolves to, rather than, say, only ever wiring up HTTPS_PROXY's
+	// value end to end.
+	it("falls back to HTTP_PROXY when HTTPS_PROXY is not set, and still tunnels through the proxy", async () => {
+		const proxy = await startRecordingProxy();
+		const connectSeen = proxy.waitForConnect(REAL_FETCH_TIMEOUT_MS);
+		const warn = vi.fn();
+		const load = loadPriceTable(
+			{
+				cacheDir: await newCacheDir(),
+				timeoutMs: REAL_FETCH_TIMEOUT_MS,
+				env: { HTTP_PROXY: proxy.url },
+			},
+			warn,
+		);
+		try {
+			const { hostname } = new URL(PRICE_TABLE_URL);
+			await expect(connectSeen).resolves.toBe(`${hostname}:443`);
+			await expect(load).resolves.toBeUndefined();
+			expect(warn.mock.calls[0]?.[0]).toContain("price table unavailable");
+		} finally {
+			await proxy.close();
+		}
+	});
+});
+
+// myusage-4yx: proxy.test.ts already proves `resolveProxy` suppresses the proxy when NO_PROXY
+// matches the target host; nothing before this test proved the real transport honors that
+// decision end to end - it could equally have dialed the proxy anyway and only proxy.test.ts's
+// unit-level check would have caught it. The global fetch is stubbed rather than left real, but
+// unlike the tests above, that's not a compromise here: the stub answers before any real DNS
+// lookup or socket connect happens, so this stays fully offline while still proving two things a
+// stub-only test couldn't - the recording proxy really is never dialed, and the direct path
+// really does fire in its place. Mirrors "malformed HTTPS_PROXY" below, which uses the same
+// stubbed-global-fetch technique to prove the opposite (that nothing is ever dialed).
+describe("loadPriceTable: NO_PROXY suppression (real proxy fixture, global fetch stubbed)", () => {
+	it("goes direct instead of through the proxy when NO_PROXY matches the target host", async () => {
+		const proxy = await startRecordingProxy();
+		const { hostname } = new URL(PRICE_TABLE_URL);
+		const directFetch = fakeFetch(LITELLM_FIXTURE);
+		vi.stubGlobal("fetch", directFetch);
+		const warn = vi.fn();
+		try {
+			const table = await loadPriceTable(
+				{
+					cacheDir: await newCacheDir(),
+					env: { HTTPS_PROXY: proxy.url, NO_PROXY: hostname },
+				},
+				warn,
+			);
+			expect(directFetch).toHaveBeenCalledTimes(1);
+			expect(table?.size).toBeGreaterThan(0);
+			expect(proxy.connects).toEqual([]);
+			expect(warn).not.toHaveBeenCalled();
 		} finally {
 			await proxy.close();
 		}

@@ -180,8 +180,10 @@ function findCoverageBlock(source: string): number {
 
 /** Appends a new entry as the array's last element, right before its closing `]` - where a
  * new humble-object path actually gets added in practice, and, unlike inserting at the front,
- * never lands among the three pre-existing, intentionally-glob test-support entries (AGENTS.md:
- * only the humble-object entries have to be explicit paths, not the whole array). Also returns
+ * never lands among the pre-existing, intentionally-glob test-support entries (AGENTS.md:
+ * only the humble-object entries have to be explicit paths, not the whole array; myusage-9os
+ * trimmed that set from three globs to two, dropping the unused *.spec.* convention - see
+ * vitest.config.ts's own TestSupportPattern comment). Also returns
  * the grafted entry's own 1-indexed line number in the mutated source, so a caller can tell a
  * diagnostic reported there apart from one reported for an unrelated reason - the guard is free
  * to point tsc at that line instead of quoting the entry's text (see `expectDiagnosticNaming`).
@@ -843,7 +845,7 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 			},
 		);
 
-		// A guard could satisfy every case above just by pinning the exact five-entry tuple
+		// A guard could satisfy every case above just by pinning the exact original tuple
 		// (reject anything that isn't byte-for-byte the original array) rather than actually
 		// validating each entry's shape. That would be too strict in a way nobody wants: adding a
 		// future humble object by editing an existing line (not just appending one) would then also

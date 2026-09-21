@@ -12,6 +12,10 @@
 	//
 	// scripts/critical-persisted.ts (bead myusage-4xu.25) is the same shape - non-product
 	// tooling for the bead-drain automation loop - listed here for the same reason.
+	//
+	// scripts/fixtures-guard.ts (bead myusage-9os) is the same shape again: the pure decision
+	// logic scripts/check-fixtures-guard.mjs wires to real fs I/O, listed here so a type error
+	// in it fails `yarn typecheck` instead of only surfacing at `yarn lint` runtime.
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"rootDir": ".",
@@ -20,6 +24,7 @@
 	"include": [
 		"vitest.config.ts",
 		"scripts/package-rules.ts",
-		"scripts/critical-persisted.ts"
+		"scripts/critical-persisted.ts",
+		"scripts/fixtures-guard.ts"
 	]
 }

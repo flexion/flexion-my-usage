@@ -75,7 +75,7 @@ jobs:
   #   git tag vX.Y.Z <merge-sha> && git push origin vX.Y.Z
   # npm publish is gated behind the NPM_PUBLISH_ENABLED repo variable (see RELEASING.md).
   release:
-    needs: verify
+    needs: [verify, verify-node-floor]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

@@ -3,6 +3,15 @@
 	// `yarn typecheck` keeps using tsconfig.json so tests are still type-checked.
 	// Convention: *.test.*, *.spec.* and *.fixtures.* are test code or test support
 	// (scripts/check-package.mjs asserts none reach dist/ or the npm package).
+	//
+	// `rootDir` lives here, not in the shared tsconfig.json: it only matters for emit (it
+	// fixes dist/'s output layout to mirror src/, e.g. dist/index.js not dist/src/index.js),
+	// and this is the only config that emits. Safe to set here: once test files are excluded,
+	// every remaining root file is under src/ - nothing here imports
+	// scripts/package-rules.ts (bead myusage-4xu.19), which lives outside src/ on purpose.
 	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"rootDir": "src"
+	},
 	"exclude": ["src/**/*.test.*", "src/**/*.spec.*", "src/**/*.fixtures.*"]
 }

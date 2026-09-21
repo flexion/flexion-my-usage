@@ -25,12 +25,28 @@ const config = {
 		// in-flight work as if it were ours.
 		include: ["src/**/*.test.ts"],
 
+		// Pinned, not left to vitest's default. src/aggregate.test.ts's beforeEach mutates
+		// process.env.TZ to exercise daylight-saving edge cases, then asserts a known
+		// UTC offset before every test runs; that mutation only reaches Date's timezone
+		// lookups in a process pool.forks owns, so pool: "threads" makes the assertion
+		// fail loudly instead of silently skipping TZ isolation. Pinning here means a
+		// future vitest default change can't move that failure from loud to silent.
+		pool: "forks",
+
 		coverage: {
 			provider: "v8",
 
 			// Count every source file, tested or not. Without `include`, a module no test
 			// imports is invisible to the report and the gate passes on a lie.
-			include: ["src/**/*.ts"],
+			//
+			// scripts/package-rules.ts is listed explicitly alongside the src/ glob: it is
+			// build-time-only tooling that deliberately lives outside src/ (bead
+			// myusage-4xu.19 - src/ is what `yarn build` ships, and this file must not ship),
+			// but it still holds real logic and stays covered like everything else. One
+			// explicit path, matching the humble-object exclusions' own convention below,
+			// not a scripts/**/*.ts glob - a future non-logic .ts file added under scripts/
+			// should not be swept into the coverage gate by accident.
+			include: ["src/**/*.ts", "scripts/package-rules.ts"],
 
 			exclude: [
 				// Test code and test support. Same convention as tsconfig.build.json.

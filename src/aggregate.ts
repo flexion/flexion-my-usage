@@ -24,7 +24,14 @@ export interface UnpricedModel {
 	tokens: number;
 }
 
-/** All five token buckets, disjoint per pricing.ts, summed into one response total. */
+/**
+ * All five token buckets, disjoint per pricing.ts, summed into one response total.
+ *
+ * Trusts every bucket is already finite and non-negative (see `NormalizedUsageRow.tokens` in
+ * sources/types.ts) and does no validation or clamping of its own. That trust holds today only
+ * because opencode.ts's `bucket()` is the sole adapter's clamp; a second `UsageSource` that
+ * skips the same clamp would have its NaN/negative values summed here without complaint.
+ */
 function tokenTotal(tokens: PricedRow["tokens"]): number {
 	return (
 		tokens.input +

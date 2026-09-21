@@ -73,13 +73,14 @@ describe("filterTestOrSupportPaths: the test-or-support name pattern and its off
 	});
 
 	it("flags a file nested several levels below a test-support directory", () => {
-		// __mocks__ sits at a fixed, non-first segment (dist/sources/__mocks__/...), not at a
-		// fixed index, and two more real directories (nested/, then deep/) sit between it and
-		// the file - a non-immediate ancestor, not the immediate parent segment. This only
-		// passes if the check walks every ancestor segment, not just the last one, and not
-		// just a fixed index: a fixture with __mocks__ pinned to path-segment index 1 (e.g.
-		// dist/__mocks__/nested/deep/file.js) would also pass a buggy "check only
-		// segments[1]" implementation, so this fixture puts __mocks__ one level deeper.
+		// __mocks__ sits at path-segment index 2 here (dist/sources/__mocks__/...), with two
+		// more real directories (nested/, then deep/) between it and the file - a non-immediate
+		// ancestor, not the immediate parent segment. In isolation this test alone would still
+		// pass a buggy "check only segments[2]" implementation, since that's exactly where
+		// __mocks__ sits in this one fixture. What defeats a fixed-index implementation is the
+		// suite as a whole: every other fixture in this file pins its test-support directory to
+		// index 1, so this fixture's index 2 means no single segments[k] check can satisfy every
+		// fixture at once - only walking every ancestor segment can.
 		const paths = ["dist/sources/__mocks__/nested/deep/file.js"];
 
 		expect(filterTestOrSupportPaths(paths)).toEqual([

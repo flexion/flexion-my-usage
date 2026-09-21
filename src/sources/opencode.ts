@@ -1,6 +1,7 @@
-import { stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { withSqliteWarningSuppressed } from "./sqlite-warning.js";
 import type { NormalizedUsageRow, SourceHandle, UsageSource } from "./types.js";
 
@@ -17,10 +18,24 @@ const SOURCE = "opencode";
 
 // Same data-dir rule opencode uses (xdg-basedir): XDG_DATA_HOME if set and non-empty,
 // otherwise ~/.local/share.
-function databasePath(): string {
+function dataDir(): string {
 	const dataHome =
 		process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
-	return join(dataHome, "opencode", "opencode.db");
+	return join(dataHome, "opencode");
+}
+
+// Matches opencode.db and opencode-<channel>.db, any channel (including one containing its
+// own dashes, e.g. "beta-canary") but never SQLite's own sidecars (opencode.db-wal,
+// opencode.db-shm) or a lookalike (opencode.db.backup, opencode.sqlite, myopencode.db) - see
+// the "lookalike files" test in opencode.test.ts for the exact decoy shapes this rejects.
+const DB_NAME_PATTERN = /^opencode(-.+)?\.db$/;
+
+// Upstream (anomalyco/opencode, packages/core/src/database/database.ts, v1.18.31) uses an
+// absolute OPENCODE_DB as-is and resolves anything else against the data directory, never the
+// process cwd. (":memory:" is out of scope - nothing here needs it, so it takes the relative
+// branch like any other non-absolute string, same as upstream's own isAbsolute() check would.)
+function resolveOverridePath(override: string, dir: string): string {
+	return isAbsolute(override) ? override : join(dir, override);
 }
 
 // `json_extract` raises on malformed JSON, which would abort the whole query. The CASE
@@ -125,6 +140,16 @@ export interface DiscoverOptions {
 	stat?: typeof stat;
 }
 
+// read() takes an injectable DatabaseSync constructor, the same seam shape as DiscoverOptions'
+// `stat` above: a named field on an options object, defaulting to the real node:sqlite export
+// (loaded lazily via loadSqlite()) when omitted. This is what lets the readonly-directory retry
+// guard below be tested directly - a fake open failure with a chosen `.errcode` - without a
+// chmod fixture. Lives on opencode's own type, not on the shared `UsageSource.read()` signature
+// in types.ts, so every other source's `read()` stays one-arg.
+export interface ReadOptions {
+	DatabaseSyncCtor?: SqliteModule["DatabaseSync"];
+}
+
 // Codes that mean "no readable opencode data at this path", not "something is wrong":
 // absent (ENOENT), a path segment that isn't a directory (ENOTDIR), permission denied
 // (EACCES/EPERM), or a symlink loop (ELOOP). Anything else - EIO, or an error with no
@@ -152,51 +177,144 @@ export function handleDiscoverError(error: unknown): SourceHandle[] {
 	throw error;
 }
 
+// node:sqlite's own extended SQLite result code for "cannot create a file the operation
+// needs because the containing directory is not writable" (SQLITE_READONLY_DIRECTORY).
+// Surfaced as `.errcode` on the thrown Error; not typed by @types/node, so it's read through
+// a narrow cast, the same pattern handleDiscoverError already uses for `.code`.
+const SQLITE_READONLY_DIRECTORY = 1544;
+
+function isReadonlyDirectoryError(error: unknown): boolean {
+	return (error as { errcode?: unknown }).errcode === SQLITE_READONLY_DIRECTORY;
+}
+
+// SQLite's own file: URI form, with immutable=1 appended. pathToFileURL percent-encodes the
+// path exactly like every other file: URL (spaces, "#", "?", etc. all survive it), which
+// naive string interpolation would not.
+function immutableUri(path: string): string {
+	const uri = pathToFileURL(path);
+	uri.search = "immutable=1";
+	return uri.href;
+}
+
+function readRows(
+	DatabaseSyncCtor: SqliteModule["DatabaseSync"],
+	location: string,
+	displayPath: string,
+): NormalizedUsageRow[] {
+	// readOnly maps to SQLITE_OPEN_READONLY: never creates, writes, checkpoints, or
+	// changes journal mode. A WAL database is still read correctly, including
+	// committed rows that have not been checkpointed into the main file yet.
+	// Side effect: with no other connection open, SQLite creates empty -wal/-shm
+	// sidecar files next to the database (it needs them to read a WAL database).
+	// The database file itself is never modified.
+	const db = new DatabaseSyncCtor(location, { readOnly: true });
+	try {
+		// A writer or a closing connection can briefly hold a lock (SQLite WAL docs).
+		db.exec("PRAGMA busy_timeout = 2000");
+		const hasMessageTable = db
+			.prepare(
+				"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'message'",
+			)
+			.get();
+		if (!hasMessageTable) {
+			throw new Error(
+				`Unsupported opencode database: no "message" table in ${displayPath}`,
+			);
+		}
+		const statement = db.prepare(QUERY);
+		statement.setReadBigInts(true);
+		return statement
+			.all()
+			.map((raw) => toRow(raw))
+			.filter((row): row is NormalizedUsageRow => row !== undefined)
+			.sort(compareRows);
+	} finally {
+		db.close();
+	}
+}
+
 export const opencodeSource = {
 	name: SOURCE,
 
 	async discover(options: DiscoverOptions = {}): Promise<SourceHandle[]> {
 		const statFn = options.stat ?? stat;
-		const path = databasePath();
+		const dir = dataDir();
+		const override = process.env.OPENCODE_DB;
+		if (override) {
+			const overridePath = resolveOverridePath(override, dir);
+			let info: Awaited<ReturnType<typeof stat>>;
+			try {
+				info = await statFn(overridePath);
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+					throw new Error(
+						`OPENCODE_DB is set to ${overridePath} but that file does not exist`,
+					);
+				}
+				return handleDiscoverError(error);
+			}
+			if (info.isDirectory()) {
+				throw new Error(
+					`OPENCODE_DB is set to ${overridePath} but that path is a directory`,
+				);
+			}
+			return [{ source: SOURCE, path: overridePath }];
+		}
+		// No OPENCODE_DB: scan the data directory for every opencode.db / opencode-<channel>.db
+		// file. readdir's Dirent is lstat-based and never follows a symlink, so a symlinked
+		// database would report isFile() === false even though its target is a real, readable
+		// file - the exact silent-empty-chart failure myusage-4xu.10 and myusage-chj exist to
+		// eliminate. A plain file entry needs no further check (Dirent already answered it), but
+		// a symlink entry is confirmed with `statFn`, which does follow symlinks, before it
+		// becomes a handle. A candidate whose stat fails (a broken symlink, typically ENOENT) is
+		// simply excluded, not surfaced - one bad entry must not fail discovery of the rest, unlike
+		// the OPENCODE_DB override arm's stat above, where a bad path is the only thing being asked
+		// about and failing it loudly is correct.
 		try {
-			if (!(await statFn(path)).isFile()) return [];
+			const entries = await readdir(dir, { withFileTypes: true });
+			const candidates = entries.filter((entry) =>
+				DB_NAME_PATTERN.test(entry.name),
+			);
+			const handles = await Promise.all(
+				candidates.map(async (entry): Promise<SourceHandle | undefined> => {
+					const path = join(dir, entry.name);
+					if (entry.isFile()) return { source: SOURCE, path };
+					if (!entry.isSymbolicLink()) return undefined;
+					try {
+						const info = await statFn(path);
+						return info.isFile() ? { source: SOURCE, path } : undefined;
+					} catch {
+						return undefined;
+					}
+				}),
+			);
+			return handles.filter(
+				(handle): handle is SourceHandle => handle !== undefined,
+			);
 		} catch (error) {
 			return handleDiscoverError(error);
 		}
-		return [{ source: SOURCE, path }];
 	},
 
-	async read(handle: SourceHandle): Promise<NormalizedUsageRow[]> {
-		const { DatabaseSync } = await loadSqlite();
-		// readOnly maps to SQLITE_OPEN_READONLY: never creates, writes, checkpoints, or
-		// changes journal mode. A WAL database is still read correctly, including
-		// committed rows that have not been checkpointed into the main file yet.
-		// Side effect: with no other connection open, SQLite creates empty -wal/-shm
-		// sidecar files next to the database (it needs them to read a WAL database).
-		// The database file itself is never modified.
-		const db = new DatabaseSync(handle.path, { readOnly: true });
+	async read(
+		handle: SourceHandle,
+		options: ReadOptions = {},
+	): Promise<NormalizedUsageRow[]> {
+		const DatabaseSyncCtor =
+			options.DatabaseSyncCtor ?? (await loadSqlite()).DatabaseSync;
 		try {
-			// A writer or a closing connection can briefly hold a lock (SQLite WAL docs).
-			db.exec("PRAGMA busy_timeout = 2000");
-			const hasMessageTable = db
-				.prepare(
-					"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'message'",
-				)
-				.get();
-			if (!hasMessageTable) {
-				throw new Error(
-					`Unsupported opencode database: no "message" table in ${handle.path}`,
-				);
-			}
-			const statement = db.prepare(QUERY);
-			statement.setReadBigInts(true);
-			return statement
-				.all()
-				.map((raw) => toRow(raw))
-				.filter((row): row is NormalizedUsageRow => row !== undefined)
-				.sort(compareRows);
-		} finally {
-			db.close();
+			return readRows(DatabaseSyncCtor, handle.path, handle.path);
+		} catch (error) {
+			if (!isReadonlyDirectoryError(error)) throw error;
+			// Opening a WAL database read-only still needs to create its -wal/-shm sidecars
+			// when they are not already sitting next to it; in a read-only directory that
+			// create fails as SQLITE_READONLY_DIRECTORY, surfaced above as a bare "attempt to
+			// write a readonly database" with no indication of the cause. Retry once via the
+			// immutable=1 query parameter, which tells SQLite the file will not change and
+			// skips sidecar setup entirely - trading away visibility into any not-yet-
+			// checkpointed WAL rows (a live writer, or an orphaned WAL from an unclean
+			// shutdown) for a read that succeeds in a read-only directory.
+			return readRows(DatabaseSyncCtor, immutableUri(handle.path), handle.path);
 		}
 	},
 } satisfies UsageSource;

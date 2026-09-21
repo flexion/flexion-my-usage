@@ -651,7 +651,6 @@ describe("formatCurrency", () => {
 		// Four decimals alone would round 0.00001 to "0.0000", indistinguishable from a
 		// genuinely zero cost - the whole point formatCurrency's own doc comment states.
 		expect(formatCurrency(0.00001)).toBe("$0.00001");
-		expect(formatCurrency(0.00001)).not.toBe("$0.0000");
 	});
 
 	it("formats a negative amount as a minus sign plus the same rules applied to its magnitude", () => {

@@ -200,6 +200,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		const result = runCheckPackage(dir);
 
 		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/test or support files in dist\//);
 	});
 
 	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {

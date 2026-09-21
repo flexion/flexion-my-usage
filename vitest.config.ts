@@ -52,6 +52,19 @@ const config = {
 				// Test code and test support. Same convention as tsconfig.build.json.
 				"src/**/*.test.*",
 				"src/**/*.spec.*",
+				//
+				// This is *why* the gitignored coverage/ directory never leaks
+				// src/pricing.fixtures.ts's throwaway TEST_ORIGIN_KEY (myusage-qhc,
+				// correcting PR #48's body): pricing.fixtures.ts is excluded from
+				// coverage right here, so vitest never instruments or reports it -
+				// no coverage/src/pricing.fixtures.ts.html is even generated. The key's
+				// text never lands in coverage/ at all. It is NOT the .gitleaks.toml
+				// content-scoped allowlist doing that job; that allowlist only governs
+				// gitleaks' own scans (scripts/guardrail-scan.sh) of tracked source, and
+				// has no bearing on what vitest writes under coverage/. Verified empirically:
+				// after `yarn test`, `grep -rl "BEGIN PRIVATE KEY" coverage/` returns
+				// nothing, and `find coverage -iname '*fixtures*'` finds no report file
+				// at all.
 				"src/**/*.fixtures.*",
 
 				// Humble objects (invasive-species rule): I/O and wiring only, no logic.

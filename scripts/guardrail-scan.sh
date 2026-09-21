@@ -19,6 +19,14 @@
 # current file contents directly, independent of git history or diffs, and catches that class of
 # swap. Tracked: myusage-hfu.
 #
+# snapshot also walks the gitignored coverage/ directory, since it scans the filesystem
+# directly rather than tracked files. That's safe: src/pricing.fixtures.ts's throwaway
+# TEST_ORIGIN_KEY never appears there, because vitest.config.ts excludes *.fixtures.*
+# files from coverage instrumentation and reporting entirely (see the comment there) -
+# not because of the .gitleaks.toml allowlist below, which only applies to gitleaks'
+# own scans of tracked source and has no bearing on coverage/'s contents. Tracked:
+# myusage-qhc (corrects a wrong claim about this in PR #48's own body).
+#
 # Denylist path override: GUARDRAIL_DENYLIST_FILE (default .guardrail/denylist).
 # Each non-blank, non-comment (#) line is a case-insensitive extended regex.
 

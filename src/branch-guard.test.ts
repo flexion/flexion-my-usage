@@ -445,7 +445,7 @@ describe("checkBranchGuard", () => {
 		]);
 	});
 
-	it("still does not flag a real optional property/parameter marker (x?:, x?), x?,) now that the exclusion requires zero whitespace - proves tightening the gap above didn't also break the shapes it was written for", () => {
+	it("still does not flag a real optional property/parameter marker (x?:, x?), x?,) now that the exclusion requires zero whitespace - proves tightening the gap above didn't also break the shapes it was written for (myusage-4xu.68: the x?, shape was previously untested despite the title's own claim - the fixture only ever had x?: and x?); confirmed by mutation - dropping the comma from the optional-marker character class [:),] left this test green. g(x?, y?: number) below adds a genuine x?, occurrence, an optional parameter with no type annotation immediately followed by a comma)", () => {
 		const files = [
 			{
 				path: "src/sources/types.ts",
@@ -453,11 +453,29 @@ describe("checkBranchGuard", () => {
 			},
 			{
 				path: "src/index.ts",
-				text: "export function f(x?: number, y?) {\n\treturn x;\n}\n",
+				text: "export function f(x?: number, y?) {\n\treturn x;\n}\nexport function g(x?, y?: number) {\n\treturn y;\n}\n",
 			},
 		];
 
 		expect(checkBranchGuard(files)).toEqual([]);
+	});
+
+	it("DOES flag a false-positive ternary for an optional marker with an inline block comment between ? and its terminator (timeout?/* note */: number;) - a known, accepted gap this file's header now documents (myusage-4xu.68): maskNonCode blanks the comment to spaces before the ternary pattern ever runs, leaving the same masked-whitespace-before-terminator shape the zero-whitespace tightening (myusage-4xu.67) exists to catch, indistinguishable at that point from a real ternary's masked string/template consequent. Unlike hand-typed whitespace (x? : number), which Biome's formatter collapses back to x?: number, a block comment survives formatting unchanged, so this shape can genuinely arise in formatted code", () => {
+		const files = [
+			{
+				path: "src/sources/types.ts",
+				text: "export interface Options {\n\ttimeout?/* note */: number;\n}\n",
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{
+				path: "src/sources/types.ts",
+				kind: "ternary",
+				line: 2,
+				snippet: "?",
+			},
+		]);
 	});
 
 	it("does not flag ?/&&/?? characters inside a regex literal as real branching constructs (myusage-4xu.65)", () => {

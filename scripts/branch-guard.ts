@@ -195,14 +195,33 @@ interface ConstructMatcher {
 //   optional-marker shapes (`x?:`/`x?)`/`x?,`, still zero-width and still excluded) and the
 //   previously-unflagged string-consequent ternary (now flagged).
 //
-//   Requiring zero whitespace here trades away one shape this codebase has never written and
-//   Biome's own formatter never produces: a hand-written optional marker with deliberate
-//   whitespace before its terminator (`x? : number`) is syntactically legal TypeScript -
-//   insignificant whitespace between tokens is always allowed - and would now be misread as a
-//   ternary instead of excluded. Not a realistic shape in the type-only humble-object files this
-//   guard actually scans today, and not one this codebase's formatting convention would ever
-//   produce - the same trade-off this file's `?(`/`?<` exclusion below already accepts, for the
-//   same reason.
+//   Requiring zero whitespace here trades away a hand-written optional marker with deliberate
+//   whitespace before its terminator (`x? : number`) - syntactically legal TypeScript, since
+//   insignificant whitespace between tokens is always allowed - which would now be misread as a
+//   ternary instead of excluded. That trade is safe for literal, hand-typed whitespace
+//   specifically: Biome's own formatter normalizes `x? : number` back to `x?: number`, so this
+//   exact shape doesn't survive formatting even if someone types it, and it's not a realistic
+//   shape in the type-only humble-object files this guard actually scans today - the same
+//   trade-off this file's `?(`/`?<` exclusion below already accepts, for the same reason.
+//   The claim does NOT extend to every way a "gap" can appear between `?` and its terminator,
+//   though (myusage-4xu.68): an inline BLOCK COMMENT there - `timeout?/* note */: number;` - is
+//   also syntactically legal TypeScript, and unlike literal whitespace, Biome's formatter
+//   preserves comments, so this exact shape DOES survive formatting unchanged. maskNonCode (see
+//   above) blanks that comment to spaces before the ternary pattern ever runs, leaving the same
+//   masked-whitespace-before-terminator shape the zero-whitespace tightening exists to catch -
+//   indistinguishable, at that point in the pipeline, from a real ternary's masked string/template
+//   consequent (the exact gap myusage-4xu.67 closed). checkBranchGuard on
+//   `timeout?/* note */: number;` reports a false-positive ternary violation on this file's
+//   current, unmodified code, confirmed by direct execution. This is a known, accepted gap, not a
+//   realistic-shape claim like the plain-whitespace case above: it fails LOUD (a confusing
+//   violation a reviewer would investigate) and RECOVERABLE, the opposite direction from this
+//   file's other documented gaps, which fail closed (a violation shipping silently unflagged), and
+//   it has narrow blast radius - neither src/index.ts nor src/sources/types.ts, the two files this
+//   guard currently scans, has this shape today, confirmed by hand. Closing it cleanly would mean
+//   telling a masked comment apart from a masked string/template consequent at the point the
+//   ternary pattern runs, which post-mask text alone can't do without tracking provenance through
+//   the mask - a bigger change than this narrow, fail-loud gap warrants, so it's documented and
+//   pinned by a test (src/branch-guard.test.ts) instead of chased with more regex.
 //   Known, accepted gap this narrower rule doesn't attempt to close (fails CLOSED, matching this
 //   file's other documented gaps): a genuinely zero-whitespace terse ternary immediately followed
 //   by `(` or `<` - `cond?(a):(b)` - would be misread as an optional marker and go unflagged. Not

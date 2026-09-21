@@ -18,7 +18,7 @@
 		"dev": "tsx src/index.ts",
 		"typecheck": "tsc --noEmit && tsc -p tsconfig.config.json",
 		"check:package": "yarn build && tsx scripts/check-package.mjs",
-		"lint": "biome check . && sh scripts/check-coverage-pragmas.sh",
+		"lint": "biome check . && sh scripts/check-coverage-pragmas.sh && tsx scripts/check-fixtures-guard.mjs",
 		"format": "biome format --write .",
 		"test": "vitest run --coverage"
 	},

@@ -51,6 +51,22 @@
 //     conditional type in the same excluded file could, in principle, hide behind that ambiguity.
 //     Moot for the excluded set as it stands today: src/sources/types.ts holds no conditional
 //     type, confirmed by hand.
+//   - Regex literals: masked with a heuristic, not a parser-accurate rule (myusage-4xu.65). A
+//     literal like `/colou?r/` or `/a&&b/` could otherwise false-positive as a ternary or `&&` -
+//     `/` alone can't tell a regex literal from division (`a / b`) without knowing the grammar
+//     position, so maskNonCode (below) only blanks a `/.../flags` span when the character right
+//     before its opening `/` - skipping any run of spaces/tabs, but not a newline - is NOT one of:
+//     a word character, `$`, `)`, `]`, or a closing quote, i.e. not something that ends a VALUE a
+//     real `/` after it would divide. This correctly masks `const RE = /colou?r/;` (preceded by
+//     `=`) and leaves `total / 2` alone (preceded by the identifier `total`, once the surrounding
+//     spaces are skipped), but has two known, accepted failure directions: a real regex right
+//     after a keyword that ends in a letter (`return /foo/;`, `typeof /foo/;`) is not recognized
+//     as one - a false negative, the same "fails closed" direction as this file's other
+//     documented gaps - and an arithmetic `/` with no identifier immediately before it once
+//     whitespace is skipped (`x++ / y`) could be misread as a regex opener, blanking real code up
+//     to the next unescaped `/` on the line - a false positive, costing a reviewer a second look,
+//     not a silent miss. Neither shape occurs in src/index.ts or src/sources/types.ts today,
+//     confirmed by hand; a genuinely general fix needs real tokenization, not a regex.
 import { posix } from "node:path";
 import type { SourceFile } from "./fixtures-guard.js";
 
@@ -78,23 +94,33 @@ export function humbleObjectPaths(
 	return coverageExclude.filter(isHumbleObjectPath);
 }
 
-/** Matches a string literal, a template literal, or a `//`/`/* *‍/` comment - the same
- * alternation technique scripts/fixtures-guard.ts's own STRING_OR_COMMENT uses (a string/
- * template branch tried first at every position, so a `//` or `/*` opening INSIDE an
- * already-open string is consumed as part of it and never reaches the comment branches). Unlike
- * that file, both branches are blanked here (see maskNonCode below): this scan cares about live
- * code SHAPE, not the text a fixtures-guard-style reference scan needs to keep intact. */
-const STRING_TEMPLATE_OR_COMMENT =
-	/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+/** Matches a string literal, a template literal, a `//`/`/* *‍/` comment, or a regex literal - the
+ * same alternation technique scripts/fixtures-guard.ts's own STRING_OR_COMMENT uses (a string/
+ * template branch tried first at every position, so a `//` or `/*` - or a regex's own `/` -
+ * opening INSIDE an already-open string is consumed as part of it and never reaches the later
+ * branches). Unlike that file, every branch is blanked here (see maskNonCode below): this scan
+ * cares about live code SHAPE, not the text a fixtures-guard-style reference scan needs to keep
+ * intact.
+ *
+ * The regex-literal branch (myusage-4xu.65) is last, after the comment branches, on purpose: a
+ * real `//` or `/* *‍/` must still win at a position where both could in principle apply. Its own
+ * leading negative lookbehind (excluding a word character, `$`, `)`, `]`, or a closing quote,
+ * skipping any run of spaces/tabs first) is the heuristic this file's header documents - "not
+ * preceded by a value-ending character, skipping any run of spaces/tabs" - the only thing this
+ * regex can use to tell a regex literal apart from division without a real parser. */
+const STRING_TEMPLATE_COMMENT_OR_REGEX =
+	/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\/|(?<![\w$)\]"'`][ \t]*)\/(?:[^/\\\n]|\\.)+\/[a-z]*/g;
 
-/** Blanks every string literal, template literal, and comment in `source`, replacing each of
- * their characters with a space except newlines (kept, so a line number computed against the
- * masked text still matches the real source). This stops a comment quoting example code (this
- * very file's own header does, more than once) or a string containing branch-shaped text (e.g.
- * `"a && b"`) from ever being mistaken for real code, at the cost of also being unable to see
- * inside a template literal's `${...}` interpolation - see this file's header for that gap. */
+/** Blanks every string literal, template literal, comment, and (heuristically) regex literal in
+ * `source`, replacing each of their characters with a space except newlines (kept, so a line
+ * number computed against the masked text still matches the real source). This stops a comment
+ * quoting example code (this very file's own header does, more than once), a string containing
+ * branch-shaped text (e.g. `"a && b"`), or a regex literal containing branch-shaped text (e.g.
+ * `/a&&b/`) from ever being mistaken for real code, at the cost of also being unable to see
+ * inside a template literal's `${...}` interpolation, and the regex-literal heuristic's own two
+ * documented failure directions - see this file's header for both gaps. */
 export function maskNonCode(source: string): string {
-	return source.replace(STRING_TEMPLATE_OR_COMMENT, (whole) =>
+	return source.replace(STRING_TEMPLATE_COMMENT_OR_REGEX, (whole) =>
 		whole.replace(/[^\n]/g, " "),
 	);
 }
@@ -118,26 +144,53 @@ interface ConstructMatcher {
 // - "switch": same shape as "if"; GritQL could not generally match this construct (see header),
 //   but a plain keyword-and-paren scan has no such limitation.
 // - "loop": `for (`/`while (` (one alternation, since the bead groups "loops" as a single
-//   category, not three), or `do {` - the closing `while (...)` of a do/while loop also matches
-//   the `while (` half of this pattern independently, so a single do-while loop is reported as
-//   two violations (its `do {` and its `while (...)`), both true statements about the file.
+//   category, not three), `for await (` (the async form of a for-of loop - myusage-4xu.63: the
+//   plain `for`/`while` alternation alone doesn't match this, since the `await` keyword sits
+//   between `for` and `(`, and the original pattern only ever allowed whitespace there; `\bfor\b`
+//   below matches the "for" keyword on its own word boundary, then an optional `(?:\s+await)?`
+//   consumes a real `for await`'s extra keyword before the same `\s*\(` every other loop shape
+//   already used), or `do {` - the closing `while (...)` of a do/while loop also matches the
+//   `while (` half of this pattern independently, so a single do-while loop is reported as two
+//   violations (its `do {` and its `while (...)`), both true statements about the file.
+//   `for...of` and `for...in` loops need no dedicated pattern of their own: `for (` matches
+//   before this scan ever looks inside the parens, so both shapes are already caught by the same
+//   classic-`for` alternative - src/branch-guard.test.ts (myusage-4xu.63) now pins that with its
+//   own dedicated test cases instead of leaving it an unproven, easily-broken accident of the
+//   regex.
 // - "&&" / "??": the bare two-character operator. "??=" contains "??" and is caught as a "??"
 //   violation too (nullish assignment IS nullish coalescing, just also an assignment).
 // - "ternary": a `?` that is not immediately preceded BY, or followed by, another `?` (either
 //   side of `??`/`??=` - without the lookbehind half, the SECOND `?` of `??` independently
 //   satisfies the two lookaheads below and would double-report a nullish-coalescing site as a
 //   ternary too; caught during this file's own test-writing by a planted `x ??= 1;` fixture, not
-//   by inspection), not immediately followed by `.` (optional chaining), and not, allowing
+//   by inspection), not immediately followed by `.` (optional chaining), not, allowing
 //   whitespace, immediately followed by `:`/`)`/`,` (an optional property/parameter marker -
 //   `x?:`, `x?)`, `x?,` - which has nothing between the `?` and that next token; a real ternary's
-//   consequent expression can never be empty, so this is a safe split between the two shapes).
+//   consequent expression can never be empty, so this is a safe split between the two shapes),
+//   and not immediately (ZERO whitespace - no `\s*` here) followed by `(` or `<` (myusage-4xu.64:
+//   an optional METHOD signature - `discover?(): Promise<void>;`, or its generic form
+//   `load?<T>(id: string): Promise<T>;` - is the same "empty consequent" shape as `x?:`/`x?)`/
+//   `x?,`, just spelled with `(`/`<` instead of `:`/`)`/`,`. Unlike those three, whitespace can't
+//   be allowed here: `(` and `<` CAN legally start a real ternary's consequent expression -
+//   `x ? (a) : b` is ordinary, idiomatic code - so "whitespace then `(`" is not proof of an empty
+//   consequent the way "whitespace then `:`" is. Requiring zero whitespace between `?` and
+//   `(`/`<` is what keeps that real ternary correctly flagged (src/branch-guard.test.ts pins this
+//   with an `x ? (x) : -x`-shaped test) while still excluding the method-signature shape, which
+//   this codebase's own formatting convention never writes with a space before its `(`/`<`.
+//   Known, accepted gap this narrower rule doesn't attempt to close (fails CLOSED, matching this
+//   file's other documented gaps): a genuinely zero-whitespace terse ternary immediately followed
+//   by `(` or `<` - `cond?(a):(b)` - would be misread as an optional marker and go unflagged. Not
+//   a realistic shape in the type-only humble-object files this guard actually scans today.
 const CONSTRUCT_PATTERNS: readonly ConstructMatcher[] = [
 	{ kind: "if", pattern: /\bif\s*\(/g },
 	{ kind: "switch", pattern: /\bswitch\s*\(/g },
-	{ kind: "loop", pattern: /\b(?:for|while)\s*\(|\bdo\b\s*\{/g },
+	{
+		kind: "loop",
+		pattern: /\bfor\b(?:\s+await)?\s*\(|\bwhile\s*\(|\bdo\b\s*\{/g,
+	},
 	{ kind: "&&", pattern: /&&/g },
 	{ kind: "??", pattern: /\?\?/g },
-	{ kind: "ternary", pattern: /(?<!\?)\?(?!\.|\?)(?!\s*[:),])/g },
+	{ kind: "ternary", pattern: /(?<!\?)\?(?!\.|\?)(?!\s*[:),])(?![(<])/g },
 ];
 
 function lineAt(text: string, index: number): number {
@@ -196,7 +249,12 @@ export function checkBranchGuard(
 					path: posix.normalize(file.path),
 					kind,
 					line: lineAt(file.text, match.index),
-					snippet: match[0].trim(),
+					// No `.trim()` here (myusage-4xu.65: removed as dead code, confirmed by
+					// mutation - deleting it produced zero test failures). Every CONSTRUCT_PATTERNS
+					// entry above starts and ends its match on a character that can never be
+					// whitespace (a keyword letter, `(`, `{`, `&`, `?`), so `match[0]` can never
+					// carry leading or trailing whitespace for `.trim()` to remove.
+					snippet: match[0],
 				});
 			}
 		}

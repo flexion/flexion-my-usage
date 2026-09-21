@@ -148,6 +148,20 @@ describe("scripts/check-branch-guard.mjs against a real scratch tree", () => {
 		);
 	});
 
+	it("fails with a clear error, not a raw EISDIR stack trace, when a listed humble-object path is a directory (myusage-4xu.65: coverage.exclude's type guard forbids a glob but not a directory, so this is legal input the driver must still fail closed on cleanly)", async () => {
+		const dir = await fixtureDir();
+		await writeScratchConfig(dir, ["src/humble-dir"]);
+		await mkdir(`${dir}/src/humble-dir`, { recursive: true });
+
+		const result = runCheckBranchGuard(dir);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(
+			/src\/humble-dir is listed in vitest\.config\.ts's coverage\.exclude but is a directory, not a file/,
+		);
+		expect(result.stderr).not.toMatch(/EISDIR/);
+	});
+
 	it("fails with a clear error when vitest.config.ts itself is missing from the current directory", async () => {
 		const dir = await fixtureDir();
 

@@ -14,6 +14,15 @@ export interface NormalizedUsageRow {
 	sessionId: string;
 	/** Stable per-response id, used as the idempotency key. */
 	messageId: string;
+	/**
+	 * Every bucket must be finite and non-negative before `UsageSource.read()` returns the row.
+	 * Nothing downstream re-clamps the bucket values themselves (`pricing.ts`'s `count()` guards
+	 * only the cost math, not the raw tokens): `price()` copies these values unchanged onto
+	 * `PricedRow.tokens`, and `aggregate.ts`'s `tokenTotal` sums them as given.
+	 * The opencode adapter holds this via its own `bucket()` clamp (see opencode.ts); any future
+	 * adapter must do the same, or its NaN/negative values will silently corrupt aggregated
+	 * totals.
+	 */
 	tokens: {
 		input: number;
 		output: number;
@@ -34,6 +43,9 @@ export interface UsageSource {
 	readonly name: string;
 	/** Locate this source's local store(s); empty when the source is not present. */
 	discover(): Promise<SourceHandle[]>;
-	/** Read normalized per-response usage from a handle. */
+	/**
+	 * Read normalized per-response usage from a handle. Token buckets must already be finite,
+	 * non-negative numbers on return; see `NormalizedUsageRow.tokens`.
+	 */
 	read(handle: SourceHandle): Promise<NormalizedUsageRow[]>;
 }

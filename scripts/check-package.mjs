@@ -1,22 +1,38 @@
 // Guard: the built output and the published npm package must not ship test or
 // test-support files.
 //
-// Convention (keep in sync with tsconfig.build.json): a file whose name contains
-// ".test.", ".spec." or ".fixtures." is test code or test support. Anything only
-// tests import belongs in one of those names so the build leaves it out.
+// The pack-list vacuity check, the separator-safe dist-prefix check, and the test-or-support
+// name pattern live in scripts/package-rules.ts (bead myusage-4xu.19), next to this script,
+// not under src/: this is build-time-only tooling, and anything under src/ is what `yarn
+// build` emits into dist/ - a checker that lived under src/ would ship itself inside the
+// package it checks (round-2 review caught exactly that). scripts/package-rules.ts is still
+// type-checked by `yarn typecheck` and covered at 100% by `yarn test` - see its header comment
+// for how, given it now sits outside src/'s rootDir. This script wires that pure logic to real
+// I/O: a real dist/ tree and a real `npm pack --dry-run`.
 //
-// Run it after a build. `yarn check:package` builds first, then asserts, against
-// the real output:
+// `yarn check:package` runs it as `yarn build && tsx scripts/check-package.mjs`: tsx (not a
+// bare `node`, and not Node's --experimental-strip-types - see package-rules.test.ts for why)
+// lets this script import package-rules.ts directly, without needing `yarn build` to run first
+// for THIS import. The build still runs first because the checks below assert against real
+// build output, not because the import needs it.
+//
+// Asserts:
 //   1. dist/ exists and is non-empty, so the checks below cannot pass vacuously.
-//   2. No test or support file exists anywhere under dist/.
-//   3. No test or support file appears in the `npm pack --dry-run` file list.
+//   2. The npm pack file list accounts for at least as many dist/ entries as dist/ actually
+//      holds (after discounting npm's own always-ignored junk, e.g. .DS_Store - see
+//      package-rules.ts's NPM_ALWAYS_IGNORED), so a `files` list that excludes dist/ cannot
+//      pass just because npm always packs the `bin` target regardless of `files`.
+//   3. No test or support file exists anywhere under dist/.
+//   4. No test or support file appears in the `npm pack --dry-run` file list.
 
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { basename, join } from "node:path";
-
-const DIST = "dist";
-const TEST_OR_SUPPORT = /\.(test|spec|fixtures)\./;
+import { join } from "node:path";
+import {
+	DIST,
+	filterTestOrSupportPaths,
+	packListCoversDist,
+} from "./package-rules.ts";
 
 function listFiles(dir) {
 	const found = [];
@@ -57,14 +73,15 @@ if (distFiles.length === 0) {
 }
 
 const packed = packedFiles();
-if (!packed.some((p) => p.startsWith(`${DIST}/`))) {
+const coverage = packListCoversDist(distFiles, packed);
+if (!coverage.covered) {
 	console.error(
-		`check-package: npm pack lists no ${DIST}/ files - nothing to check`,
+		`check-package: npm pack lists only ${coverage.packedDistCount} of ${coverage.expectedDistCount} ${DIST}/ files - package.json's "files" probably excludes ${DIST}/`,
 	);
 	process.exit(2);
 }
 
-const inDist = distFiles.filter((p) => TEST_OR_SUPPORT.test(basename(p)));
+const inDist = filterTestOrSupportPaths(distFiles);
 if (inDist.length > 0) {
 	problems.push(
 		`test or support files in ${DIST}/:`,
@@ -72,7 +89,7 @@ if (inDist.length > 0) {
 	);
 }
 
-const inPack = packed.filter((p) => TEST_OR_SUPPORT.test(basename(p)));
+const inPack = filterTestOrSupportPaths(packed);
 if (inPack.length > 0) {
 	problems.push(
 		"test or support files in the npm package:",

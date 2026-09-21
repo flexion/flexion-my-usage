@@ -1,12 +1,43 @@
 # gitleaks config for the IP-leak guardrail (myusage-6d9).
 # Extends the default ruleset; allowlists generated files whose integrity hashes
 # would otherwise read as high-entropy secrets.
+#
+# myusage-akq: the pricing.fixtures.ts entry below used to exempt the whole file (`paths =
+# ['''src/pricing\.fixtures\.ts$''']`), which would have silently suppressed a genuinely new
+# secret too, if one were ever added to that same file later. It's now two `regexes` entries
+# pinned to specific throwaway keys' own content, so it allows only those known, non-secret
+# private keys - not the file they live in. Confirmed empirically: with this entry in place, a
+# fake unrelated secret appended to pricing.fixtures.ts is still flagged by gitleaks. Two entries
+# because `scripts/guardrail-scan.sh tree`'s `gitleaks detect` (unlike the `--no-git` checks used
+# while developing this) scans full git history against today's config: the first line pins the
+# regenerated CA:FALSE key now in pricing.fixtures.ts, the second pins the original CA:TRUE key
+# (myusage-1cj) still present in two earlier commits' blobs - also inert, never anything but this
+# same loopback-only fixture's key, but a different value that the first regex does not match.
+# NB: gitleaks 8.30.1 (this repo's installed version) requires a single `[allowlist]` table -
+# not the `[[allowlist]]` array-of-tables form some gitleaks docs/examples show for per-rule
+# allowlists - so both the lockfile path exemption and these key-content regexes live in the one
+# table below.
+#
+# myusage-qhc: this content-scoping is load-bearing for every gitleaks mode this repo runs -
+# staged, tree, and snapshot (myusage-hfu) - not just snapshot mode. A path-based exemption
+# would suppress a genuinely new secret added to pricing.fixtures.ts in staged and tree mode
+# too, since all three modes apply this same .gitleaks.toml. Snapshot is simply the one mode
+# that uniquely catches a real secret swapped in place of one of these fixture keys between
+# the unchanged BEGIN/END marker lines - a narrower claim than saying only snapshot mode
+# depends on the content-scoping. If the `regexes` entries below were ever reverted to the old
+# path-based form (`paths = ['''src/pricing\.fixtures\.ts$''']`), the whole file - including a
+# swapped-in real key - would be silently allowlisted again, and snapshot mode's in-place-PEM-
+# swap detection would silently stop working with no test or CI signal that it had regressed.
 
 [extend]
 useDefault = true
 
 [allowlist]
-description = "Generated lockfiles - integrity hashes, not secrets"
+description = "Generated lockfiles (integrity hashes) are not secrets. The two regexes below allow pricing.fixtures.ts's throwaway self-signed TEST_ORIGIN_KEY (myusage-1cj), current and prior value, by its own content - not the whole file - since that fixture TLS-terminates a loopback-only test server, signs nothing else, and grants no real access."
 paths = [
   '''yarn\.lock$''',
+]
+regexes = [
+  '''MIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCZYNwCxVkl0dOR''',
+  '''MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC42fLxI/WJOcrU''',
 ]

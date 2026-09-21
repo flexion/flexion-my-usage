@@ -1,4 +1,12 @@
 {
+	// `rootDir` is deliberately NOT set here, even though this is the "src" config: this base
+	// config is also what `yarn typecheck`'s plain `tsc --noEmit` uses directly, and
+	// src/package-rules.test.ts (bead myusage-4xu.19) imports scripts/package-rules.ts, which
+	// sits outside src/ on purpose (see that file's header comment). An explicit `rootDir`
+	// here would make tsc reject that import with TS6059 ("File is not under 'rootDir'"),
+	// even under `--noEmit`, which never emits and so never needs an output layout. `rootDir`
+	// only matters for emit, so it lives in tsconfig.build.json instead, next to the `outDir`
+	// it works with - the only config that actually emits.
 	"compilerOptions": {
 		"target": "ES2022",
 		"module": "NodeNext",
@@ -10,7 +18,6 @@
 		"esModuleInterop": true,
 		"skipLibCheck": true,
 		"outDir": "dist",
-		"rootDir": "src",
 		"types": ["node"]
 	},
 	"include": ["src"]

@@ -10,6 +10,8 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
+import { resolveProxy } from "./proxy.js";
 
 export const PRICE_TABLE_URL =
 	"https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -63,14 +65,31 @@ export interface LoadOptions {
 	env?: Readonly<Record<string, string | undefined>>;
 	/** Home directory used when XDG_CACHE_HOME is unusable; defaults to `os.homedir()`. */
 	homeDir?: string;
+	/**
+	 * Filesystem remove implementation, used only to delete a failed cache write's stray temp
+	 * file; defaults to `node:fs/promises`' `rm`. The same injected-seam shape as `fetch`,
+	 * so the cleanup-failure path can be proven with a real, rejecting fake instead of a mock
+	 * of `node:fs/promises` itself.
+	 */
+	rm?: typeof rm;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Real published rates are USD per token, always far below 1 (the priciest entries in the
+ * table run a few times 1e-5). A rate above this ceiling is corrupted data, not a legitimate
+ * price - the common failure mode is a per-million rate copied in as-is - so the whole entry
+ * is rejected rather than pricing rows at an absurd notional cost.
+ */
+const MAX_RATE_PER_TOKEN = 1;
+
 function isRate(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+	// No separate Number.isFinite check: NaN fails >= 0, +Infinity fails <= MAX_RATE_PER_TOKEN,
+	// and -Infinity fails >= 0, so the range check below already excludes every non-finite value.
+	return typeof value === "number" && value >= 0 && value <= MAX_RATE_PER_TOKEN;
 }
 
 /** Reads an optional rate: absent is fine, present-but-invalid rejects the whole entry. */
@@ -160,7 +179,7 @@ async function readCache(
 	} catch {
 		return undefined;
 	}
-	if (text.length > maxBytes) return undefined;
+	if (Buffer.byteLength(text, "utf8") > maxBytes) return undefined;
 	return parseBody(text);
 }
 
@@ -170,14 +189,16 @@ async function readCapped(
 	maxBytes: number,
 ): Promise<string> {
 	const declared = Number(response.headers.get("content-length"));
-	if (Number.isFinite(declared) && declared > maxBytes) {
+	// No separate Number.isFinite check: a missing header parses to 0 and a non-numeric one to
+	// NaN, and both already fail the comparison below. A header that resolves to Infinity now
+	// fails it too - a reasonable outcome, and the byte-counted read below enforces the real
+	// cap regardless of what any header claims.
+	if (declared > maxBytes) {
 		await response.body?.cancel().catch(() => {});
 		throw new Error("response too large");
 	}
 	if (!response.body) {
-		const text = await response.text();
-		if (text.length > maxBytes) throw new Error("response too large");
-		return text;
+		throw new Error("response has no body");
 	}
 	const reader = response.body.getReader();
 	const chunks: Uint8Array[] = [];
@@ -197,23 +218,80 @@ async function readCapped(
 
 async function fetchTable(
 	options: LoadOptions,
+	env: Readonly<Record<string, string | undefined>>,
 ): Promise<{ table: PriceTable; text: string }> {
-	const doFetch = options.fetch ?? globalThis.fetch;
-	const response = await doFetch(PRICE_TABLE_URL, {
+	const fetchOptions: RequestInit = {
 		headers: { accept: "application/json" },
 		signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		await response.body?.cancel().catch(() => {});
-		throw new Error(`HTTP ${response.status}`);
+	};
+
+	// Scoped out here, not inside the proxied branch below, because closing it has to wait
+	// until this function's whole body - including reading the response - is done (see the
+	// finally block at the bottom for why).
+	let agent: ProxyAgent | undefined;
+	try {
+		let response: Response;
+		if (options.fetch) {
+			// An injected fetch is used exactly as given: it is the seam every other test in
+			// this file relies on, and it bypasses the proxy question entirely (see
+			// LoadOptions.fetch).
+			response = await options.fetch(PRICE_TABLE_URL, fetchOptions);
+		} else {
+			// Node's global fetch does not honor HTTPS_PROXY/HTTP_PROXY on its own (undici only
+			// reads them when NODE_USE_ENV_PROXY is set, which this repo's Node floor cannot
+			// rely on - see resolveProxy's doc comment). Routing through a proxy when one is
+			// configured means dispatching through an explicit undici ProxyAgent instead.
+			const proxyUrl = resolveProxy(env, PRICE_TABLE_URL);
+			// New URL(...) inside ProxyAgent throws synchronously on an unusable value, before
+			// any request - proxied or direct - is ever attempted; the caller's catch turns
+			// that into the module's normal "price table unavailable" warning.
+			agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
+			if (agent) {
+				// Node's global fetch (globalThis.fetch) is backed by an internal undici fork
+				// bundled with Node itself, a different build from the "undici" package this
+				// ProxyAgent comes from. On this repo's Node floor (22.13.0) the two are not
+				// dispatcher-interface-compatible: passing this ProxyAgent as globalThis.fetch's
+				// `dispatcher` throws synchronously, "invalid onRequestStart method" - confirmed
+				// directly against node:22.13.0-bookworm and node:22-bookworm (both fail), while
+				// node:26-bookworm passes, so this is a Node-version skew, not a platform one.
+				// The npm "undici" package's own fetch() always matches its own ProxyAgent
+				// because they ship from the same install - reproduced directly: swapping only
+				// this call from globalThis.fetch to undici's fetch on 22.13.0 makes the CONNECT
+				// arrive at a real local proxy exactly as expected. Scoped to only the proxied
+				// path so the far more common no-proxy path keeps using globalThis.fetch
+				// unchanged.
+				response = await undiciFetch(PRICE_TABLE_URL, {
+					...fetchOptions,
+					dispatcher: agent,
+				});
+			} else {
+				response = await globalThis.fetch(PRICE_TABLE_URL, fetchOptions);
+			}
+		}
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => {});
+			throw new Error(`HTTP ${response.status}`);
+		}
+		const text = await readCapped(
+			response,
+			options.maxBytes ?? DEFAULT_MAX_BYTES,
+		);
+		const table = parseBody(text);
+		if (!table) throw new Error("response is not a usable price table");
+		return { table, text };
+	} finally {
+		// ProxyAgent#close() waits for every in-flight request on its pool to finish; a
+		// fetch() call resolves as soon as headers arrive, well before the body is read, so
+		// the request is still "in flight" by the agent's own accounting until readCapped
+		// above has fully consumed (or cancelled) the body. Closing first leaves the body
+		// stream paused with backpressure and close() itself never resolves until the
+		// AbortSignal above fires - reproduced directly against a real local proxy tunneling a
+		// real ~620KB body: closing before reading hung for the full timeout every time,
+		// closing after took under 100ms. This finally wraps the whole fetch-and-read sequence
+		// specifically so close() only ever runs once the body is already spoken for, on every
+		// path (success, a cancelled oversized body, an HTTP error's own cancel() above).
+		await agent?.close();
 	}
-	const text = await readCapped(
-		response,
-		options.maxBytes ?? DEFAULT_MAX_BYTES,
-	);
-	const table = parseBody(text);
-	if (!table) throw new Error("response is not a usable price table");
-	return { table, text };
 }
 
 /** Temp file + rename, so a reader never sees a half-written cache. */
@@ -221,15 +299,19 @@ async function writeCache(
 	dir: string,
 	path: string,
 	text: string,
+	removeFn: typeof rm,
 ): Promise<void> {
-	await mkdir(dir, { recursive: true });
+	// 0700 (owner-only): the file itself is already written 0600, so the directory should not
+	// be world- or group-readable under the default umask either.
+	await mkdir(dir, { recursive: true, mode: 0o700 });
 	const temp = `${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
 	try {
 		await writeFile(temp, text, { mode: 0o600 });
 		await rename(temp, path);
 	} catch (error) {
-		// Best effort: a failed cleanup must not mask the write error.
-		await Promise.allSettled([rm(temp, { force: true })]);
+		// Best effort: a failed cleanup must not mask the write error. See "Failed cleanup"
+		// in AGENTS.md - the swallow is proven by a real test that injects a rejecting `rm`.
+		await removeFn(temp, { force: true }).catch(() => {});
 		throw error;
 	}
 }
@@ -247,9 +329,9 @@ export async function loadPriceTable(
 	options: LoadOptions,
 	warn: Warn,
 ): Promise<PriceTable | undefined> {
+	const env = options.env ?? process.env;
 	const cacheDir =
-		options.cacheDir ??
-		resolveCacheDir(options.env ?? process.env, options.homeDir ?? homedir());
+		options.cacheDir ?? resolveCacheDir(env, options.homeDir ?? homedir());
 	const cachePath = join(cacheDir, CACHE_FILE_NAME);
 
 	const cached = await readCache(
@@ -260,7 +342,7 @@ export async function loadPriceTable(
 
 	let fetched: { table: PriceTable; text: string };
 	try {
-		fetched = await fetchTable(options);
+		fetched = await fetchTable(options, env);
 	} catch (error) {
 		const reason = describeError(error);
 		if (cached) {
@@ -276,7 +358,7 @@ export async function loadPriceTable(
 	}
 
 	try {
-		await writeCache(cacheDir, cachePath, fetched.text);
+		await writeCache(cacheDir, cachePath, fetched.text, options.rm ?? rm);
 	} catch (error) {
 		warn(`my-usage: could not cache the price table (${describeError(error)})`);
 	}

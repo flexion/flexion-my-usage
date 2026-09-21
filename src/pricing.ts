@@ -39,6 +39,21 @@ const defaultWarn: Warn = (message) => {
 	process.stderr.write(`${message}\n`);
 };
 
+/**
+ * Wraps a warn function so it can never make `price()` reject: a caller-injected warn can
+ * throw, and the default warn can raise EPIPE when stderr is a closed pipe. Warning delivery
+ * is best-effort and must never take priority over returning priced rows.
+ */
+function safeWarn(warn: Warn): Warn {
+	return (message) => {
+		try {
+			warn(message);
+		} catch {
+			// Best-effort: a broken warning channel must not crash pricing.
+		}
+	};
+}
+
 /** Token counts are untrusted numbers: anything non-finite or negative counts as zero. */
 function count(tokens: number): number {
 	return Number.isFinite(tokens) && tokens > 0 ? tokens : 0;
@@ -64,7 +79,7 @@ function bucketCost(
  * `output_cost_per_reasoning_token` when it has one and the output rate otherwise, which is
  * how both LiteLLM and opencode bill it.
  *
- * Caveat: opencode releases before v1.3.17 (fix landed 2026-04-04) stored `output` INCLUDING
+ * Caveat: opencode releases before v1.3.16 (fix landed 2026-04-04) stored `output` INCLUDING
  * reasoning tokens, so their rows overlap the reasoning bucket. Reading those rows correctly
  * is the source adapter's job; this function trusts the disjoint-bucket contract.
  */
@@ -103,7 +118,7 @@ export async function price(
 	options: PriceOptions = {},
 ): Promise<PricedRow[]> {
 	if (rows.length === 0) return [];
-	const warn = options.warn ?? defaultWarn;
+	const warn = safeWarn(options.warn ?? defaultWarn);
 
 	let table: PriceTable | undefined;
 	try {

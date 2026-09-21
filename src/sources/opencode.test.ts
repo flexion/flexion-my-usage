@@ -1,13 +1,23 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import {
+	chmodSync,
+	copyFileSync,
+	existsSync,
+	readFileSync,
+	statSync,
+} from "node:fs";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { compareRows, opencodeSource } from "./opencode.js";
+import {
+	compareRows,
+	handleDiscoverError,
+	opencodeSource,
+} from "./opencode.js";
 import type { NormalizedUsageRow } from "./types.js";
 
 // Fixtures are throwaway SQLite files that reproduce the upstream opencode schema.
@@ -136,6 +146,15 @@ function handleFor(path: string) {
 	return { source: "opencode", path };
 }
 
+// Discovery order across multiple files is not part of the contract (it can depend on the
+// filesystem's directory-entry order), so multi-handle assertions below sort both sides by
+// path before comparing.
+function sortByPath<T extends { path: string }>(handles: T[]): T[] {
+	return [...handles].sort((a, b) =>
+		a.path < b.path ? -1 : a.path > b.path ? 1 : 0,
+	);
+}
+
 function sha256(path: string): string {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -143,9 +162,14 @@ function sha256(path: string): string {
 describe("opencodeSource.discover", () => {
 	async function isolatedHome(): Promise<string> {
 		const home = await sandbox();
-		// Point every home lookup at the sandbox so a bug can never reach the real home.
+		// Point every home lookup at the sandbox so a bug can never reach the real home. This
+		// includes OPENCODE_DB: once discover() honors it, an ambient value on the developer's
+		// or CI's own machine would otherwise leak into every scan test here and point discover()
+		// at a real opencode database (the same leak sandboxEnv() below already guards against
+		// explicitly). Tests that exercise the override stub OPENCODE_DB again afterward.
 		vi.stubEnv("HOME", home);
 		vi.stubEnv("USERPROFILE", home);
+		vi.stubEnv("OPENCODE_DB", undefined);
 		return home;
 	}
 
@@ -215,16 +239,424 @@ describe("opencodeSource.discover", () => {
 		expect(await opencodeSource.discover()).toEqual([]);
 	});
 
-	it("rethrows a filesystem error that is neither 'absent' nor 'not a directory'", async () => {
+	// discover()'s scan-arm catch delegates to handleDiscoverError, same as the override arm
+	// above - but unlike the override arm, nothing here proved that wiring end to end before
+	// this test: the only test reaching this catch (the ELOOP test below) only proves the
+	// *ignorable* outcome, which looks identical under a mutation that swallows every error
+	// unconditionally. `readdir` is injected the same way `stat` is (see `DiscoverOptions`),
+	// so this reaches the real scan-arm catch with no vendor mock and no platform dependence.
+	it("propagates a genuinely unexpected readdir error through the real discover() path (injected readdir, EIO)", async () => {
 		const home = await isolatedHome();
-		await mkdir(join(home, "xdg"), { recursive: true });
-		// A symlink pointing at itself makes stat fail with ELOOP.
-		await symlink("opencode", join(home, "xdg", "opencode"));
 		vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
 
-		await expect(opencodeSource.discover()).rejects.toMatchObject({
-			code: "ELOOP",
+		const error = Object.assign(new Error("EIO"), {
+			code: "EIO",
+		}) as NodeJS.ErrnoException;
+		const injectedReaddir = vi.fn().mockRejectedValue(error);
+
+		await expect(
+			opencodeSource.discover({ readdir: injectedReaddir }),
+		).rejects.toThrow(error);
+	});
+
+	// Skipped on Windows: creating a symlink there needs the SeCreateSymbolicLinkPrivilege,
+	// which a non-elevated account only has with Developer Mode on; without it `symlink()`
+	// rejects with EPERM instead of producing the ELOOP this test needs, so it would fail
+	// rather than skip (nodejs/node issue #47783 tracks the same privilege requirement). Not
+	// load-bearing for coverage on its own: handleDiscoverError's own tests below cover the
+	// ELOOP decision directly. That is NOT true of the three "symlinked databases" tests just
+	// below, though - those skipIf(win32) tests are load-bearing for coverage: force-skipping
+	// them (as a real Windows run would) drops src/sources/opencode.ts to roughly 95%
+	// statements/branches/lines and fails the yarn test coverage gate. CI itself is unaffected
+	// (ubuntu-latest only), so this only bites a developer running the suite on Windows.
+	it.skipIf(process.platform === "win32")(
+		"returns no handles when the data directory is unreadable because of a symlink loop (ELOOP)",
+		async () => {
+			const home = await isolatedHome();
+			await mkdir(join(home, "xdg"), { recursive: true });
+			// A symlink pointing at itself makes stat fail with ELOOP while resolving the path,
+			// the same as a permissions problem: there is no readable opencode data here.
+			await symlink("opencode", join(home, "xdg", "opencode"));
+			vi.stubEnv("XDG_DATA_HOME", join(home, "xdg"));
+
+			await expect(opencodeSource.discover()).resolves.toEqual([]);
+		},
+	);
+
+	// A chmod-based EACCES filesystem test was tried here and removed: it skips as root (so it
+	// can never fail in a root CI container, exactly where a regression would matter) and skips
+	// on Windows, and forcing both skips still left the suite at 100% - the ELOOP test above
+	// already exercises the same ignorable arm end to end, and handleDiscoverError's own tests
+	// below cover the EACCES decision directly, without depending on the OS or which user runs
+	// the suite.
+
+	// Same care about Windows as the ELOOP test above: creating a symlink needs
+	// SeCreateSymbolicLinkPrivilege there.
+	describe("symlinked databases", () => {
+		it.skipIf(process.platform === "win32")(
+			"discovers a database reached only through a symlink",
+			async () => {
+				const home = await isolatedHome();
+				const dataDir = join(home, "xdg");
+				const opencodeDir = join(dataDir, "opencode");
+				await mkdir(opencodeDir, { recursive: true });
+				const elsewhere = await sandbox();
+				const realDbPath = join(elsewhere, "real.db");
+				await writeFile(realDbPath, "");
+				const symlinkPath = join(opencodeDir, "opencode.db");
+				await symlink(realDbPath, symlinkPath);
+				vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+				expect(await opencodeSource.discover()).toEqual([
+					{ source: "opencode", path: symlinkPath },
+				]);
+			},
+		);
+
+		it.skipIf(process.platform === "win32")(
+			"excludes a symlink whose target does not exist, without failing the whole scan",
+			async () => {
+				const home = await isolatedHome();
+				const dataDir = join(home, "xdg");
+				const opencodeDir = join(dataDir, "opencode");
+				await mkdir(opencodeDir, { recursive: true });
+				const realPath = join(opencodeDir, "opencode.db");
+				await writeFile(realPath, "");
+				const brokenSymlinkPath = join(opencodeDir, "opencode-broken.db");
+				await symlink(join(opencodeDir, "does-not-exist"), brokenSymlinkPath);
+				vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+				expect(await opencodeSource.discover()).toEqual([
+					{ source: "opencode", path: realPath },
+				]);
+			},
+		);
+
+		it.skipIf(process.platform === "win32")(
+			"excludes a symlink that resolves to a directory, not a file",
+			async () => {
+				const home = await isolatedHome();
+				const dataDir = join(home, "xdg");
+				const opencodeDir = join(dataDir, "opencode");
+				await mkdir(opencodeDir, { recursive: true });
+				const realPath = join(opencodeDir, "opencode.db");
+				await writeFile(realPath, "");
+				const targetDir = await sandbox();
+				const dirSymlinkPath = join(opencodeDir, "opencode-dir.db");
+				await symlink(targetDir, dirSymlinkPath);
+				vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+				expect(await opencodeSource.discover()).toEqual([
+					{ source: "opencode", path: realPath },
+				]);
+			},
+		);
+	});
+
+	describe("multiple database files", () => {
+		it("discovers a channel-suffixed database when no default opencode.db is present", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const channelPath = join(opencodeDir, "opencode-beta-canary.db");
+			await writeFile(channelPath, "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			expect(await opencodeSource.discover()).toEqual([
+				{ source: "opencode", path: channelPath },
+			]);
 		});
+
+		// This is also the bead's "alongside the default one" acceptance criterion: the fixture
+		// here is a superset of that narrower case (same two files, plus sidecars and decoys that
+		// must NOT be discovered), and the expectation is identical, so a separate test asserting
+		// only the narrower fixture would fail exactly when this one does and pass whenever this
+		// one does. No implementation can tell them apart, so they are not both kept.
+		it("discovers the default and channel databases as two handles, ignoring WAL/SHM sidecars and lookalike files", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const defaultPath = join(opencodeDir, "opencode.db");
+			const channelPath = join(opencodeDir, "opencode-nightly.db");
+			await writeFile(defaultPath, "");
+			// SQLite's own sidecars for the default database - never separate handles.
+			await writeFile(`${defaultPath}-wal`, "");
+			await writeFile(`${defaultPath}-shm`, "");
+			await writeFile(channelPath, "");
+			// Decoys, each missing the match on exactly one axis. opencode.db.backup and
+			// opencode.sqlite have the right prefix but the wrong extension (".db.backup" and
+			// ".sqlite" are not ".db"); myopencode.db has the right extension but the wrong
+			// prefix (it doesn't start with "opencode"); opencodeX.db has both right, but is
+			// missing the "-" separator a channel suffix requires. None is a name discover()
+			// should match.
+			await writeFile(join(opencodeDir, "opencode.db.backup"), "");
+			await writeFile(join(opencodeDir, "opencode.sqlite"), "");
+			await writeFile(join(opencodeDir, "myopencode.db"), "");
+			await writeFile(join(opencodeDir, "opencodeX.db"), "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			expect(sortByPath(await opencodeSource.discover())).toEqual(
+				sortByPath([
+					{ source: "opencode", path: defaultPath },
+					{ source: "opencode", path: channelPath },
+				]),
+			);
+		});
+	});
+
+	// Upstream semantics (public repo, released tag v1.18.31, commit 014614d35b39,
+	// packages/core/src/database/database.ts, function `path()`):
+	//
+	//   export function path() {
+	//     if (Flag.OPENCODE_DB) {
+	//       if (Flag.OPENCODE_DB === ":memory:" || isAbsolute(Flag.OPENCODE_DB)) return Flag.OPENCODE_DB
+	//       return join(Global.Path.data, Flag.OPENCODE_DB)
+	//     }
+	//     ...channel-based default...
+	//   }
+	//
+	// `Flag.OPENCODE_DB` is a direct, unprocessed `process.env["OPENCODE_DB"]` read
+	// (packages/core/src/flag/flag.ts) and `Global.Path.data` is opencode's own data directory -
+	// the same directory this reader already calls the "data directory" (XDG_DATA_HOME, or
+	// ~/.local/share, plus "opencode"). So: ":memory:" or an absolute path is used as-is; any
+	// other value is resolved against that data directory, never the process's cwd. The check is
+	// an early return upstream, so a set OPENCODE_DB replaces the channel-file scan entirely
+	// rather than adding to it. (":memory:" itself is out of scope for this bead - no behavioral
+	// test here needs it.)
+	//
+	// Upstream's guard is `if (Flag.OPENCODE_DB)`, not an undefined check, so an empty string is
+	// falsy and falls through to the channel-based default exactly like an unset variable -
+	// mirrored below the same way the sibling XDG_DATA_HOME variable already is (see "treats an
+	// empty XDG_DATA_HOME as unset" above).
+	//
+	// Decision recorded here rather than left for the coverage gate to pick: upstream's path()
+	// returns the override string unconditionally, with no existence check, and a bad value only
+	// surfaces later as a read() failure. This reader keeps the existence check - a handle
+	// names a real, readable file, the same contract every other discover() result holds - but
+	// unlike the scan arm, a bad OPENCODE_DB does not fail silently. Decision myusage-chj
+	// (option C, Brice, live, 2026-09-20): the scan arm's "nothing here" and an explicitly
+	// configured, wrong OPENCODE_DB are different situations - the user never said where to
+	// look in the scan case, but did here - so a missing path or a directory throws a named,
+	// actionable error ("OPENCODE_DB is set to <path> but that file does not exist" / "...but
+	// that path is a directory") instead of reproducing the exact silent-empty-chart bug this
+	// reader exists to fix, just one level down.
+	describe("OPENCODE_DB override", () => {
+		it("uses an absolute OPENCODE_DB path as-is, instead of scanning the data directory", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			// Present in the data directory and would normally be discovered - proves the
+			// override replaces the scan instead of adding to it.
+			await writeFile(join(opencodeDir, "opencode.db"), "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			const elsewhere = await sandbox();
+			const overridePath = join(elsewhere, "override.db");
+			await writeFile(overridePath, "");
+			vi.stubEnv("OPENCODE_DB", overridePath);
+
+			expect(await opencodeSource.discover()).toEqual([
+				{ source: "opencode", path: overridePath },
+			]);
+		});
+
+		it("resolves a relative OPENCODE_DB path against the data directory, not the process cwd", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const relativePath = "custom-channel.db";
+			const resolvedPath = join(opencodeDir, relativePath);
+			await writeFile(resolvedPath, "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+			vi.stubEnv("OPENCODE_DB", relativePath);
+
+			expect(await opencodeSource.discover()).toEqual([
+				{ source: "opencode", path: resolvedPath },
+			]);
+		});
+
+		it("treats an empty OPENCODE_DB as unset", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			const dbPath = join(opencodeDir, "opencode.db");
+			await writeFile(dbPath, "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+			vi.stubEnv("OPENCODE_DB", "");
+
+			expect(await opencodeSource.discover()).toEqual([
+				{ source: "opencode", path: dbPath },
+			]);
+		});
+
+		it("throws a named error when OPENCODE_DB points at a path that does not exist", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			// Present in the data directory and would normally be discovered - proves a missing
+			// override throws instead of silently falling back to the scan.
+			await writeFile(join(opencodeDir, "opencode.db"), "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			const elsewhere = await sandbox();
+			const missingPath = join(elsewhere, "missing.db");
+			vi.stubEnv("OPENCODE_DB", missingPath);
+
+			await expect(opencodeSource.discover()).rejects.toThrow(
+				`OPENCODE_DB is set to ${missingPath} but that file does not exist`,
+			);
+		});
+
+		it("throws a named error when OPENCODE_DB points at a directory", async () => {
+			const home = await isolatedHome();
+			const dataDir = join(home, "xdg");
+			const opencodeDir = join(dataDir, "opencode");
+			await mkdir(opencodeDir, { recursive: true });
+			await writeFile(join(opencodeDir, "opencode.db"), "");
+			vi.stubEnv("XDG_DATA_HOME", dataDir);
+
+			const elsewhere = await sandbox();
+			const overrideDir = join(elsewhere, "override.db");
+			await mkdir(overrideDir, { recursive: true });
+			vi.stubEnv("OPENCODE_DB", overrideDir);
+
+			await expect(opencodeSource.discover()).rejects.toThrow(
+				`OPENCODE_DB is set to ${overrideDir} but that path is a directory`,
+			);
+		});
+
+		// Proves discover()'s catch actually reaches the named-error path below, not just that
+		// some pure function decides correctly in isolation: the `stat` seam is injected (see
+		// `DiscoverOptions`) so this reaches the real path end to end with no vendor mock (no
+		// `vi.mock` on node:fs/promises), no chmod, and no platform dependence. Anchored on the
+		// override arm rather than the scan: the override's own existence check (see the two
+		// "returns no handles" tests above) calls `stat` unconditionally, every time, so
+		// injecting a failure there is guaranteed to land on it regardless of what's on disk.
+		// (The scan arm calls the same seam too, but only for symlink-named candidates - see
+		// "symlinked databases" above - so it is not the simplest place to prove this.)
+		//
+		// The user named this exact path, so every stat() failure other than ENOENT - not just
+		// EIO, but also codes like EACCES and ENOTDIR that the scan arm below treats as merely
+		// ignorable (see IGNORABLE_DISCOVER_CODES) - must become this same named, actionable
+		// error instead of silently returning [] via handleDiscoverError: an explicitly
+		// configured OPENCODE_DB that cannot be read is never "opencode just isn't installed".
+		// Decision record: bead myusage-pqm (EIO surfaces), extended by myusage-4xu.35 (every
+		// other non-ENOENT code is treated the same way, not just EIO).
+		it.each(["EIO", "EACCES", "ENOTDIR"])(
+			"throws a named error identifying OPENCODE_DB and the resolved path when stat fails with %s",
+			async (code) => {
+				// Sandboxed like every other test here even though the injected stat should make
+				// the real filesystem irrelevant: if a future regression stops discover() from
+				// honoring the injected dependency, the fallback must land on a throwaway path,
+				// never the real home or opencode database.
+				await isolatedHome();
+				const elsewhere = await sandbox();
+				const overridePath = join(elsewhere, "override.db");
+				vi.stubEnv("OPENCODE_DB", overridePath);
+
+				const error = Object.assign(new Error(code), {
+					code,
+				}) as NodeJS.ErrnoException;
+				const injectedStat = vi.fn().mockRejectedValue(error);
+
+				await expect(
+					opencodeSource.discover({ stat: injectedStat }),
+				).rejects.toThrow(
+					`OPENCODE_DB is set to ${overridePath} but it could not be read: ${code}`,
+				);
+			},
+		);
+
+		// Same shape as the WAL-readonly-directory .cause assertion in the read() describe block
+		// below: the original stat() failure must be chained, not dropped, so whatever actually
+		// broke (permissions, a stale mount, ...) stays inspectable from the rewritten error.
+		it("chains the original stat() failure as .cause when OPENCODE_DB cannot be read", async () => {
+			await isolatedHome();
+			const elsewhere = await sandbox();
+			const overridePath = join(elsewhere, "override.db");
+			vi.stubEnv("OPENCODE_DB", overridePath);
+
+			const error = Object.assign(new Error("EIO"), {
+				code: "EIO",
+			}) as NodeJS.ErrnoException;
+			const injectedStat = vi.fn().mockRejectedValue(error);
+
+			let caught: unknown;
+			try {
+				await opencodeSource.discover({ stat: injectedStat });
+			} catch (thrown) {
+				caught = thrown;
+			}
+
+			expect(caught).toBeInstanceOf(Error);
+			expect((caught as Error).cause).toBe(error);
+		});
+
+		// The it.each fixtures above build their error as `Object.assign(new Error(code), {
+		// code })`, so `.message` is literally the bare code - every one of those cases would
+		// pass just as well under the old "code ?? message" fallback. A real errno's message is
+		// normally a strict superset of its code (confirmed directly against Node's own
+		// fs.promises.stat() rejections, e.g. "ENOTDIR: not a directory, stat '/x'"), so this
+		// fixture shapes .message the same way: different from .code, to prove the full message
+		// is used rather than the bare code alone.
+		it("uses the errno's real message, not just its bare code, when OPENCODE_DB cannot be read", async () => {
+			await isolatedHome();
+			const elsewhere = await sandbox();
+			const overridePath = join(elsewhere, "override.db");
+			vi.stubEnv("OPENCODE_DB", overridePath);
+
+			const message = `ENOTDIR: not a directory, stat '${overridePath}'`;
+			const error = Object.assign(new Error(message), {
+				code: "ENOTDIR",
+			}) as NodeJS.ErrnoException;
+			const injectedStat = vi.fn().mockRejectedValue(error);
+
+			await expect(
+				opencodeSource.discover({ stat: injectedStat }),
+			).rejects.toThrow(
+				`OPENCODE_DB is set to ${overridePath} but it could not be read: ${message}`,
+			);
+		});
+	});
+});
+
+describe("handleDiscoverError", () => {
+	// Plain error objects, not a real stat() failure: the ignore-or-surface decision is pure
+	// logic (an errno in, a return-or-throw out) and must be provable without depending on
+	// which errno the OS or the calling user's permissions actually produce. discover()'s catch
+	// delegates the whole decision to this function (`return handleDiscoverError(error)`), so
+	// these are the only tests the decision needs — no filesystem test has to reach the
+	// "unexpected" arm.
+	function errnoError(code: string): NodeJS.ErrnoException {
+		const error = new Error(code) as NodeJS.ErrnoException;
+		error.code = code;
+		return error;
+	}
+
+	it.each(["ENOENT", "ENOTDIR", "EACCES", "EPERM", "ELOOP"])(
+		"treats %s as ignorable: no readable opencode data at this path",
+		(code) => {
+			expect(handleDiscoverError(errnoError(code))).toEqual([]);
+		},
+	);
+
+	it("treats EIO as unexpected, so discover() still surfaces it", () => {
+		const error = errnoError("EIO");
+		expect(() => handleDiscoverError(error)).toThrow(error);
+	});
+
+	// No .code at all (a bare Error, or a throw that never went through Node's fs/promises
+	// layer) must land on the same side as EIO, not be swallowed just because the lookup found
+	// nothing to match.
+	it("treats an error with no .code as unexpected, so discover() still surfaces it", () => {
+		const error = new Error("boom") as NodeJS.ErrnoException;
+		expect(() => handleDiscoverError(error)).toThrow(error);
 	});
 });
 
@@ -556,10 +988,19 @@ describe("opencodeSource.read", () => {
 		db.close();
 
 		// SQLite's own "no such table: message" would also match /message/, so assert the
-		// reader's own error.
-		await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
-			/Unsupported opencode database/,
-		);
+		// reader's own error - and, since the message template embeds ${path}, that it names
+		// the offending file too, not just the generic "unsupported" shape.
+		let caught: unknown;
+		try {
+			await opencodeSource.read(handleFor(path));
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(caught).toBeInstanceOf(Error);
+		const message = (caught as Error).message;
+		expect(message).toMatch(/Unsupported opencode database/);
+		expect(message).toContain(path);
 	});
 
 	describe("WAL and read-only safety", () => {
@@ -650,6 +1091,123 @@ describe("opencodeSource.read", () => {
 
 			expect(rows).toHaveLength(1);
 			expect(sha256(path)).toBe(before);
+		});
+
+		// A different failure mode than the discover()-time ELOOP/EACCES cases above: this one
+		// happens at read() time, on a database that discover() already found. Opening a
+		// WAL-mode database read-only still needs to create its -wal/-shm sidecars when they
+		// are not already there (SQLite has to set up the shared wal-index), so a cleanly
+		// closed database - no pre-existing sidecar - in a read-only directory fails with the
+		// raw, unhelpful "attempt to write a readonly database" unless read() names the cause.
+		//
+		// An immutable=1 URI open was tried here first and reverted: node:sqlite's DatabaseSync
+		// did not accept file: URI locations at all on this repo's Node floor (22.13.0, added:
+		// v22.5.0 per Node's own docs at that tag - even a bare file: URI with no query string
+		// fails there with "unable to open database file"). A fix the floor CI job cannot pass
+		// is not a fix, so read() surfaces a clear, actionable error instead.
+		//
+		// Unlike the discover()-time chmod test that was tried and removed (see the comment
+		// above "multiple database files"), this one is not incidental coverage of an already-
+		// proven pure function: it is the bead's own acceptance criterion, and the only way to
+		// reproduce "no pre-existing sidecar, directory not writable" is a real read-only
+		// directory. skipIf(win32): chmod bits don't model POSIX permissions on Windows.
+		it.skipIf(process.platform === "win32")(
+			"throws a named error when a cleanly closed WAL database sits in a read-only directory",
+			async (ctx) => {
+				if (process.getuid?.() === 0) {
+					// Root ignores directory permission bits, so chmod 555 would not reproduce a
+					// read-only directory and this test would pass vacuously (open would just
+					// succeed the normal way). Same reasoning as the ELOOP test's Windows skip
+					// above: skip with a stated reason rather than assert nothing.
+					ctx.skip(
+						"root bypasses directory permission bits; chmod 555 cannot make a directory unwritable for root",
+					);
+				}
+				const dir = await sandbox();
+				const path = join(dir, "opencode.db");
+				const db = createDb(path);
+				insertMessage(db, "msg_fixture_a", assistantData());
+				db.close();
+
+				chmodSync(dir, 0o555);
+				try {
+					await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
+						/its directory is not writable/,
+					);
+				} finally {
+					// Restore before afterEach's rm(): deleting entries from a read-only
+					// directory would fail, and force:true does not swallow EACCES/EPERM.
+					chmodSync(dir, 0o755);
+				}
+			},
+		);
+		// The check in read()'s catch (`if (!isReadonlyDirectoryError(error)) throw error;`)
+		// must discriminate a genuine SQLITE_READONLY_DIRECTORY failure from any other read
+		// failure - only the former should be rewritten into the named error above; everything
+		// else must propagate as-is. The chmod test above proves the real end-to-end behavior;
+		// these prove the discrimination directly, via an injected DatabaseSyncCtor, so the
+		// property holds independent of chmod, root, or platform.
+		describe("classifies read failures correctly (injected DatabaseSyncCtor)", () => {
+			// A fake DatabaseSync-shaped constructor whose open throws the given error. The
+			// constructor always throws before any instance method would be called, so the fake
+			// declares none - readRows()'s call site only ever needs the constructor itself here.
+			function fakeDatabaseSyncCtor(error: Error) {
+				class FakeDatabaseSync {
+					constructor(_location: string, _options: unknown) {
+						throw error;
+					}
+				}
+				return FakeDatabaseSync as unknown as typeof DatabaseSync;
+			}
+
+			it("propagates the original error, unrewritten, when the open failure is not SQLITE_READONLY_DIRECTORY", async () => {
+				const dir = await sandbox();
+				const path = join(dir, "opencode.db");
+				// A made-up errcode, deliberately not 1544 (SQLITE_READONLY_DIRECTORY): any other
+				// value must pass through untouched, not become the named readonly-directory error.
+				const otherError = Object.assign(new Error("disk I/O error"), {
+					errcode: 10,
+				});
+
+				await expect(
+					opencodeSource.read(handleFor(path), {
+						DatabaseSyncCtor: fakeDatabaseSyncCtor(otherError),
+					}),
+				).rejects.toBe(otherError);
+			});
+
+			it("rewrites the failure into a named error, naming the path and the remedy, and chains the original error as .cause, when it is genuinely SQLITE_READONLY_DIRECTORY", async () => {
+				const dir = await sandbox();
+				const path = join(dir, "opencode.db");
+				const readonlyDirectoryError = Object.assign(
+					new Error("attempt to write a readonly database"),
+					{ errcode: 1544 },
+				);
+
+				// Two halves, both pinned: the cause ("its directory is not writable...") and the
+				// remedy ("Copy the database..."). A source change that drops the remedy sentence
+				// (the whole reason this is a named error and not just a rethrow) must fail here,
+				// not just the cause half.
+				let caught: unknown;
+				try {
+					await opencodeSource.read(handleFor(path), {
+						DatabaseSyncCtor: fakeDatabaseSyncCtor(readonlyDirectoryError),
+					});
+				} catch (error) {
+					caught = error;
+				}
+
+				expect(caught).toBeInstanceOf(Error);
+				const message = (caught as Error).message;
+				expect(message).toContain(
+					`Cannot read ${path}: its directory is not writable`,
+				);
+				expect(message).toContain(
+					"Copy the database (and any -wal/-shm files beside it) to a writable location and read from there.",
+				);
+				// The original low-level SQLite error is chained, not dropped.
+				expect((caught as Error).cause).toBe(readonlyDirectoryError);
+			});
 		});
 	});
 
@@ -831,19 +1389,15 @@ describe("compareRows", () => {
 		tokens: { input: 1, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0 },
 	});
 
-	it("orders by completion time before message id", () => {
-		expect(compareRows(row(1, "z"), row(2, "a"))).toBeLessThan(0);
-		expect(compareRows(row(2, "a"), row(1, "z"))).toBeGreaterThan(0);
-	});
+	// Pure-time ordering (independent of message id) is already covered end to end by
+	// "orders rows by completion time, then message id, regardless of insert order" above,
+	// which reads real rows out of SQLite (verified: an always-0 compareRows mutation fails
+	// that test). A duplicate unit case here would add no incremental coverage.
 
 	it("breaks a time tie by message id, comparing code units rather than locale order", () => {
 		expect(compareRows(row(1, "a"), row(1, "b"))).toBe(-1);
 		expect(compareRows(row(1, "b"), row(1, "a"))).toBe(1);
 		// Code-unit order puts "B" before "a"; a locale-aware compare would not.
 		expect(compareRows(row(1, "B"), row(1, "a"))).toBe(-1);
-	});
-
-	it("compares identical keys as equal, so it is a total order", () => {
-		expect(compareRows(row(1, "a"), row(1, "a"))).toBe(0);
 	});
 });

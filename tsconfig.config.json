@@ -1,11 +1,18 @@
 {
-	// Type-checks vitest.config.ts, which tsconfig.json cannot include: its rootDir is src.
-	// Run by `yarn typecheck`. Without it, a misspelled or unknown coverage option in the
-	// config compiles fine and silently drops that gate setting.
+	// Type-checks files tsconfig.json's own `include` (["src"]) leaves out. Run by
+	// `yarn typecheck`. Without it, a misspelled or unknown coverage option in
+	// vitest.config.ts, or a type error in scripts/package-rules.ts, compiles clean and
+	// silently ships.
+	//
+	// scripts/package-rules.ts (bead myusage-4xu.19) is build-time-only tooling that must not
+	// live under src/ - src/ is what `yarn build` emits into dist/, and a checker that ships
+	// inside the package it checks defeats the point (round-2 review). Listed here instead,
+	// the same way vitest.config.ts already is, so it still gets type-checked without being
+	// part of the build.
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"rootDir": ".",
 		"noEmit": true
 	},
-	"include": ["vitest.config.ts"]
+	"include": ["vitest.config.ts", "scripts/package-rules.ts"]
 }

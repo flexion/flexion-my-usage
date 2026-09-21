@@ -453,6 +453,11 @@ describe("price table: untrusted cache and body", () => {
 				...LITELLM_FIXTURE["gpt-4o-mini"],
 				cache_read_input_token_cost: null,
 			},
+			// cache-write rate as a string, present but invalid (mirrors the cache-read case above)
+			"claude-haiku-4-5": {
+				...LITELLM_FIXTURE["claude-haiku-4-5"],
+				cache_creation_input_token_cost: "0.00000125",
+			},
 			// missing output rate
 			"gpt-5.1": {
 				litellm_provider: "openai",
@@ -476,6 +481,7 @@ describe("price table: untrusted cache and body", () => {
 				model: "gpt-4o-mini",
 				tokens: { input: M },
 			}),
+			usageRow({ model: "claude-haiku-4-5", tokens: { input: M } }),
 			usageRow({ provider: "openai", model: "gpt-5.1", tokens: { input: M } }),
 			usageRow({ provider: "xai", model: "grok-4", tokens: { input: M } }),
 			usageRow({

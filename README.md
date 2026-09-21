@@ -18,7 +18,7 @@ This closes that gap - an over-time view of your usage, with a notional cost wor
 
 ## Local by design
 
-Everything runs on your machine. It reads local files, writes a local page, and never phones home - no account, no upload, no back end. That's the point: it's what lets it run in locked-down environments.
+Everything runs on your machine. It reads local files and serves a local page from a local server - no account, no upload, nothing ever leaves the machine. That's the point: it's what lets it run in locked-down environments.
 
 ## Usage
 

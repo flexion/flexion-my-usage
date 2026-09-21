@@ -73,10 +73,13 @@ describe("filterTestOrSupportPaths: the test-or-support name pattern and its off
 	});
 
 	it("flags a test-support directory nested several levels deep", () => {
-		const paths = ["dist/sources/__mocks__/opencode.js"];
+		// __mocks__ sits two real directories above the file (nested/, then deep/, in
+		// between) - a non-immediate ancestor, not the immediate parent segment - so this
+		// only passes if the check walks every ancestor segment, not just the last one.
+		const paths = ["dist/__mocks__/nested/deep/file.js"];
 
 		expect(filterTestOrSupportPaths(paths)).toEqual([
-			"dist/sources/__mocks__/opencode.js",
+			"dist/__mocks__/nested/deep/file.js",
 		]);
 	});
 

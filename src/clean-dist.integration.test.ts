@@ -57,11 +57,15 @@ describe("scripts/clean-dist.mjs against a real dist/ on disk", () => {
 		await mkdir(`${dir}/dist`, { recursive: true });
 		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
 		await writeFile(`${dir}/dist/old.test.js`, "console.log('stale');\n");
+		// A sibling of dist/, untouched by a correct clean - this is what proves the
+		// script's blast radius stays scoped to dist/ instead of the whole cwd.
+		await writeFile(`${dir}/package.json`, "{}\n");
 
 		const result = runCleanDist(dir);
 
 		expect(result.status).toBe(0);
 		expect(await exists(`${dir}/dist`)).toBe(false);
+		expect(await exists(`${dir}/package.json`)).toBe(true);
 	});
 
 	it("succeeds when dist/ does not exist yet (a first build)", async () => {

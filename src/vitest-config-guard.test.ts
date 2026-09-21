@@ -241,14 +241,19 @@ function findStringLiteralsInRange(
 
 /** Guards `findKeyedArray` against silently binding to the wrong array (myusage-c2a critical
  * round 4). Every entry coverage.exclude/coverage.include ever holds is, by this repo's own
- * convention (AGENTS.md), an explicit `src/`-rooted path or negation - never bare text like
- * `"text"` or `"html"`, which is exactly what coverage.reporter's own array holds and exactly
- * what a misfired anchor would return instead. Called from within `findKeyedArray` itself
- * (forward reference; `function` declarations hoist), so every caller gets this for free
- * without having to remember to call it. An array that fails this - including an empty one,
- * since an anchor bound to nothing valid is exactly as stale as one bound to the wrong thing
- * entirely - fails loudly right here instead of quietly handing back a plausible-looking wrong
- * span for every later mutation to build on. */
+ * convention (AGENTS.md), an explicit `src/`- or `scripts/`-rooted path or negation - never
+ * bare text like `"text"` or `"html"`, which is exactly what coverage.reporter's own array
+ * holds and exactly what a misfired anchor would return instead. The `scripts/` half of that
+ * is coverage.include's own `"scripts/package-rules.ts"` entry (bead myusage-4xu.19, merged to
+ * main after this file was first authored on a long-lived branch - see vitest.config.ts's own
+ * comment on that entry for why it's listed explicitly, one directory outside src/, instead of
+ * a glob): a real, already-accepted entry, not a hollowing, so this check has to allow it
+ * rather than the guard fixture staying permanently stale against it. Called from within
+ * `findKeyedArray` itself (forward reference; `function` declarations hoist), so every caller
+ * gets this for free without having to remember to call it. An array that fails this -
+ * including an empty one, since an anchor bound to nothing valid is exactly as stale as one
+ * bound to the wrong thing entirely - fails loudly right here instead of quietly handing back
+ * a plausible-looking wrong span for every later mutation to build on. */
 function assertLooksLikeCoveragePathArray(
 	source: string,
 	key: "exclude" | "include",
@@ -263,8 +268,10 @@ function assertLooksLikeCoveragePathArray(
 	for (const literal of literals) {
 		const text = source.slice(literal.start, literal.end);
 		expect(
-			text.startsWith('"src/') || text.startsWith('"!src/'),
-			`expected every coverage.${key} entry to look like a src/ path, got ${text} (fixture anchor stale - bound to the wrong array?)`,
+			text.startsWith('"src/') ||
+				text.startsWith('"!src/') ||
+				text.startsWith('"scripts/'),
+			`expected every coverage.${key} entry to look like a src/ or scripts/ path, got ${text} (fixture anchor stale - bound to the wrong array?)`,
 		).toBe(true);
 	}
 }

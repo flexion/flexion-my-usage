@@ -133,7 +133,54 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 
 		const result = runCheckPackage(dir);
 
+		// This fixture's `files` config also puts dist/index.test.js in the npm pack list, so
+		// the pack-side scan (see "catches a test file present only in the npm pack list"
+		// below) would ALSO exit 1 even if the dist/ scan were deleted outright. A bare status
+		// check doesn't pin the dist/ scan specifically - assert its own message so deleting
+		// that scan alone (leaving the pack-side scan intact) fails this test.
 		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/test or support files in dist\//);
+	});
+
+	it("catches a stale test file nested under a subdirectory of dist/", async () => {
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist/sources`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(`${dir}/dist/sources/lib.js`, "console.log(2);\n");
+		await writeFile(
+			`${dir}/dist/sources/lib.test.js`,
+			"console.log('stale');\n",
+		);
+		await writeFixturePackageJson(dir, ["dist"]);
+
+		const result = runCheckPackage(dir);
+
+		// Every other dist/ fixture in this file is flat; the real dist/ is not (e.g.
+		// dist/sources/), so this pins listFiles' recursion into subdirectories. npm's own
+		// pack walk finds dist/sources/lib.test.js regardless of our recursion, so assert the
+		// dist/-scan-specific message rather than just the exit status - otherwise this would
+		// still pass if listFiles stopped recursing and only the pack-side scan caught it.
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/test or support files in dist\//);
+	});
+
+	it("catches a test file present only in the npm pack list, not in dist/", async () => {
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(`${dir}/dist/lib.js`, "console.log(2);\n");
+		await writeFile(`${dir}/helper.test.js`, "console.log('stale');\n");
+		await writeFixturePackageJson(dir, ["dist", "helper.test.js"]);
+
+		const result = runCheckPackage(dir);
+
+		// helper.test.js never lands in dist/ - it is only caught because `files` puts it
+		// straight in the npm pack list. No existing fixture exercises the pack-side scan
+		// without the same file also present in dist/, so that branch's own logic was
+		// unexercised. Assert its specific message so deleting that scan (leaving the dist/
+		// scan intact) fails this test, since dist/ itself has no test file here.
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/test or support files in the npm package:/);
 	});
 
 	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {

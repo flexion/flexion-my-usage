@@ -7,6 +7,11 @@ import {
 	shareByModel,
 	stackByModel,
 } from "./chart-model.js";
+import {
+	findDayDetail,
+	measureToggleState,
+	renderDayDetail,
+} from "./client-script.js";
 import { renderHtml } from "./render.js";
 
 interface SeriesSpec {
@@ -198,11 +203,19 @@ interface DayDetailEntryPayload {
 }
 
 function readPanelData(html: string, panelId: string): DayDetailPayload {
-	const match = html.match(
-		new RegExp(
-			`<script type="application/json" id="${panelId}-data">([\\s\\S]*?)</script>`,
-		),
-	);
+	// Finds every application/json script tag first, then filters by id read via `attr` - so
+	// this stays correct however embedJson orders `type` and `id` on the opening tag, the same
+	// order-independence the day-bar markup helpers above already have (myusage-4xu.31,
+	// myusage-4xu.42).
+	const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? [];
+	const target = scripts.find((tag) => {
+		const openTag = tag.match(/^<script\b[^>]*>/)?.[0] ?? "";
+		return (
+			attr(openTag, "type") === "application/json" &&
+			attr(openTag, "id") === `${panelId}-data`
+		);
+	});
+	const match = target?.match(/^<script\b[^>]*>([\s\S]*?)<\/script>$/);
 	if (!match?.[1]) throw new Error(`${panelId}-data script not found`);
 	return JSON.parse(match[1]) as DayDetailPayload;
 }
@@ -470,6 +483,26 @@ describe("renderHtml: chart axis", () => {
 	});
 });
 
+/**
+ * Every `<li class="legend-row">...</li>` block in the rendered legend, as `[label, color]`
+ * pairs. Reads the swatch's `style` attribute and the label span's text by NAME - via `attr`
+ * for the swatch tag, and a class-scoped match for the label - so this stays correct however
+ * `renderLegend` orders the swatch span's `class`/`style` attributes, or where the label span
+ * falls relative to it (myusage-4xu.42, closing the same coupling myusage-4xu.31 removed from
+ * the day-bar markup helpers above, but missed here).
+ */
+function legendPairs(html: string): [label: string, color: string][] {
+	const rows = html.match(/<li class="legend-row">[\s\S]*?<\/li>/g) ?? [];
+	return rows.map((row) => {
+		const swatchTag = row.match(/<span\b[^>]*class="swatch"[^>]*>/)?.[0] ?? "";
+		const style = attr(swatchTag, "style") ?? "";
+		const color = style.match(/^background:(.*)$/)?.[1] ?? "";
+		const label =
+			row.match(/<span class="legend-label">([^<]*)<\/span>/)?.[1] ?? "";
+		return [label, color];
+	});
+}
+
 describe("renderHtml: chart color assignment", () => {
 	it("gives each named series its own distinct, consistent color across the legend and the bar", () => {
 		const days = [
@@ -483,12 +516,7 @@ describe("renderHtml: chart color assignment", () => {
 
 		// Ranked by cost: model-a (10) first, model-b (5) second - buildColorLookup assigns
 		// palette slots in that rank order, one each, never repeating a slot.
-		const legendPairs = [
-			...html.matchAll(
-				/<span class="swatch" style="background:(var\(--[^)]+\))"><\/span>\s*<span class="legend-label">([^<]*)<\/span>/g,
-			),
-		].map((m) => [m[2], m[1]]);
-		expect(legendPairs).toEqual([
+		expect(legendPairs(html)).toEqual([
 			["model-a", "var(--series-1)"],
 			["model-b", "var(--series-2)"],
 		]);
@@ -504,17 +532,13 @@ describe("renderHtml: chart color assignment", () => {
 	it("gives the Other roll-up its own fixed color, never one of the named-series slots", () => {
 		const html = renderHtml(buildWindow());
 
-		const legendPairs = [
-			...html.matchAll(
-				/<span class="swatch" style="background:(var\(--[^)]+\))"><\/span>\s*<span class="legend-label">([^<]*)<\/span>/g,
-			),
-		].map((m) => [m[2], m[1]]);
+		const pairs = legendPairs(html);
 
-		const otherPair = legendPairs.find(([label]) => label === OTHER_LABEL);
+		const otherPair = pairs.find(([label]) => label === OTHER_LABEL);
 		if (!otherPair) throw new Error("fixture folds a tail into Other");
 		expect(otherPair[1]).toBe("var(--other)");
 
-		const namedColors = legendPairs
+		const namedColors = pairs
 			.filter(([label]) => label !== OTHER_LABEL)
 			.map(([, color]) => color);
 		expect(namedColors).not.toContain("var(--other)");
@@ -669,5 +693,24 @@ describe("renderHtml: escaping untrusted local labels", () => {
 		expect(payload.days[0]?.entries[0]?.label).toBe(
 			"weird</script><script>evil()</script>",
 		);
+	});
+});
+
+describe("renderHtml: client script embedding", () => {
+	// myusage-4xu.34's whole premise is that CLIENT_SCRIPT runs exactly what client-script.ts's
+	// own tests exercise, not a hand-copied second implementation that could drift - render.ts
+	// embeds each function's own compiled source via `.toString()`. Nothing pinned that claim:
+	// deleting an interpolation, or swapping in a hand-copied drifted implementation (e.g. one
+	// that uses innerHTML instead of textContent, the exact regression myusage-4xu.34 closed),
+	// left the full gate green (myusage-4xu.41). Asserting the literal compiled source is
+	// present is a direct, precise pin - no vm execution needed here, since client-script.test.ts
+	// already proves what these functions do; this test only proves the shipped page still
+	// contains them.
+	it("embeds each toggle/drill-down function's own compiled source, not a hand-copied duplicate", () => {
+		const html = renderHtml(buildWindow());
+
+		expect(html).toContain(measureToggleState.toString());
+		expect(html).toContain(findDayDetail.toString());
+		expect(html).toContain(renderDayDetail.toString());
 	});
 });

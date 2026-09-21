@@ -16,8 +16,9 @@ export interface NormalizedUsageRow {
 	messageId: string;
 	/**
 	 * Every bucket must be finite and non-negative before `UsageSource.read()` returns the row.
-	 * Nothing downstream re-validates or clamps: `pricing.ts`'s `price()` copies these values
-	 * unchanged onto `PricedRow.tokens`, and `aggregate.ts`'s `tokenTotal` sums them as given.
+	 * Nothing downstream re-clamps the bucket values themselves (`pricing.ts`'s `count()` guards
+	 * only the cost math, not the raw tokens): `price()` copies these values unchanged onto
+	 * `PricedRow.tokens`, and `aggregate.ts`'s `tokenTotal` sums them as given.
 	 * The opencode adapter holds this via its own `bucket()` clamp (see opencode.ts); any future
 	 * adapter must do the same, or its NaN/negative values will silently corrupt aggregated
 	 * totals.

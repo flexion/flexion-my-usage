@@ -44,7 +44,7 @@ A file may be excluded only if **all** of these hold:
 
 | Excluded file | Why it's humble |
 | --- | --- |
-| `src/index.ts` | Composition root. Wires the pipeline and touches `process` and `console`. |
+| `src/index.ts` | Composition root. Hands the real `process`, reader, price table, server and browser launcher to `runCli` (`src/cli.ts`, covered), and does nothing else. |
 | `src/sources/types.ts` | Type-only. Compiles to no runtime code. |
 
 Not humble, so covered: anything that parses, maps, normalizes, prices, aggregates, formats or decides. That includes turning a raw DB row into a `NormalizedUsageRow`.

@@ -1,29 +1,31 @@
 #!/usr/bin/env node
-import { aggregateDaily } from "./aggregate.js";
+import { openBrowser, spawnDetached } from "./browser.js";
+import { runCli } from "./cli.js";
 import { price } from "./pricing.js";
-import { renderHtml } from "./render.js";
+import { LOOPBACK_HOST, startServer } from "./server.js";
 import { opencodeSource } from "./sources/opencode.js";
 
-// Entry point: scan local sources -> price -> aggregate -> render -> write + open.
-// Full delivery tracked under myusage-4xu.7.
-async function main(): Promise<void> {
-	const handles = await opencodeSource.discover();
-	const rows = (
-		await Promise.all(handles.map((h) => opencodeSource.read(h)))
-	).flat();
-	const priced = await price(rows);
-	const days = aggregateDaily(priced);
-	const html = renderHtml(days);
-
-	// TODO(myusage-4xu.7): write index.html to a temp/output path and open it in the browser.
-	void html;
-	process.stdout.write(
-		`my-usage: ${rows.length} responses across ${days.length} days (scaffold)\n` +
-			"Note: usage from before opencode v1.3.16 may be over-billed on reasoning-heavy models (OpenAI, Gemini) - an old bug double-counted reasoning tokens, and there's no way to spot or correct affected rows after the fact.\n",
-	);
-}
-
-main().catch((error: unknown) => {
-	console.error(error);
-	process.exitCode = 1;
+// Composition root, and nothing else: hands the real world - process, the opencode reader, the
+// price table, a node:http server, a browser launcher - to runCli (src/cli.ts), which holds
+// every decision and is covered at 100%. This file is excluded from the coverage gate as a
+// humble object (vitest.config.ts) and scanned by scripts/branch-guard.ts to stay branch-free,
+// so no if/&&/??/ternary belongs here: a new decision goes into cli.ts or a module it calls.
+//
+// runCli never rejects, and resolves once the server is listening (and the browser has been
+// asked to open). The process then stays alive on the server's open handle until SIGINT or
+// SIGTERM closes it (see server.ts), and exits with the code set here.
+process.exitCode = await runCli(process.argv.slice(2), {
+	nodeVersion: process.versions.node,
+	discover: () => opencodeSource.discover(),
+	read: (handle) => opencodeSource.read(handle),
+	price: (rows, options) => price(rows, options),
+	serve: (html, port) =>
+		startServer(html, { host: LOOPBACK_HOST, port, signals: process }),
+	openBrowser: (url) => openBrowser(url, process.platform, spawnDetached),
+	stdout: (text) => {
+		process.stdout.write(text);
+	},
+	stderr: (text) => {
+		process.stderr.write(text);
+	},
 });

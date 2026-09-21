@@ -2,7 +2,7 @@
 
 A local, offline dashboard for your own AI coding-agent usage - the tokens you're burning over time, and what it'd notionally cost - built from the session data already on your machine.
 
-> **Status:** early. The design's settled and the first slice is being built. It doesn't do anything useful yet.
+> **Status:** early. The first slice works end to end from a checkout (scan opencode, price, chart, serve, open), but it isn't published to npm yet.
 
 ## Why
 
@@ -35,13 +35,31 @@ or, on any OS, to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` if `XDG_C
 
 ## Usage
 
-Planned, not wired up yet:
+Needs Node 22.13.0 or newer (the opencode reader uses `node:sqlite`); an older Node gets a one-line upgrade message instead of a stack trace.
+
+Not on npm yet, so run it from a checkout:
 
 ```
-npx <package-tbd>
+yarn install --immutable
+yarn build
+node dist/index.js        # or `yarn dev` to run straight from src/
 ```
 
-Scans your local session data, starts a local server, and opens it in your browser.
+That scans your local opencode data (every `opencode.db` / `opencode-<channel>.db` under `$XDG_DATA_HOME/opencode`, or `~/.local/share/opencode`; set `OPENCODE_DB` to point at a specific file), works out the notional cost, starts a local server on a free port, prints the URL, and opens it in your default browser. The server binds to `127.0.0.1` only and keeps serving until you press Ctrl+C - reload or reopen the page as often as you like in the meantime.
+
+```
+Usage: my-usage [options]
+
+Options:
+  --port <n>        Listen on this port (default: a free port chosen by the OS)
+  --no-open         Don't open a browser; just print the URL
+  --refresh-prices  Refetch the LiteLLM price table instead of using the cached copy
+  -h, --help        Show this help
+```
+
+`--port` is for when you want a stable URL to bookmark; if that port is already taken, the command fails and says so rather than quietly picking another. `--no-open` is for headless or SSH sessions. `--refresh-prices` is the way to pick up rates for a newly released model without deleting the cache file by hand (see [Proxies and offline machines](#proxies-and-offline-machines) for where that file lives).
+
+If no opencode database is found, you get a hint on stderr and an empty dashboard rather than an error.
 
 ## License
 

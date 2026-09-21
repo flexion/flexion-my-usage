@@ -218,22 +218,12 @@ interface DayDetailEntryPayload {
 	value: string;
 }
 
+/**
+ * `panelDataText`'s raw extracted text (see that function, below, for the extraction logic),
+ * `JSON.parse`d into the shape `renderHtml`'s embedded payload has.
+ */
 function readPanelData(html: string, panelId: string): DayDetailPayload {
-	// Finds every application/json script tag first, then filters by id read via `attr` - so
-	// this stays correct however embedJson orders `type` and `id` on the opening tag, the same
-	// order-independence the day-bar markup helpers above already have (myusage-4xu.31,
-	// myusage-4xu.42).
-	const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? [];
-	const target = scripts.find((tag) => {
-		const openTag = tag.match(/^<script\b[^>]*>/)?.[0] ?? "";
-		return (
-			attr(openTag, "type") === "application/json" &&
-			attr(openTag, "id") === `${panelId}-data`
-		);
-	});
-	const match = target?.match(/^<script\b[^>]*>([\s\S]*?)<\/script>$/);
-	if (!match?.[1]) throw new Error(`${panelId}-data script not found`);
-	return JSON.parse(match[1]) as DayDetailPayload;
+	return JSON.parse(panelDataText(html, panelId)) as DayDetailPayload;
 }
 
 describe("renderHtml: document shape", () => {
@@ -822,10 +812,11 @@ describe("renderHtml: client script embedding", () => {
 	//
 	// What this test does NOT prove: that CLIENT_SCRIPT's own call sites invoke these functions
 	// correctly. It pins the embedded TEXT against each function's own source, nothing about the
-	// arguments the surrounding glue passes them - an arity bug or a typo'd element id at a call
-	// site (e.g. readJson(document, "panel-cost-data")) leaves this assertion just as green,
-	// since the compiled source is still byte-for-byte embedded either way (myusage-cq8). See
-	// "renderHtml: client script execution (vm)" below for a test that runs the real call sites.
+	// arguments the surrounding glue passes them - an arity bug (e.g. readJson(document), missing
+	// the id) or a typo'd element id at a call site (e.g. readJson(document, "panel-Cost-data"))
+	// leaves this assertion just as green, since the compiled source is still byte-for-byte
+	// embedded either way (myusage-cq8). See "renderHtml: client script execution (vm)" below for
+	// a test that runs the real call sites.
 	it("embeds each toggle/drill-down function's own compiled source, not a hand-copied duplicate", () => {
 		const html = renderHtml(buildWindow());
 
@@ -836,7 +827,7 @@ describe("renderHtml: client script embedding", () => {
 	});
 });
 
-/** CLIENT_SCRIPT's own source, extracted from real `renderHtml()` output - the plain `<script>` tag (no `type` attribute), which always comes last, right before `</body>`. */
+/** CLIENT_SCRIPT's own source, extracted from real `renderHtml()` output - the plain `<script>` tag (no `type` attribute). The match below takes the FIRST bare `<script>` in the document; that's correct today only because there's exactly one. The load-bearing property is "carries no type attribute," not position - this would need a more specific match if a second bare `<script>` tag were ever added. */
 function clientScriptSource(html: string): string {
 	const match = html.match(/<script>([\s\S]*?)<\/script>/);
 	if (!match?.[1])
@@ -845,10 +836,14 @@ function clientScriptSource(html: string): string {
 }
 
 /**
- * The same `<script type="application/json" id="{panelId}-data">` lookup `readPanelData` uses,
- * but the raw text rather than `JSON.parse`d data - exactly the string a real browser exposes as
- * that element's `textContent`, which is what gets fed to the fake DOM below so `readJson`'s real
- * call site parses genuine embedded data, not a hand-built stand-in for it.
+ * The `<script type="application/json" id="{panelId}-data">` payload's raw text (not
+ * `JSON.parse`d) - exactly the string a real browser exposes as that element's `textContent`,
+ * which is what gets fed to the fake DOM below so `readJson`'s real call site parses genuine
+ * embedded data, not a hand-built stand-in for it. Finds every application/json script tag
+ * first, then filters by id read via `attr` - so this stays correct however embedJson orders
+ * `type` and `id` on the opening tag, the same order-independence the day-bar markup helpers
+ * above already have (myusage-4xu.31, myusage-4xu.42). `readPanelData` (above) is this same
+ * lookup with a `JSON.parse` on top - see that function for the parsed-object form.
  */
 function panelDataText(html: string, panelId: string): string {
 	const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? [];
@@ -942,24 +937,45 @@ function fakeDetail(): FakeDetail {
 	};
 }
 
-interface FakeDayBar {
-	getAttribute(name: string): string | null;
-	addEventListener(type: string, cb: () => void): void;
-	dispatchClick(): void;
+/** A fake keyboard event: just enough surface for CLIENT_SCRIPT's day-bar keydown handler (`evt.key`, `evt.preventDefault()`), with the call to `preventDefault` observable afterward. */
+interface FakeKeydownEvent {
+	key: string;
+	preventDefaultCalled: boolean;
+	preventDefault(): void;
 }
 
-/** A fake `.day-bar` element for one `day`, whose only real datum is its own `data-day` attribute. */
+interface FakeDayBar {
+	getAttribute(name: string): string | null;
+	addEventListener(type: string, cb: (evt?: FakeKeydownEvent) => void): void;
+	dispatchClick(): void;
+	dispatchKeydown(key: string): FakeKeydownEvent;
+}
+
+/** A fake `.day-bar` element for one `day`, whose only real datum is its own `data-day` attribute. Tracks the "click" and "keydown" listeners CLIENT_SCRIPT registers as two independent slots, the way a real `EventTarget` would. */
 function fakeDayBar(day: string): FakeDayBar {
-	let onClick: (() => void) | undefined;
+	let onClick: ((evt?: FakeKeydownEvent) => void) | undefined;
+	let onKeydown: ((evt?: FakeKeydownEvent) => void) | undefined;
 	return {
 		getAttribute(name) {
 			return name === "data-day" ? day : null;
 		},
 		addEventListener(type, cb) {
 			if (type === "click") onClick = cb;
+			if (type === "keydown") onKeydown = cb;
 		},
 		dispatchClick() {
 			onClick?.();
+		},
+		dispatchKeydown(key) {
+			const evt: FakeKeydownEvent = {
+				key,
+				preventDefaultCalled: false,
+				preventDefault() {
+					this.preventDefaultCalled = true;
+				},
+			};
+			onKeydown?.(evt);
+			return evt;
 		},
 	};
 }
@@ -1058,5 +1074,68 @@ describe("renderHtml: client script execution (vm)", () => {
 			expect(label?.textContent).toBe(entry?.label);
 			expect(value?.textContent).toBe(entry?.value);
 		});
+	});
+
+	// myusage-9en: the day bar's keydown handler and hideDetail()'s hide-and-clear behavior are
+	// two more real CLIENT_SCRIPT call sites the tests above never reach - the click tests only
+	// ever dispatch "click", and no existing test opens a detail panel and then closes it. Both
+	// ran (statements inside them execute whenever setMeasure/the keydown listener registration
+	// runs) without ever being proven: breaking the Enter/Space check, dropping preventDefault, or
+	// making hideDetail a no-op all left the full suite green before these tests existed.
+
+	it("drills down on Enter keydown the same way a click does, and calls preventDefault", () => {
+		const html = renderHtml(buildWindow());
+		const costPayload = readPanelData(html, "panel-cost");
+		const busyDay = costPayload.days.find((d) => d.day === "2026-09-07");
+		if (!busyDay) throw new Error("fixture has 2026-09-07");
+
+		const { detailEl, dayBar } = runClientScript(html);
+		const evt = dayBar.dispatchKeydown("Enter");
+
+		expect(evt.preventDefaultCalled).toBe(true);
+		expect(detailEl.hidden).toBe(false);
+		expect(detailEl.children).toHaveLength(1 + busyDay.entries.length);
+		expect(detailEl.children[0]?.textContent).toBe(
+			`2026-09-07 - ${busyDay.total}`,
+		);
+	});
+
+	it("drills down on Space keydown the same way a click does, and calls preventDefault", () => {
+		const html = renderHtml(buildWindow());
+		const costPayload = readPanelData(html, "panel-cost");
+		const busyDay = costPayload.days.find((d) => d.day === "2026-09-07");
+		if (!busyDay) throw new Error("fixture has 2026-09-07");
+
+		const { detailEl, dayBar } = runClientScript(html);
+		const evt = dayBar.dispatchKeydown(" ");
+
+		expect(evt.preventDefaultCalled).toBe(true);
+		expect(detailEl.hidden).toBe(false);
+		expect(detailEl.children).toHaveLength(1 + busyDay.entries.length);
+	});
+
+	it("ignores an unrelated keydown: no drill-down, no preventDefault", () => {
+		const html = renderHtml(buildWindow());
+
+		const { detailEl, dayBar } = runClientScript(html);
+		const evt = dayBar.dispatchKeydown("Tab");
+
+		expect(evt.preventDefaultCalled).toBe(false);
+		expect(detailEl.hidden).toBe(true);
+		expect(detailEl.children).toHaveLength(0);
+	});
+
+	it("hides the day detail panel and clears its rendered rows when the measure toggle changes (hideDetail)", () => {
+		const html = renderHtml(buildWindow());
+		const { buttons, detailEl, dayBar } = runClientScript(html);
+
+		dayBar.dispatchClick();
+		expect(detailEl.hidden).toBe(false);
+		expect(detailEl.children.length).toBeGreaterThan(0);
+
+		buttons.tokens.dispatchClick();
+
+		expect(detailEl.hidden).toBe(true);
+		expect(detailEl.children).toHaveLength(0);
 	});
 });

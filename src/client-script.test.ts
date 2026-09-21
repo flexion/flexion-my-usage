@@ -108,11 +108,16 @@ describe("readJson", () => {
 	// distinct way render.ts's embedded payload can fail to reach measureToggleState as parsed
 	// data once the HTML is written and opened (myusage-4xu.7) - a page saved or served without
 	// its data script, a script tag present but emptied, or a payload truncated mid-write. None
-	// throws past readJson. Their kill sets aren't independent, though: readJson reaches `null`
-	// on all three through the same `JSON.parse` throw, so "empty textContent"'s kill set is a
-	// strict subset of "missing element"'s. They're kept as three tests because each documents a
-	// distinct real-world input a reader might otherwise assume readJson mishandles, not because
-	// each is an independent proof point.
+	// throws past readJson. Their kill sets overlap - most mutations to the shared `JSON.parse`/
+	// catch machinery are caught by both "missing element" and "empty textContent" alike - but
+	// neither is a strict subset of the other: widening the empty-string fallback (e.g. `?? "0"`)
+	// is caught by "missing element" but missed by "empty textContent", while narrowing what's
+	// read off `textContent` before that fallback (e.g. reading `.length` instead of the string)
+	// is caught by "empty textContent" but missed by "missing element". So "empty textContent" is
+	// coverage-redundant on its own (deleting it keeps 100% coverage) but still earns its keep on
+	// mutation-kill grounds. They're kept as three tests because each also documents a distinct
+	// real-world input a reader might otherwise assume readJson mishandles, not only because each
+	// is an independent proof point.
 	it("returns null when no element with that id exists", () => {
 		const doc = fakeGetElementByIdDoc("panel-cost-data", null);
 

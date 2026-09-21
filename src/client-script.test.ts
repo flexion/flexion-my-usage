@@ -35,10 +35,12 @@ describe("measureToggleState", () => {
 	});
 
 	it("leaves the title undefined when that measure's payload never loaded", () => {
-		// render.ts's own wiring never passes a null payload here - readJson always resolves
-		// panel-cost-data/panel-tokens-data to real parsed JSON, since render.ts always embeds
-		// both scripts. This instead guards measureToggleState's own documented general
-		// contract: its `payload` parameter is typed `Record<Measure, DayDetailPayload |
+		// render.ts's readJson (embedded in CLIENT_SCRIPT) has three paths that return null: a
+		// missing panel-cost-data/panel-tokens-data element, empty textContent, or a JSON.parse
+		// throw on corrupt content - so a null payload IS reachable in production from a
+		// truncated or corrupt embedded payload, not merely a hypothetical. That makes this test
+		// load-bearing on its own terms: it pins measureToggleState's own documented general
+		// contract - its `payload` parameter is typed `Record<Measure, DayDetailPayload |
 		// null>`, and `MeasureToggleState.title`'s own doc comment calls out the null case by
 		// name. This module is deliberately its own independently-testable unit (see this
 		// file's header comment), not a mirror restricted to what render.ts's exact call

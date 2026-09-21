@@ -6,12 +6,15 @@
 .beads/proxieddb/
 *.gate.lock*
 
-# bd's own JSONL export - a passive, local-only sidecar, not the source of truth (the Dolt DB
-# is). Not gitignored by bd init itself, and can materialize without an explicit `bd export` if
-# export.auto ever turns on, so a routine `git add -A` must not be able to pick it up: it dumps
-# every bead's full comment history, which says far more than anything meant to reach a public
-# repo (myusage-5yo).
-.beads/issues.jsonl
+# bd's own JSONL exports (issues, events, interactions) - passive, local-only sidecars, not the
+# source of truth (the Dolt DB is). None is gitignored by bd init itself, and any of them can
+# materialize without an explicit `bd export` if its config flag turns on - export.auto is a
+# live, committed "true" in .beads/config.yaml today (myusage-5yo, myusage-bkr), and
+# events-export/audit.enabled are one config change away from the same. A routine `git add -A`
+# must never be able to pick any of them up: issues.jsonl alone dumps every bead's full comment
+# history, far more than anything meant to reach a public repo. Broad glob on purpose, so a
+# future JSONL sidecar bd adds is covered without a follow-up bead every time.
+.beads/*.jsonl
 
 # Node / TypeScript
 node_modules/

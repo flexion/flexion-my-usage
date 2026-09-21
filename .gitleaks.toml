@@ -18,13 +18,16 @@
 # allowlists - so both the lockfile path exemption and these key-content regexes live in the one
 # table below.
 #
-# myusage-qhc: this content-scoping is load-bearing for scripts/guardrail-scan.sh's snapshot
-# mode (myusage-hfu), which exists specifically to catch a real secret swapped in place of one
-# of these fixture keys between the unchanged BEGIN/END marker lines. If the `regexes` entries
-# below were ever reverted to the old path-based form (`paths = ['''src/pricing\.fixtures\.ts$
-# ''']`), the whole file - including a swapped-in real key - would be silently allowlisted again,
-# and snapshot mode's in-place-PEM-swap detection would silently stop working with no test or CI
-# signal that it had regressed.
+# myusage-qhc: this content-scoping is load-bearing for every gitleaks mode this repo runs -
+# staged, tree, and snapshot (myusage-hfu) - not just snapshot mode. A path-based exemption
+# would suppress a genuinely new secret added to pricing.fixtures.ts in staged and tree mode
+# too, since all three modes apply this same .gitleaks.toml. Snapshot is simply the one mode
+# that uniquely catches a real secret swapped in place of one of these fixture keys between
+# the unchanged BEGIN/END marker lines - a narrower claim than saying only snapshot mode
+# depends on the content-scoping. If the `regexes` entries below were ever reverted to the old
+# path-based form (`paths = ['''src/pricing\.fixtures\.ts$''']`), the whole file - including a
+# swapped-in real key - would be silently allowlisted again, and snapshot mode's in-place-PEM-
+# swap detection would silently stop working with no test or CI signal that it had regressed.
 
 [extend]
 useDefault = true

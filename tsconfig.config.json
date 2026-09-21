@@ -16,6 +16,10 @@
 	// scripts/fixtures-guard.ts (bead myusage-9os) is the same shape again: the pure decision
 	// logic scripts/check-fixtures-guard.mjs wires to real fs I/O, listed here so a type error
 	// in it fails `yarn typecheck` instead of only surfacing at `yarn lint` runtime.
+	//
+	// scripts/branch-guard.ts (bead myusage-qx9) is the same shape once more: the pure decision
+	// logic scripts/check-branch-guard.mjs wires to real fs I/O (and to vitest.config.ts's own
+	// coverage.exclude, imported directly rather than copied), listed here for the same reason.
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"rootDir": ".",
@@ -25,6 +29,7 @@
 		"vitest.config.ts",
 		"scripts/package-rules.ts",
 		"scripts/critical-persisted.ts",
-		"scripts/fixtures-guard.ts"
+		"scripts/fixtures-guard.ts",
+		"scripts/branch-guard.ts"
 	]
 }

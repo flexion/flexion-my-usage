@@ -484,21 +484,52 @@ describe("renderHtml: chart axis", () => {
 });
 
 /**
+ * One CSS declaration's value out of a `style` attribute's value, found by property NAME rather
+ * than assuming it's the only (or first) declaration present - so `styleDeclaration(s,
+ * "background")` keeps working whatever else `style` carries, or what order the declarations
+ * are in. `""` when `style` doesn't carry that property at all.
+ */
+function styleDeclaration(style: string, property: string): string {
+	const declaration = style
+		.split(";")
+		.map((part) => part.trim())
+		.find((part) => part.startsWith(`${property}:`));
+	return declaration?.slice(property.length + 1).trim() ?? "";
+}
+
+/**
  * Every `<li class="legend-row">...</li>` block in the rendered legend, as `[label, color]`
- * pairs. Reads the swatch's `style` attribute and the label span's text by NAME - via `attr`
- * for the swatch tag, and a class-scoped match for the label - so this stays correct however
- * `renderLegend` orders the swatch span's `class`/`style` attributes, or where the label span
- * falls relative to it (myusage-4xu.42, closing the same coupling myusage-4xu.31 removed from
- * the day-bar markup helpers above, but missed here).
+ * pairs. Finds the row scope, the swatch's `style` attribute, and the label span all by
+ * attribute NAME via the shared `attr` reader - the same pattern the day-bar markup helpers
+ * above use - rather than a fixed-shape regex or exact-class match, so this stays correct
+ * however `renderLegend` orders attributes, whatever unrelated attributes it adds to the row or
+ * label tags, and whatever else the swatch's `style` attribute carries besides `background`
+ * (myusage-4xu.42, myusage-4xu.44).
  */
 function legendPairs(html: string): [label: string, color: string][] {
-	const rows = html.match(/<li class="legend-row">[\s\S]*?<\/li>/g) ?? [];
+	const items = html.match(/<li\b[^>]*>[\s\S]*?<\/li>/g) ?? [];
+	const rows = items.filter((li) => {
+		const openTag = li.match(/^<li\b[^>]*>/)?.[0] ?? "";
+		return attr(openTag, "class") === "legend-row";
+	});
 	return rows.map((row) => {
-		const swatchTag = row.match(/<span\b[^>]*class="swatch"[^>]*>/)?.[0] ?? "";
-		const style = attr(swatchTag, "style") ?? "";
-		const color = style.match(/^background:(.*)$/)?.[1] ?? "";
-		const label =
-			row.match(/<span class="legend-label">([^<]*)<\/span>/)?.[1] ?? "";
+		const spans = row.match(/<span\b[^>]*>[^<]*<\/span>/g) ?? [];
+		const swatch =
+			spans.find((span) => {
+				const openTag = span.match(/^<span\b[^>]*>/)?.[0] ?? "";
+				return attr(openTag, "class") === "swatch";
+			}) ?? "";
+		const swatchOpenTag = swatch.match(/^<span\b[^>]*>/)?.[0] ?? "";
+		const style = attr(swatchOpenTag, "style") ?? "";
+		const color = styleDeclaration(style, "background");
+
+		const labelSpan =
+			spans.find((span) => {
+				const openTag = span.match(/^<span\b[^>]*>/)?.[0] ?? "";
+				return attr(openTag, "class") === "legend-label";
+			}) ?? "";
+		const label = labelSpan.match(/^<span\b[^>]*>([^<]*)<\/span>$/)?.[1] ?? "";
+
 		return [label, color];
 	});
 }

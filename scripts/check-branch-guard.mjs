@@ -22,7 +22,7 @@
 // mirrors). A dynamic import built from `process.cwd()` keeps both true: `yarn lint`'s real
 // invocation (cwd is always the repo root) picks up the real config, and a spawned test can swap
 // in its own.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -51,6 +51,17 @@ for (const path of excludePaths) {
 	if (!existsSync(absolute)) {
 		console.error(
 			`check-branch-guard: ${path} is listed in vitest.config.ts's coverage.exclude but does not exist on disk; refusing to pass a check that scanned nothing for it.`,
+		);
+		process.exit(1);
+	}
+	// myusage-4xu.65: coverage.exclude's own type-level guard (vitest.config.ts's ExplicitPath)
+	// only forbids a glob-shaped entry, not a directory-shaped one - a directory is legal input
+	// here. Without this check, readFileSync below throws a raw EISDIR stack trace instead of the
+	// same clean, explicit refusal the missing-file branch above already gives; this still fails
+	// closed (non-zero exit either way), just with a message that names the actual problem.
+	if (statSync(absolute).isDirectory()) {
+		console.error(
+			`check-branch-guard: ${path} is listed in vitest.config.ts's coverage.exclude but is a directory, not a file; refusing to pass a check that scanned nothing for it.`,
 		);
 		process.exit(1);
 	}

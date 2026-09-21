@@ -51,6 +51,22 @@
 //     conditional type in the same excluded file could, in principle, hide behind that ambiguity.
 //     Moot for the excluded set as it stands today: src/sources/types.ts holds no conditional
 //     type, confirmed by hand.
+//   - Regex literals: masked with a heuristic, not a parser-accurate rule (myusage-4xu.65). A
+//     literal like `/colou?r/` or `/a&&b/` could otherwise false-positive as a ternary or `&&` -
+//     `/` alone can't tell a regex literal from division (`a / b`) without knowing the grammar
+//     position, so maskNonCode (below) only blanks a `/.../flags` span when the character right
+//     before its opening `/` - skipping any run of spaces/tabs, but not a newline - is NOT one of:
+//     a word character, `$`, `)`, `]`, or a closing quote, i.e. not something that ends a VALUE a
+//     real `/` after it would divide. This correctly masks `const RE = /colou?r/;` (preceded by
+//     `=`) and leaves `total / 2` alone (preceded by the identifier `total`, once the surrounding
+//     spaces are skipped), but has two known, accepted failure directions: a real regex right
+//     after a keyword that ends in a letter (`return /foo/;`, `typeof /foo/;`) is not recognized
+//     as one - a false negative, the same "fails closed" direction as this file's other
+//     documented gaps - and an arithmetic `/` with no identifier immediately before it once
+//     whitespace is skipped (`x++ / y`) could be misread as a regex opener, blanking real code up
+//     to the next unescaped `/` on the line - a false positive, costing a reviewer a second look,
+//     not a silent miss. Neither shape occurs in src/index.ts or src/sources/types.ts today,
+//     confirmed by hand; a genuinely general fix needs real tokenization, not a regex.
 import { posix } from "node:path";
 import type { SourceFile } from "./fixtures-guard.js";
 
@@ -78,23 +94,33 @@ export function humbleObjectPaths(
 	return coverageExclude.filter(isHumbleObjectPath);
 }
 
-/** Matches a string literal, a template literal, or a `//`/`/* *‍/` comment - the same
- * alternation technique scripts/fixtures-guard.ts's own STRING_OR_COMMENT uses (a string/
- * template branch tried first at every position, so a `//` or `/*` opening INSIDE an
- * already-open string is consumed as part of it and never reaches the comment branches). Unlike
- * that file, both branches are blanked here (see maskNonCode below): this scan cares about live
- * code SHAPE, not the text a fixtures-guard-style reference scan needs to keep intact. */
-const STRING_TEMPLATE_OR_COMMENT =
-	/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+/** Matches a string literal, a template literal, a `//`/`/* *‍/` comment, or a regex literal - the
+ * same alternation technique scripts/fixtures-guard.ts's own STRING_OR_COMMENT uses (a string/
+ * template branch tried first at every position, so a `//` or `/*` - or a regex's own `/` -
+ * opening INSIDE an already-open string is consumed as part of it and never reaches the later
+ * branches). Unlike that file, every branch is blanked here (see maskNonCode below): this scan
+ * cares about live code SHAPE, not the text a fixtures-guard-style reference scan needs to keep
+ * intact.
+ *
+ * The regex-literal branch (myusage-4xu.65) is last, after the comment branches, on purpose: a
+ * real `//` or `/* *‍/` must still win at a position where both could in principle apply. Its own
+ * leading negative lookbehind (excluding a word character, `$`, `)`, `]`, or a closing quote,
+ * skipping any run of spaces/tabs first) is the heuristic this file's header documents - "not
+ * preceded by a value-ending character, skipping any run of spaces/tabs" - the only thing this
+ * regex can use to tell a regex literal apart from division without a real parser. */
+const STRING_TEMPLATE_COMMENT_OR_REGEX =
+	/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\/|(?<![\w$)\]"'`][ \t]*)\/(?:[^/\\\n]|\\.)+\/[a-z]*/g;
 
-/** Blanks every string literal, template literal, and comment in `source`, replacing each of
- * their characters with a space except newlines (kept, so a line number computed against the
- * masked text still matches the real source). This stops a comment quoting example code (this
- * very file's own header does, more than once) or a string containing branch-shaped text (e.g.
- * `"a && b"`) from ever being mistaken for real code, at the cost of also being unable to see
- * inside a template literal's `${...}` interpolation - see this file's header for that gap. */
+/** Blanks every string literal, template literal, comment, and (heuristically) regex literal in
+ * `source`, replacing each of their characters with a space except newlines (kept, so a line
+ * number computed against the masked text still matches the real source). This stops a comment
+ * quoting example code (this very file's own header does, more than once), a string containing
+ * branch-shaped text (e.g. `"a && b"`), or a regex literal containing branch-shaped text (e.g.
+ * `/a&&b/`) from ever being mistaken for real code, at the cost of also being unable to see
+ * inside a template literal's `${...}` interpolation, and the regex-literal heuristic's own two
+ * documented failure directions - see this file's header for both gaps. */
 export function maskNonCode(source: string): string {
-	return source.replace(STRING_TEMPLATE_OR_COMMENT, (whole) =>
+	return source.replace(STRING_TEMPLATE_COMMENT_OR_REGEX, (whole) =>
 		whole.replace(/[^\n]/g, " "),
 	);
 }
@@ -223,7 +249,12 @@ export function checkBranchGuard(
 					path: posix.normalize(file.path),
 					kind,
 					line: lineAt(file.text, match.index),
-					snippet: match[0].trim(),
+					// No `.trim()` here (myusage-4xu.65: removed as dead code, confirmed by
+					// mutation - deleting it produced zero test failures). Every CONSTRUCT_PATTERNS
+					// entry above starts and ends its match on a character that can never be
+					// whitespace (a keyword letter, `(`, `{`, `&`, `?`), so `match[0]` can never
+					// carry leading or trailing whitespace for `.trim()` to remove.
+					snippet: match[0],
 				});
 			}
 		}

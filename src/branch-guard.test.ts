@@ -111,6 +111,19 @@ describe("maskNonCode", () => {
 			"export function add(a: number, b: number): number {\n\treturn a + b;\n}\n";
 		expect(maskNonCode(source)).toBe(source);
 	});
+
+	it("blanks a regex literal preceded by =, so branch-shaped characters inside it (?, &&) are not real code (myusage-4xu.65)", () => {
+		const source = "export const COLOR_RE = /colou?r/;\n";
+		const REGEX_LITERAL = /\/(?:[^/\\\n]|\\.)+\/[a-z]*/;
+		expect(maskNonCode(source)).toBe(
+			source.replace(REGEX_LITERAL, (whole) => whole.replace(/[^\n]/g, " ")),
+		);
+	});
+
+	it("does not mask an ordinary division expression following an identifier - a known, documented heuristic limitation (see this file's header)", () => {
+		const source = "export const half = total / 2;\n";
+		expect(maskNonCode(source)).toBe(source);
+	});
 });
 
 describe("checkBranchGuard", () => {
@@ -269,9 +282,9 @@ describe("checkBranchGuard", () => {
 		expect(checkBranchGuard(files)).toEqual([]);
 	});
 
-	it('does not flag "meanwhile" or "todo" as while/do keywords', () => {
+	it('does not flag "meanwhile" or "dowhile" as while/do keywords (myusage-4xu.65: the original fixture - const meanwhile = 1; / const todo = 2; - never reached the pattern\'s \\b guards at all, since neither line had the ( the loop pattern requires; this shape does, mirroring the sibling "if" test\'s verifyIf(...)/motif(...) fixture above - hand-verified: removing both \\b boundaries from the loop pattern makes this fail, where the original fixture stayed green)', () => {
 		const files = [
-			{ path: "src/index.ts", text: "const meanwhile = 1;\nconst todo = 2;\n" },
+			{ path: "src/index.ts", text: "meanwhile(3);\ndowhile(3);\n" },
 		];
 
 		expect(checkBranchGuard(files)).toEqual([]);
@@ -400,6 +413,34 @@ describe("checkBranchGuard", () => {
 
 		expect(checkBranchGuard(files)).toEqual([
 			{ path: "src/index.ts", kind: "ternary", line: 1, snippet: "?" },
+		]);
+	});
+
+	it("does not flag ?/&&/?? characters inside a regex literal as real branching constructs (myusage-4xu.65)", () => {
+		const files = [
+			{
+				path: "src/index.ts",
+				text: [
+					"export const COLOR_RE = /colou?r/;",
+					"export const AND_RE = /a&&b/;",
+					"export const real = 1;",
+				].join("\n"),
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([]);
+	});
+
+	it("normalizes a coverage.exclude-shaped path like ./src/index.ts to src/index.ts in a violation's reported path (myusage-4xu.65: posix.normalize's own effect was previously untested)", () => {
+		const files = [
+			{
+				path: "./src/index.ts",
+				text: "if (a) {\n\treturn 1;\n}\n",
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{ path: "src/index.ts", kind: "if", line: 1, snippet: "if (" },
 		]);
 	});
 

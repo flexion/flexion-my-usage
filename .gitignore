@@ -6,6 +6,13 @@
 .beads/proxieddb/
 *.gate.lock*
 
+# bd's own JSONL export - a passive, local-only sidecar, not the source of truth (the Dolt DB
+# is). Not gitignored by bd init itself, and can materialize without an explicit `bd export` if
+# export.auto ever turns on, so a routine `git add -A` must not be able to pick it up: it dumps
+# every bead's full comment history, which says far more than anything meant to reach a public
+# repo (myusage-5yo).
+.beads/issues.jsonl
+
 # Node / TypeScript
 node_modules/
 dist/

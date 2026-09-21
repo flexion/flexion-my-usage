@@ -220,18 +220,14 @@ describe("loadPriceTable: defaults for what the caller does not inject", () => {
 // proxy at all, so wiring NO_PROXY into that single `resolveProxy(env, url)` call is what GREEN
 // must do to pass proxy.test.ts's table - it is not separately pinned by an executed test here.
 describe("loadPriceTable: HTTPS_PROXY (real fetch, local proxy fixture)", () => {
-	// Loopback CONNECT + 502 + socket close is sub-10ms on a dev machine, but this deadline
-	// doubles as the fetch's own AbortSignal, so it also bounds how long an unrouted request
-	// spends reaching the real host before this test gives up - it has to be generous enough
-	// to survive a slower, shared CI runner too. 500ms was comfortable locally but reproduced
-	// a deterministic failure on GitHub Actions (both the ambient and Node-floor jobs, two
-	// runs in a row, identical "expected undefined to be raw.githubusercontent.com:443" -
-	// the CONNECT simply hadn't been observed yet when the deadline hit). Widened to 3000ms:
-	// generous headroom over what CI actually needed, while staying well under vitest's own
-	// 5000ms default per-test timeout once this test's setup/teardown is added on top - a
-	// failing (unproxied) case now takes at most 3s to time out instead of 500ms, still fast
-	// enough not to be noticed in a normal test run.
-	const REAL_FETCH_TIMEOUT_MS = 3000;
+	// Loopback CONNECT + 502 + socket close is sub-25ms in practice (confirmed directly on
+	// Node 22.13.0/Linux, this repo's actual floor), so 2000ms leaves ample margin for a
+	// correctly-proxied request while bounding how long an unrouted request spends reaching
+	// the real host before its own AbortSignal cancels it. This number is not standing in for
+	// a real prior incident: this test once failed deterministically on CI regardless of the
+	// timeout value, because of a real bug (now fixed - see fetchTable's doc comment on the
+	// undiciFetch branch), so a large timeout here is not evidence CI itself runs slow.
+	const REAL_FETCH_TIMEOUT_MS = 2000;
 
 	it("routes the request through HTTPS_PROXY when it is set, and warns gracefully when the proxy refuses the tunnel", async () => {
 		const proxy = await startRecordingProxy();

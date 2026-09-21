@@ -10,7 +10,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { ProxyAgent } from "undici";
+import { ProxyAgent, fetch as undiciFetch } from "undici";
 import { resolveProxy } from "./proxy.js";
 
 export const PRICE_TABLE_URL =
@@ -231,15 +231,34 @@ async function fetchTable(
 		// Node's global fetch does not honor HTTPS_PROXY/HTTP_PROXY on its own (undici only
 		// reads them when NODE_USE_ENV_PROXY is set, which this repo's Node floor cannot rely
 		// on - see resolveProxy's doc comment). Routing through a proxy when one is configured
-		// means dispatching the same global fetch through an explicit undici ProxyAgent instead.
+		// means dispatching through an explicit undici ProxyAgent instead.
 		const proxyUrl = resolveProxy(env, PRICE_TABLE_URL);
 		// New URL(...) inside ProxyAgent throws synchronously on an unusable value, before any
 		// request - proxied or direct - is ever attempted; the caller's catch turns that into
 		// the module's normal "price table unavailable" warning.
 		const agent = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
-		if (agent) fetchOptions.dispatcher = agent;
 		try {
-			response = await globalThis.fetch(PRICE_TABLE_URL, fetchOptions);
+			if (agent) {
+				// Node's global fetch (globalThis.fetch) is backed by an internal undici fork
+				// bundled with Node itself, a different build from the "undici" package this
+				// ProxyAgent comes from. On this repo's Node floor (22.13.0) the two are not
+				// dispatcher-interface-compatible: passing this ProxyAgent as globalThis.fetch's
+				// `dispatcher` throws synchronously, "invalid onRequestStart method" - confirmed
+				// directly against node:22.13.0-bookworm and node:22-bookworm (both fail), while
+				// node:26-bookworm passes, so this is a Node-version skew, not a platform one.
+				// The npm "undici" package's own fetch() always matches its own ProxyAgent
+				// because they ship from the same install - reproduced directly: swapping only
+				// this call from globalThis.fetch to undici's fetch on 22.13.0 makes the CONNECT
+				// arrive at a real local proxy exactly as expected. Scoped to only the proxied
+				// path so the far more common no-proxy path keeps using globalThis.fetch
+				// unchanged.
+				response = await undiciFetch(PRICE_TABLE_URL, {
+					...fetchOptions,
+					dispatcher: agent,
+				});
+			} else {
+				response = await globalThis.fetch(PRICE_TABLE_URL, fetchOptions);
+			}
 		} finally {
 			await agent?.close();
 		}

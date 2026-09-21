@@ -137,6 +137,7 @@ export function compareRows(
 // signature in types.ts, so every other source's `discover()` stays zero-arg.
 export interface DiscoverOptions {
 	stat?: typeof stat;
+	readdir?: typeof readdir;
 }
 
 // read() takes an injectable DatabaseSync constructor, the same seam shape as DiscoverOptions'
@@ -188,8 +189,7 @@ function isReadonlyDirectoryError(error: unknown): boolean {
 
 function readRows(
 	DatabaseSyncCtor: SqliteModule["DatabaseSync"],
-	location: string,
-	displayPath: string,
+	path: string,
 ): NormalizedUsageRow[] {
 	// readOnly maps to SQLITE_OPEN_READONLY: never creates, writes, checkpoints, or
 	// changes journal mode. A WAL database is still read correctly, including
@@ -197,7 +197,7 @@ function readRows(
 	// Side effect: with no other connection open, SQLite creates empty -wal/-shm
 	// sidecar files next to the database (it needs them to read a WAL database).
 	// The database file itself is never modified.
-	const db = new DatabaseSyncCtor(location, { readOnly: true });
+	const db = new DatabaseSyncCtor(path, { readOnly: true });
 	try {
 		// A writer or a closing connection can briefly hold a lock (SQLite WAL docs).
 		db.exec("PRAGMA busy_timeout = 2000");
@@ -208,7 +208,7 @@ function readRows(
 			.get();
 		if (!hasMessageTable) {
 			throw new Error(
-				`Unsupported opencode database: no "message" table in ${displayPath}`,
+				`Unsupported opencode database: no "message" table in ${path}`,
 			);
 		}
 		const statement = db.prepare(QUERY);
@@ -228,6 +228,7 @@ export const opencodeSource = {
 
 	async discover(options: DiscoverOptions = {}): Promise<SourceHandle[]> {
 		const statFn = options.stat ?? stat;
+		const readdirFn = options.readdir ?? readdir;
 		const dir = dataDir();
 		const override = process.env.OPENCODE_DB;
 		if (override) {
@@ -241,7 +242,17 @@ export const opencodeSource = {
 						`OPENCODE_DB is set to ${overridePath} but that file does not exist`,
 					);
 				}
-				return handleDiscoverError(error);
+				// Unlike the scan arm below, the user named this exact path, so every other
+				// stat() failure (EACCES on the file itself, ENOTDIR from a parent path
+				// component that is actually a file, EIO, ...) means this override is broken,
+				// not "opencode isn't installed" - it must surface as a named, actionable error
+				// too, never fall through to handleDiscoverError's silent [].
+				const code = (error as NodeJS.ErrnoException).code;
+				throw new Error(
+					`OPENCODE_DB is set to ${overridePath} but it could not be read: ${
+						code ?? (error as Error).message
+					}`,
+				);
 			}
 			if (info.isDirectory()) {
 				throw new Error(
@@ -261,7 +272,7 @@ export const opencodeSource = {
 		// the OPENCODE_DB override arm's stat above, where a bad path is the only thing being asked
 		// about and failing it loudly is correct.
 		try {
-			const entries = await readdir(dir, { withFileTypes: true });
+			const entries = await readdirFn(dir, { withFileTypes: true });
 			const candidates = entries.filter((entry) =>
 				DB_NAME_PATTERN.test(entry.name),
 			);
@@ -293,7 +304,7 @@ export const opencodeSource = {
 		const DatabaseSyncCtor =
 			options.DatabaseSyncCtor ?? (await loadSqlite()).DatabaseSync;
 		try {
-			return readRows(DatabaseSyncCtor, handle.path, handle.path);
+			return readRows(DatabaseSyncCtor, handle.path);
 		} catch (error) {
 			if (!isReadonlyDirectoryError(error)) throw error;
 			// Opening a WAL database read-only still needs to create its -wal/-shm sidecars
@@ -312,6 +323,7 @@ export const opencodeSource = {
 					"database has no pre-existing -wal/-shm sidecar files for SQLite to reuse. " +
 					"Copy the database (and any -wal/-shm files beside it) to a writable location " +
 					"and read from there.",
+				{ cause: error },
 			);
 		}
 	},

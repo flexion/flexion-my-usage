@@ -120,9 +120,12 @@ describe("maskNonCode", () => {
 		);
 	});
 
-	it("does not mask an ordinary division expression following an identifier - a known, documented heuristic limitation (see this file's header)", () => {
-		const source = "export const half = total / 2;\n";
+	it("does not mask an ordinary division expression following an identifier - a known, documented heuristic limitation (see this file's header) (myusage-4xu.66: the prior fixture, \"total / 2\", had only one / on the line, so it could never reach the closing-/ half of the regex-literal alternative at all, let alone the value-ending lookbehind guard it claimed to test - it passed whether or not that guard existed. This fixture has two /s, so it actually exercises the guard: also asserting checkBranchGuard sees the real && between the two divisions proves the guard, not just maskNonCode's no-op output, is doing the work)", () => {
+		const source = "export const x = (a / b) && (c / d);\n";
 		expect(maskNonCode(source)).toBe(source);
+		expect(checkBranchGuard([{ path: "src/index.ts", text: source }])).toEqual([
+			{ path: "src/index.ts", kind: "&&", line: 1, snippet: "&&" },
+		]);
 	});
 });
 

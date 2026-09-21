@@ -35,9 +35,10 @@ jobs:
   # they differ.
   # A separate job on purpose, NOT a matrix on verify: main requires checks named exactly
   # "verify" and "leak-scan", and a matrix would rename verify to "verify (22)" and block every PR.
-  # Install and test only. tsc and biome are native binaries behind a Node launcher, and
-  # check:package only builds and lists the package, so those steps give the same result on any
-  # Node and verify already covers them. The tests are what run on the floor.
+  # Install, test, then build and smoke-run the entrypoint. tsc and biome (behind yarn typecheck
+  # and yarn lint) are native binaries behind a Node launcher, so they give the same result on
+  # any Node and verify already covers them - not repeated here. The tests and the built, running
+  # entrypoint are what actually execute on the floor.
   verify-node-floor:
     runs-on: ubuntu-latest
     steps:
@@ -69,6 +70,57 @@ jobs:
       - run: yarn install --immutable
       # The coverage gate, on the floor. node:sqlite needs no flag from 22.13.0.
       - run: yarn test
+      - run: yarn build
+      # Runs the actual built entrypoint on the floor. Nothing above imports src/index.ts (a
+      # humble composition root - see vitest.config.ts's coverage.exclude), so the coverage gate
+      # never catches an import or syntax issue that only bites on Node 22.13.0. HOME,
+      # XDG_DATA_HOME and XDG_CACHE_HOME point at empty temp dirs so this can never see real
+      # opencode data or a real price-table cache; with no opencode database found, discover()
+      # returns no handles, so price() returns immediately and this step never touches the
+      # network. --no-open (myusage-4xu.7) keeps it from spawning a browser. Waits for
+      # "Serving at" on stdout (the server is listening), then sends SIGTERM - the same shutdown
+      # path Ctrl+C takes in normal use (see server.ts) - and requires a clean exit.
+      - name: Smoke-run the built entrypoint on the floor
+        run: |
+          set -uo pipefail
+          home_dir="$(mktemp -d)"
+          data_dir="$(mktemp -d)"
+          cache_dir="$(mktemp -d)"
+          out="$(mktemp)"
+          HOME="$home_dir" XDG_DATA_HOME="$data_dir" XDG_CACHE_HOME="$cache_dir" \
+            node dist/index.js --no-open >"$out" 2>&1 &
+          pid=$!
+
+          ready=0
+          for _ in $(seq 1 75); do
+            if grep -q "Serving at" "$out"; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then
+              break
+            fi
+            sleep 0.2
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::built entrypoint never reported 'Serving at' before exiting"
+            cat "$out"
+            kill -TERM "$pid" 2>/dev/null || true
+            exit 1
+          fi
+
+          kill -TERM "$pid"
+          if wait "$pid"; then
+            status=0
+          else
+            status=$?
+          fi
+          cat "$out"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::built entrypoint exited $status after SIGTERM"
+            exit 1
+          fi
 
   # Release runs ONLY on a pushed v* tag. Merging to main never publishes.
   # Flow: bump package.json version in a PR, merge to main, then tag that commit:

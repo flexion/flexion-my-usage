@@ -189,6 +189,15 @@ function isReadonlyDirectoryError(error: unknown): boolean {
 	return (error as { errcode?: unknown }).errcode === SQLITE_READONLY_DIRECTORY;
 }
 
+// On this repo's Node floor (22.13.x), node:sqlite's StatementSync.all() is typed as
+// unknown[] (@types/node's own sqlite.d.ts only types SELECT rows as
+// Record<string, SQLOutputValue>[] starting with the 22.14 line). Every row SQLite actually
+// returns is a plain object keyed by column name, so this narrows the real runtime shape
+// rather than casting past it.
+function isRow(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
 function readRows(
 	DatabaseSyncCtor: SqliteModule["DatabaseSync"],
 	path: string,
@@ -217,6 +226,7 @@ function readRows(
 		statement.setReadBigInts(true);
 		return statement
 			.all()
+			.filter(isRow)
 			.map((raw) => toRow(raw))
 			.filter((row): row is NormalizedUsageRow => row !== undefined)
 			.sort(compareRows);

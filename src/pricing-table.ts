@@ -183,9 +183,26 @@ async function readCache(
 	return parseBody(text);
 }
 
+/**
+ * The slice of the Fetch `Response` contract this module actually uses. Node's global
+ * `fetch` and the `undici` package's own `fetch` (see the ProxyAgent branch in fetchTable
+ * below) are two different undici versions on this repo's Node floor, and their full
+ * `Response` types diverge once you look past this slice (their FormData/File shapes are
+ * structurally incompatible). `.ok`, `.status`, `.headers.get()` and `.body` are identical
+ * across both - both undici-types and the `undici` package define `body` and `headers` in
+ * terms of the same `node:stream/web`/`node:buffer` declarations - so this narrower contract,
+ * not either library's full `Response`, is what both branches genuinely satisfy.
+ */
+interface FetchResponse {
+	readonly ok: boolean;
+	readonly status: number;
+	readonly headers: { get(name: string): string | null };
+	readonly body: ReadableStream<Uint8Array> | null;
+}
+
 /** Reads the body as text, refusing more than `maxBytes` whether or not the size was declared. */
 async function readCapped(
-	response: Response,
+	response: FetchResponse,
 	maxBytes: number,
 ): Promise<string> {
 	const declared = Number(response.headers.get("content-length"));
@@ -220,7 +237,12 @@ async function fetchTable(
 	options: LoadOptions,
 	env: Readonly<Record<string, string | undefined>>,
 ): Promise<{ table: PriceTable; text: string }> {
-	const fetchOptions: RequestInit = {
+	// Deliberately untyped as `RequestInit`: the ambient global `RequestInit` (Node's built-in
+	// fetch) and undici's own `RequestInit` (the ProxyAgent branch below) diverge structurally
+	// on their `body`/`BodyInit` field, same as FetchResponse above. This object never sets a
+	// body, so leaving the type inferred keeps it structurally assignable to both fetch
+	// signatures instead of nominally pinned to one.
+	const fetchOptions = {
 		headers: { accept: "application/json" },
 		signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 	};
@@ -230,7 +252,7 @@ async function fetchTable(
 	// finally block at the bottom for why).
 	let agent: ProxyAgent | undefined;
 	try {
-		let response: Response;
+		let response: FetchResponse;
 		if (options.fetch) {
 			// An injected fetch is used exactly as given: it is the seam every other test in
 			// this file relies on, and it bypasses the proxy question entirely (see

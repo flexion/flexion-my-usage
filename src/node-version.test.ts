@@ -8,14 +8,17 @@ import {
 	NODE_FLOOR,
 	nodeUpgradeMessage,
 	parseVersion,
+	type Version,
 } from "./node-version.js";
+
+const FLOOR: Version = [22, 13, 0];
 
 describe("NODE_FLOOR", () => {
 	it("is exactly package.json's engines.node floor, so the two cannot drift apart", async () => {
 		const packageJson = JSON.parse(
 			await readFile(new URL("../package.json", import.meta.url), "utf8"),
 		) as { engines: { node: string } };
-		expect(packageJson.engines.node).toBe(`>=${NODE_FLOOR}`);
+		expect(packageJson.engines.node).toBe(`>=${NODE_FLOOR.join(".")}`);
 	});
 });
 
@@ -58,15 +61,15 @@ describe("isOlder", () => {
 
 describe("nodeUpgradeMessage", () => {
 	it("is undefined when the running Node is exactly the floor", () => {
-		expect(nodeUpgradeMessage("22.13.0", "22.13.0")).toBeUndefined();
+		expect(nodeUpgradeMessage("22.13.0", FLOOR)).toBeUndefined();
 	});
 
 	it("is undefined when the running Node is newer than the floor", () => {
-		expect(nodeUpgradeMessage("26.8.2", "22.13.0")).toBeUndefined();
+		expect(nodeUpgradeMessage("26.8.2", FLOOR)).toBeUndefined();
 	});
 
 	it("names the floor and the running version when the running Node is older", () => {
-		const message = nodeUpgradeMessage("20.11.1", "22.13.0");
+		const message = nodeUpgradeMessage("20.11.1", FLOOR);
 		expect(message).toContain("Node 22.13.0 or newer");
 		expect(message).toContain("This is Node 20.11.1");
 		expect(message).toContain("node:sqlite");
@@ -74,11 +77,7 @@ describe("nodeUpgradeMessage", () => {
 	});
 
 	it("fails open (no message) when the running version cannot be parsed", () => {
-		expect(nodeUpgradeMessage("custom-build", "22.13.0")).toBeUndefined();
-	});
-
-	it("fails open (no message) when the floor itself cannot be parsed", () => {
-		expect(nodeUpgradeMessage("20.0.0", ">=22.13.0")).toBeUndefined();
+		expect(nodeUpgradeMessage("custom-build", FLOOR)).toBeUndefined();
 	});
 
 	it("is undefined for the real NODE_FLOOR against the Node running this test", () => {

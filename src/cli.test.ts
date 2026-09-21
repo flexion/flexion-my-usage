@@ -72,7 +72,7 @@ function record(overrides: Partial<CliDeps> = {}): Recorded {
 		priceOptions: undefined,
 		opened: undefined,
 		deps: {
-			nodeVersion: NODE_FLOOR,
+			nodeVersion: NODE_FLOOR.join("."),
 			discover: async () => {
 				r.calls.push("discover");
 				return [HANDLE_A, HANDLE_B];
@@ -131,10 +131,23 @@ describe("runCli: the happy path", () => {
 		expect(r.served?.html).toContain("<title>my-usage</title>");
 		expect(r.opened).toBe(SERVER_URL);
 		expect(r.stdout).toBe(
-			`my-usage: 3 responses across 30 days\n${PRE_1_3_16_NOTE}` +
+			`my-usage: 3 responses in the last 30 days (3 scanned in total)\n${PRE_1_3_16_NOTE}` +
 				`Serving at ${SERVER_URL} - press Ctrl+C to stop.\n`,
 		);
 		expect(r.stderr).toBe("");
+	});
+
+	it("counts only the window's responses in the summary, with the scanned total beside it", async () => {
+		const old = row("old", 5);
+		old.timestamp = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+		const r = record({
+			discover: async () => [HANDLE_A],
+			read: async () => [row("a1", 10), old],
+		});
+		expect(await runCli([], r.deps)).toBe(EXIT_OK);
+		expect(r.stdout).toContain(
+			"my-usage: 1 responses in the last 30 days (2 scanned in total)",
+		);
 	});
 
 	it("prints the URL before trying to open the browser, so it's visible even if opening hangs", async () => {
@@ -217,7 +230,9 @@ describe("runCli: no data", () => {
 		expect(await runCli([], r.deps)).toBe(EXIT_OK);
 		expect(r.stderr).toBe(NO_DATA_HINT);
 		expect(r.calls).toEqual(["price 0", "serve 0", `open ${SERVER_URL}`]);
-		expect(r.stdout).toContain("my-usage: 0 responses across 30 days");
+		expect(r.stdout).toContain(
+			"my-usage: 0 responses in the last 30 days (0 scanned in total)",
+		);
 		expect(r.served?.html).toContain("No usage recorded in this window.");
 	});
 });

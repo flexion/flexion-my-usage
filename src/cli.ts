@@ -92,8 +92,13 @@ export async function runCli(
 		const html = renderHtml(days);
 
 		const server = await deps.serve(html, options.port);
+		// Report what the page shows (the window's responses), and separately how many rows were
+		// scanned: aggregateDaily always returns one bucket per window day and drops rows outside
+		// it, so `rows.length` alone would overcount and `days.length` alone is just the window.
+		const inWindow = days.reduce((n, day) => n + day.responses, 0);
 		deps.stdout(
-			`my-usage: ${rows.length} responses across ${days.length} days\n${PRE_1_3_16_NOTE}`,
+			`my-usage: ${inWindow} responses in the last ${days.length} days ` +
+				`(${rows.length} scanned in total)\n${PRE_1_3_16_NOTE}`,
 		);
 		deps.stdout(`Serving at ${server.url} - press Ctrl+C to stop.\n`);
 

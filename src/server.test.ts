@@ -70,27 +70,32 @@ describe("reply", () => {
 		expect(reply("GET", "/?measure=tokens", OK_HOST, HTML).status).toBe(200);
 	});
 
-	it.each(["http://anything/", "//anything/", "/./", "/x/../"])(
-		"a target whose path normalizes to / (%s) is served - the Host check already passed",
-		(url) => {
-			expect(reply("GET", url, OK_HOST, HTML).status).toBe(200);
-		},
-	);
-
-	it.each(["/index.html", "/favicon.ico", "/x", "//other/x", "/./x"])(
-		"GET %s -> 404 text",
-		(url) => {
-			expect(reply("GET", url, OK_HOST, HTML)).toEqual({
-				status: 404,
-				headers: {
-					"content-type": "text/plain; charset=utf-8",
-					"content-length": String(Buffer.byteLength("Not found\n")),
-					"cache-control": "no-store",
-				},
-				body: "Not found\n",
-			});
-		},
-	);
+	it.each([
+		"/index.html",
+		"/favicon.ico",
+		"/x",
+		"//",
+		"///",
+		"//:",
+		"http://",
+		"http://@",
+		"/\\",
+		"http://anything/",
+		"//anything/",
+		"/./",
+		"/x/../",
+		"",
+	])("GET %s -> 404 text, never a throw", (url) => {
+		expect(reply("GET", url, OK_HOST, HTML)).toEqual({
+			status: 404,
+			headers: {
+				"content-type": "text/plain; charset=utf-8",
+				"content-length": String(Buffer.byteLength("Not found\n")),
+				"cache-control": "no-store",
+			},
+			body: "Not found\n",
+		});
+	});
 
 	it.each(["POST", "PUT", "DELETE", "OPTIONS", "PATCH"])(
 		"%s / -> 405 with the allowed methods named",
@@ -269,15 +274,20 @@ describe("startServer", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("honors an explicit port", async () => {
-		const probe = await start();
-		const port = probe.port;
-		await probe.close();
-		const server = await start(port);
-		expect(server.port).toBe(port);
-		expect(server.url).toBe(`http://127.0.0.1:${port}/`);
+	it("survives a target the URL parser would refuse (a double slash), and keeps serving", async () => {
+		// `new URL("//", base)` throws; an unguarded parse in the handler would escape as an
+		// uncaught exception and kill the process. Reachable from any web page via an <img src>
+		// aimed at this address, so this is a real client sending it over a real socket.
+		const server = await start();
+		const res = await fetch(`${server.url}/`);
+		expect(res.status).toBe(404);
+		const again = await fetch(server.url);
+		expect(again.status).toBe(200);
 	});
 
+	// No "honors an explicit port" test on purpose: binding port 0, closing, and rebinding that
+	// port is racy (anything can take it in between). The conflict test below already pins the
+	// pass-through - it only rejects if the second server tried to bind exactly `first.port`.
 	it("rejects an explicit port that is already in use, naming the remedy", async () => {
 		const first = await start();
 		await expect(start(first.port)).rejects.toMatchObject({

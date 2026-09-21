@@ -1,5 +1,6 @@
 // Specifies parseCliArgs with plain argv arrays: every flag, every combination that matters, and
 // every malformed input the CLI turns into a usage error. No process.argv, no stdout.
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parseCliArgs, parsePort, USAGE } from "./cli-args.js";
 
@@ -175,5 +176,13 @@ describe("USAGE", () => {
 		expect(USAGE).toContain("127.0.0.1");
 		expect(USAGE).toContain("Ctrl+C");
 		expect(USAGE.endsWith("\n")).toBe(true);
+	});
+
+	it("appears verbatim in README.md's Usage section, so the docs can't drift from --help", async () => {
+		const readme = await readFile(
+			new URL("../README.md", import.meta.url),
+			"utf8",
+		);
+		expect(readme).toContain(`\`\`\`\n${USAGE}\`\`\``);
 	});
 });

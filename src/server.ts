@@ -86,11 +86,14 @@ export function reply(
 	if (method !== "GET" && method !== "HEAD") {
 		return textReply(405, METHOD_NOT_ALLOWED, { allow: "GET, HEAD" });
 	}
-	// `url` is the request target, a path for any well-formed request; the base only exists so a
-	// relative target parses. An absolute-form target ("http://x/") or a protocol-relative one
-	// ("//x/") parses to a different host, and its pathname is still what decides the route.
-	const pathname = new URL(url, "http://localhost").pathname;
-	if (pathname !== "/") return textReply(404, NOT_FOUND, {});
+	// The request target must be exactly "/" once any query string is dropped. Deliberately not
+	// `new URL(url, base).pathname`: Node's parser hands over targets the URL parser refuses
+	// ("//", "///", "http://", "/\\" - all reachable from any web page via an <img src> aimed at
+	// this loopback address, since that sends the loopback Host the check above accepts), and a
+	// throw here would escape the request handler as an uncaught exception and kill the whole
+	// process. Every browser normalizes "/./" and friends before sending, so exact-match loses
+	// nothing a real client relies on.
+	if (url.replace(/\?.*$/s, "") !== "/") return textReply(404, NOT_FOUND, {});
 	return {
 		status: 200,
 		headers: {
@@ -170,7 +173,11 @@ export function startServer(
 			res.end(r.body);
 		});
 
-		server.once("error", (error: Error) => {
+		// `on`, not `once`: before listen succeeds this rejects; after it, `reject` is a no-op,
+		// and the listener stays registered so a later server-level error (an accept() failure
+		// such as EMFILE - rare, and not something this process can act on) can never surface as
+		// an unhandled "error" event that throws and takes the dashboard down.
+		server.on("error", (error: Error) => {
 			const code = (error as NodeJS.ErrnoException).code;
 			reject(
 				code === "EADDRINUSE"

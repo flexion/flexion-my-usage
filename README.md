@@ -50,6 +50,9 @@ That scans your local opencode data (every `opencode.db` / `opencode-<channel>.d
 ```
 Usage: my-usage [options]
 
+Scans your local opencode usage, works out a notional cost, and serves a dashboard from a
+local server (bound to 127.0.0.1 only), opened in your default browser. Press Ctrl+C to stop.
+
 Options:
   --port <n>        Listen on this port (default: a free port chosen by the OS)
   --no-open         Don't open a browser; just print the URL

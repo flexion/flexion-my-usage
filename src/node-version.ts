@@ -2,19 +2,20 @@
 // ships from 22.13.0 (the engines.node floor in package.json). Below that, the raw failure is
 // Node's own "No such built-in module: node:sqlite", thrown from deep inside the first read -
 // accurate, but it doesn't say what to do about it. This module makes the decision ("is the
-// running Node new enough?") a pure function of two version strings, so the CLI can print a
-// friendly upgrade message before it ever touches the reader, and so the decision is testable
-// on every Node version without depending on which one the tests happen to run under.
-
-/**
- * The engines.node floor from package.json, as a bare "X.Y.Z". Kept as a literal here rather than
- * read from package.json at runtime so the preflight needs no file I/O before it can run;
- * node-version.test.ts pins this literal to package.json's own `engines.node`, so the two
- * cannot silently drift apart.
- */
-export const NODE_FLOOR = "22.13.0";
+// running Node new enough?") a pure function of a version string and the floor, so the CLI can
+// print a friendly upgrade message before it ever touches the reader, and so the decision is
+// testable on every Node version without depending on which one the tests happen to run under.
 
 export type Version = [major: number, minor: number, patch: number];
+
+/**
+ * The engines.node floor from package.json, already parsed. A tuple rather than a string so
+ * nodeUpgradeMessage never has to handle "the floor didn't parse" - a branch no real caller
+ * could reach, since this literal is the only floor ever passed. node-version.test.ts pins it
+ * to package.json's own `engines.node`, so the two cannot silently drift apart; no file I/O is
+ * needed before the preflight can run.
+ */
+export const NODE_FLOOR: Version = [22, 13, 0];
 
 /**
  * The leading "major.minor.patch" of a version string, or undefined when it has no such prefix.
@@ -46,14 +47,13 @@ export function isOlder(a: Version, b: Version): boolean {
  */
 export function nodeUpgradeMessage(
 	running: string,
-	floor: string,
+	floor: Version,
 ): string | undefined {
 	const have = parseVersion(running);
-	const need = parseVersion(floor);
-	if (have === undefined || need === undefined) return undefined;
-	if (!isOlder(have, need)) return undefined;
+	if (have === undefined) return undefined;
+	if (!isOlder(have, floor)) return undefined;
 	return (
-		`my-usage needs Node ${floor} or newer (it reads opencode's database through ` +
+		`my-usage needs Node ${floor.join(".")} or newer (it reads opencode's database through ` +
 		`node:sqlite, which older releases don't ship). This is Node ${running} - ` +
 		"upgrade Node and run it again."
 	);

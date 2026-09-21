@@ -39,9 +39,11 @@ export type Launch = (command: string, args: string[]) => Promise<void>;
 /**
  * The real launcher. Detached and with stdio ignored, so the helper runs in its own process
  * group: a Ctrl+C aimed at this server never reaches it (some `xdg-open` implementations block
- * until the browser exits), and its output never lands in this terminal. `unref()` keeps the
- * child from holding this process open - the HTTP server is what keeps it alive, not the
- * browser. `windowsHide` stops `cmd` flashing a console window on Windows.
+ * until the browser exits), and its output never lands in this terminal. On Windows, `detached`
+ * also means DETACHED_PROCESS, so `cmd` gets no console window of its own (`windowsHide` would
+ * be ignored alongside that flag, per CreateProcess's documentation, so it isn't set). `unref()`
+ * keeps the child from holding this process open - the HTTP server is what keeps it alive, not
+ * the browser.
  *
  * Resolves on the child's `spawn` event and rejects on `error` (typically ENOENT: the helper
  * isn't installed, e.g. `xdg-open` on a headless Linux box). Without that `error` listener, a
@@ -50,11 +52,7 @@ export type Launch = (command: string, args: string[]) => Promise<void>;
  */
 export function spawnDetached(command: string, args: string[]): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const child = spawn(command, args, {
-			detached: true,
-			stdio: "ignore",
-			windowsHide: true,
-		});
+		const child = spawn(command, args, { detached: true, stdio: "ignore" });
 		child.once("error", reject);
 		child.once("spawn", () => {
 			child.unref();

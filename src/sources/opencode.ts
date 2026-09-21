@@ -1,7 +1,6 @@
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { withSqliteWarningSuppressed } from "./sqlite-warning.js";
 import type { NormalizedUsageRow, SourceHandle, UsageSource } from "./types.js";
 
@@ -142,10 +141,10 @@ export interface DiscoverOptions {
 
 // read() takes an injectable DatabaseSync constructor, the same seam shape as DiscoverOptions'
 // `stat` above: a named field on an options object, defaulting to the real node:sqlite export
-// (loaded lazily via loadSqlite()) when omitted. This is what lets the readonly-directory retry
-// guard below be tested directly - a fake open failure with a chosen `.errcode` - without a
-// chmod fixture. Lives on opencode's own type, not on the shared `UsageSource.read()` signature
-// in types.ts, so every other source's `read()` stays one-arg.
+// (loaded lazily via loadSqlite()) when omitted. This is what lets the readonly-directory
+// error-classification below be tested directly - a fake open failure with a chosen `.errcode`
+// - without a chmod fixture. Lives on opencode's own type, not on the shared `UsageSource.read()`
+// signature in types.ts, so every other source's `read()` stays one-arg.
 export interface ReadOptions {
 	DatabaseSyncCtor?: SqliteModule["DatabaseSync"];
 }
@@ -185,15 +184,6 @@ const SQLITE_READONLY_DIRECTORY = 1544;
 
 function isReadonlyDirectoryError(error: unknown): boolean {
 	return (error as { errcode?: unknown }).errcode === SQLITE_READONLY_DIRECTORY;
-}
-
-// SQLite's own file: URI form, with immutable=1 appended. pathToFileURL percent-encodes the
-// path exactly like every other file: URL (spaces, "#", "?", etc. all survive it), which
-// naive string interpolation would not.
-function immutableUri(path: string): string {
-	const uri = pathToFileURL(path);
-	uri.search = "immutable=1";
-	return uri.href;
 }
 
 function readRows(
@@ -309,12 +299,20 @@ export const opencodeSource = {
 			// Opening a WAL database read-only still needs to create its -wal/-shm sidecars
 			// when they are not already sitting next to it; in a read-only directory that
 			// create fails as SQLITE_READONLY_DIRECTORY, surfaced above as a bare "attempt to
-			// write a readonly database" with no indication of the cause. Retry once via the
-			// immutable=1 query parameter, which tells SQLite the file will not change and
-			// skips sidecar setup entirely - trading away visibility into any not-yet-
-			// checkpointed WAL rows (a live writer, or an orphaned WAL from an unclean
-			// shutdown) for a read that succeeds in a read-only directory.
-			return readRows(DatabaseSyncCtor, immutableUri(handle.path), handle.path);
+			// write a readonly database" with no indication of the cause or the remedy.
+			//
+			// An immutable=1 URI open was tried here and reverted: it works on newer Node, but
+			// node:sqlite's DatabaseSync did not accept file: URI locations at all until after
+			// this repo's Node floor (22.13.0, where even a bare file: URI with no query string
+			// fails with "unable to open database file" - confirmed directly against that
+			// engine). A fix this repo's own CI Node-floor job cannot pass is not a fix; name
+			// the cause and the remedy instead.
+			throw new Error(
+				`Cannot read ${handle.path}: its directory is not writable, and this WAL-mode ` +
+					"database has no pre-existing -wal/-shm sidecar files for SQLite to reuse. " +
+					"Copy the database (and any -wal/-shm files beside it) to a writable location " +
+					"and read from there.",
+			);
 		}
 	},
 } satisfies UsageSource;

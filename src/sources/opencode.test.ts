@@ -1003,14 +1003,21 @@ describe("opencodeSource.read", () => {
 		// WAL-mode database read-only still needs to create its -wal/-shm sidecars when they
 		// are not already there (SQLite has to set up the shared wal-index), so a cleanly
 		// closed database - no pre-existing sidecar - in a read-only directory fails with the
-		// raw, unhelpful "attempt to write a readonly database" unless read() falls back.
+		// raw, unhelpful "attempt to write a readonly database" unless read() names the cause.
+		//
+		// An immutable=1 URI open was tried here first and reverted: node:sqlite's DatabaseSync
+		// did not accept file: URI locations at all on this repo's Node floor (22.13.0, added:
+		// v22.5.0 per Node's own docs at that tag - even a bare file: URI with no query string
+		// fails there with "unable to open database file"). A fix the floor CI job cannot pass
+		// is not a fix, so read() surfaces a clear, actionable error instead.
+		//
 		// Unlike the discover()-time chmod test that was tried and removed (see the comment
 		// above "multiple database files"), this one is not incidental coverage of an already-
 		// proven pure function: it is the bead's own acceptance criterion, and the only way to
 		// reproduce "no pre-existing sidecar, directory not writable" is a real read-only
 		// directory. skipIf(win32): chmod bits don't model POSIX permissions on Windows.
 		it.skipIf(process.platform === "win32")(
-			"falls back to an immutable read when a cleanly closed WAL database sits in a read-only directory",
+			"throws a named error when a cleanly closed WAL database sits in a read-only directory",
 			async (ctx) => {
 				if (process.getuid?.() === 0) {
 					// Root ignores directory permission bits, so chmod 555 would not reproduce a
@@ -1029,8 +1036,9 @@ describe("opencodeSource.read", () => {
 
 				chmodSync(dir, 0o555);
 				try {
-					const rows = await opencodeSource.read(handleFor(path));
-					expect(rows.map((r) => r.messageId)).toEqual(["msg_fixture_a"]);
+					await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
+						/its directory is not writable/,
+					);
 				} finally {
 					// Restore before afterEach's rm(): deleting entries from a read-only
 					// directory would fail, and force:true does not swallow EACCES/EPERM.
@@ -1038,79 +1046,57 @@ describe("opencodeSource.read", () => {
 				}
 			},
 		);
-		// The guard in read()'s catch (`if (!isReadonlyDirectoryError(error)) throw error;`)
+		// The check in read()'s catch (`if (!isReadonlyDirectoryError(error)) throw error;`)
 		// must discriminate a genuine SQLITE_READONLY_DIRECTORY failure from any other read
-		// failure. The chmod test above proves the real end-to-end behavior; these prove the
-		// guard's narrowness directly, via an injected DatabaseSyncCtor, so the property holds
-		// independent of chmod, root, or platform.
-		describe("retries only on a genuine readonly-directory error (injected DatabaseSyncCtor)", () => {
-			// A fake DatabaseSync-shaped constructor: `errors[call - 1]` throws on that numbered
-			// open attempt (1-indexed), or opens cleanly once nothing is left to throw. The clean
-			// open answers just enough of readRows' calls (the message-table probe, then
-			// setReadBigInts/all on the real query) to let a retry actually finish and return
-			// rows, without reimplementing SQLite.
-			function fakeDatabaseSyncCtor(errors: Array<Error | undefined>) {
-				let calls = 0;
+		// failure - only the former should be rewritten into the named error above; everything
+		// else must propagate as-is. The chmod test above proves the real end-to-end behavior;
+		// these prove the discrimination directly, via an injected DatabaseSyncCtor, so the
+		// property holds independent of chmod, root, or platform.
+		describe("classifies read failures correctly (injected DatabaseSyncCtor)", () => {
+			// A fake DatabaseSync-shaped constructor whose open throws the given error.
+			function fakeDatabaseSyncCtor(error: Error) {
 				class FakeDatabaseSync {
 					constructor(_location: string, _options: unknown) {
-						calls++;
-						const error = errors[calls - 1];
-						if (error) throw error;
+						throw error;
 					}
 					exec(): void {}
-					prepare(sql: string) {
-						if (sql.includes("sqlite_master")) {
-							return { get: () => ({ found: 1 }) };
-						}
-						return { setReadBigInts: () => {}, all: () => [] };
+					prepare(): never {
+						throw new Error("unreachable: constructor always throws first");
 					}
 					close(): void {}
 				}
-				return {
-					ctor: FakeDatabaseSync as unknown as typeof DatabaseSync,
-					calls: () => calls,
-				};
+				return FakeDatabaseSync as unknown as typeof DatabaseSync;
 			}
 
-			function readonlyDirectoryError(): Error {
-				return Object.assign(
-					new Error("attempt to write a readonly database"),
-					{
-						errcode: 1544,
-					},
-				);
-			}
-
-			it("propagates the original error, unretried, when the open failure is not SQLITE_READONLY_DIRECTORY", async () => {
+			it("propagates the original error, unrewritten, when the open failure is not SQLITE_READONLY_DIRECTORY", async () => {
 				const dir = await sandbox();
 				const path = join(dir, "opencode.db");
 				// A made-up errcode, deliberately not 1544 (SQLITE_READONLY_DIRECTORY): any other
-				// value must not trigger the immutable-URI retry.
+				// value must pass through untouched, not become the named readonly-directory error.
 				const otherError = Object.assign(new Error("disk I/O error"), {
 					errcode: 10,
 				});
-				const { ctor, calls } = fakeDatabaseSyncCtor([otherError]);
 
 				await expect(
-					opencodeSource.read(handleFor(path), { DatabaseSyncCtor: ctor }),
+					opencodeSource.read(handleFor(path), {
+						DatabaseSyncCtor: fakeDatabaseSyncCtor(otherError),
+					}),
 				).rejects.toBe(otherError);
-				expect(calls()).toBe(1);
 			});
 
-			it("retries via the immutable URI, and only then, when the open failure is genuinely SQLITE_READONLY_DIRECTORY", async () => {
+			it("rewrites the failure into a named error, naming the path and the remedy, when it is genuinely SQLITE_READONLY_DIRECTORY", async () => {
 				const dir = await sandbox();
 				const path = join(dir, "opencode.db");
-				const { ctor, calls } = fakeDatabaseSyncCtor([
-					readonlyDirectoryError(),
-					undefined,
-				]);
+				const readonlyDirectoryError = Object.assign(
+					new Error("attempt to write a readonly database"),
+					{ errcode: 1544 },
+				);
 
-				const rows = await opencodeSource.read(handleFor(path), {
-					DatabaseSyncCtor: ctor,
-				});
-
-				expect(rows).toEqual([]);
-				expect(calls()).toBe(2);
+				await expect(
+					opencodeSource.read(handleFor(path), {
+						DatabaseSyncCtor: fakeDatabaseSyncCtor(readonlyDirectoryError),
+					}),
+				).rejects.toThrow(`Cannot read ${path}: its directory is not writable`);
 			});
 		});
 	});

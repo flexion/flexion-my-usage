@@ -472,6 +472,61 @@ describe("loadPriceTable: a response with no body", () => {
 	});
 });
 
+// myusage-fs6: the two remaining `response.body?.cancel()` optional chains in pricing-table.ts
+// (readCapped's over-cap branch, and fetchTable's !response.ok branch) predate this suite and
+// are defensible as real trust-boundary code - a real 304 response has `ok: false` and
+// `body: null`, and an origin can declare a content-length before deciding to send no body at
+// all - but until now nothing drove a null body through either site, so dropping the `?.` at
+// either call (making it an unconditional `response.body.cancel()`) left the suite green. Both
+// tests below use a real `Response` with a genuinely null body (no `as unknown as Response`
+// cast standing in for one) - per AGENTS.md's rule on fabricated-input-only branches, a branch
+// reachable only through a cast isn't worth keeping, but one reachable through a real trust
+// boundary is, provided a real instance actually reaches it, which these two now do.
+describe("loadPriceTable: response.body?.cancel() optional chains, proven with a null body", () => {
+	it("a declared content-length over the cap with a null body does not throw calling cancel", async () => {
+		const warn = vi.fn();
+
+		// A real Response can declare a content-length while still carrying a null body (the
+		// constructor does not cross-check the two), which is exactly what an origin that
+		// promises a size and then serves no body at all would produce.
+		const table = await loadPriceTable(
+			{
+				cacheDir: await newCacheDir(),
+				maxBytes: 500,
+				fetch: async () =>
+					new Response(null, {
+						status: 200,
+						headers: { "content-length": "999999" },
+					}),
+			},
+			warn,
+		);
+
+		expect(table).toBeUndefined();
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(warn.mock.calls[0]?.[0]).toContain("response too large");
+	});
+
+	it("an HTTP error response with a null body (a real 304) does not throw calling cancel", async () => {
+		const warn = vi.fn();
+
+		// A real 304 Not Modified is a null-body status per the Fetch spec: `.body` comes back
+		// null on its own, the same as it would from a genuine fetch() against an origin that
+		// honors a conditional request.
+		const table = await loadPriceTable(
+			{
+				cacheDir: await newCacheDir(),
+				fetch: async () => new Response(null, { status: 304 }),
+			},
+			warn,
+		);
+
+		expect(table).toBeUndefined();
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(warn.mock.calls[0]?.[0]).toContain("HTTP 304");
+	});
+});
+
 describe("loadPriceTable: cached file size cap is byte-accurate", () => {
 	it("rejects a cached body whose UTF-16 code-unit length is within the cap but whose real UTF-8 byte length is not", async () => {
 		const cacheDir = await newCacheDir();

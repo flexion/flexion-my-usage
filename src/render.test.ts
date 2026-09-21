@@ -538,6 +538,21 @@ describe("renderHtml: chart axis", () => {
 		expect(labelTexts).toEqual(
 			[0, 0.5, 1].map((fraction) => formatCurrency(maxValue * fraction)),
 		);
+
+		// The 100% gridline's y must equal the window's tallest bar's own topmost-segment y:
+		// both are baselineY minus a plotHeight-scaled fraction of the same maxValue, so a
+		// gridline scale that drifts from the bars' scale (for example plotHeight * fraction
+		// halved to plotHeight * 0.5 * fraction) would move the gridline while leaving the
+		// bar's own top untouched - a real rendering bug the relative checks above can't catch,
+		// since they only compare gridlines to each other. "2026-09-07" is this window's
+		// biggest cost day at $24 (== maxValue; see "gives a bigger day's total a taller bar"
+		// above), and dayBarMarkup resolves it to the cost panel's own bar the same way that
+		// test does, so this stays correct however margin/layout constants change.
+		const tallestBar = segmentGeometries(dayBarMarkup(html, "2026-09-07"));
+		const tallestBarTop = tallestBar.at(-1);
+		if (!tallestBarTop)
+			throw new Error("fixture's tallest bar has no segments");
+		expect(fullY).toBeCloseTo(tallestBarTop.topY, 5);
 	});
 });
 

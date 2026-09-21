@@ -1,12 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DayBucket, ModelTotals } from "./aggregate.js";
 import {
-	formatCount,
 	formatCurrency,
 	formatTokens,
+	OTHER_LABEL,
 	shareByModel,
 	stackByModel,
-	windowTotals,
 } from "./chart-model.js";
 import { renderHtml } from "./render.js";
 
@@ -109,13 +108,26 @@ function buildWindow(): DayBucket[] {
 	];
 }
 
+/**
+ * One double-quoted attribute's value from a single tag's own markup, found by NAME rather than
+ * position - so every helper below stays correct however render.ts orders a tag's attributes.
+ * `undefined` when the tag doesn't carry that attribute at all.
+ */
+function attr(tag: string, name: string): string | undefined {
+	return tag.match(new RegExp(`\\s${name}="([^"]*)"`))?.[1];
+}
+
 /** The `<g class="day-bar" data-day="...">...</g>` markup for one day, or "" if not found. */
 function dayBarMarkup(html: string, dayLabel: string): string {
-	const escaped = dayLabel.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-	const match = html.match(
-		new RegExp(`<g class="day-bar" data-day="${escaped}"[\\s\\S]*?</g>`),
-	);
-	return match?.[0] ?? "";
+	const groups = html.match(/<g\b[^>]*>[\s\S]*?<\/g>/g) ?? [];
+	const group = groups.find((g) => {
+		const openTag = g.match(/^<g\b[^>]*>/)?.[0] ?? "";
+		return (
+			attr(openTag, "class") === "day-bar" &&
+			attr(openTag, "data-day") === dayLabel
+		);
+	});
+	return group ?? "";
 }
 
 interface SegmentGeometry {
@@ -130,22 +142,33 @@ function numbersIn(text: string): number[] {
 }
 
 /**
- * A day-bar group's filled stack segments (its `<rect>`s and rounded-top `<path>`), bottom to
- * top in the same order `renderChartSvg` emits them (cumulative low to high). Reads real y/height
- * geometry straight out of the markup: a `<rect>`'s own `y`/`height` attributes, or a `<path>`'s
- * `d` attribute, whose numbers alternate x, y throughout `roundedTopRectPath`'s commands - so
- * every odd-indexed number is a y coordinate, and their min/max are the path's top and bottom.
+ * A day-bar group's filled stack-segment elements (its `<rect>`s and rounded-top `<path>`),
+ * bottom to top in the same order `renderChartSvg` emits them. An element counts as a segment by
+ * its own `fill` attribute's VALUE starting with "var(--" (a named series or Other's shared
+ * color) - read by name via `attr`, not by where `fill` happens to sit in the tag - which also
+ * correctly excludes the hit-target rect (`fill="transparent"`) on that value alone, however the
+ * tag's attributes are ordered.
+ */
+function filledSegmentElements(group: string): string[] {
+	const elements = group.match(/<(?:rect|path)\b[^>]*\/>/g) ?? [];
+	return elements.filter((el) => (attr(el, "fill") ?? "").startsWith("var(--"));
+}
+
+/**
+ * `filledSegmentElements`, resolved to geometry. Reads real y/height geometry straight out of the
+ * markup: a `<rect>`'s own `y`/`height` attributes, or a `<path>`'s `d` attribute, whose numbers
+ * alternate x, y throughout `roundedTopRectPath`'s commands - so every odd-indexed number is a y
+ * coordinate, and their min/max are the path's top and bottom. Every attribute is read by name via
+ * `attr`, so this keeps working however render.ts orders a `<rect>`/`<path>`'s attributes.
  */
 function segmentGeometries(group: string): SegmentGeometry[] {
-	const elements =
-		group.match(/<(?:rect|path)\b[^>]*fill="var\(--[^)]+\)"[^>]*\/>/g) ?? [];
-	return elements.map((el) => {
+	return filledSegmentElements(group).map((el) => {
 		if (el.startsWith("<rect")) {
-			const y = Number(el.match(/\sy="(-?[\d.]+)"/)?.[1]);
-			const height = Number(el.match(/\sheight="(-?[\d.]+)"/)?.[1]);
+			const y = Number(attr(el, "y"));
+			const height = Number(attr(el, "height"));
 			return { topY: y, bottomY: y + height, height };
 		}
-		const d = el.match(/\sd="([^"]+)"/)?.[1] ?? "";
+		const d = attr(el, "d") ?? "";
 		const ys = numbersIn(d).filter((_, i) => i % 2 === 1);
 		const topY = Math.min(...ys);
 		const bottomY = Math.max(...ys);
@@ -155,10 +178,11 @@ function segmentGeometries(group: string): SegmentGeometry[] {
 
 /** The chart's baseline y, read from a day-bar group's own hit-target rect (its `y` + `height`). */
 function baselineYOf(group: string): number {
-	const y = Number(group.match(/class="hit-target"[^>]*\sy="(-?[\d.]+)"/)?.[1]);
-	const height = Number(
-		group.match(/class="hit-target"[^>]*\sheight="(-?[\d.]+)"/)?.[1],
+	const hitTarget = (group.match(/<rect\b[^>]*\/>/g) ?? []).find(
+		(el) => attr(el, "class") === "hit-target",
 	);
+	const y = Number(hitTarget && attr(hitTarget, "y"));
+	const height = Number(hitTarget && attr(hitTarget, "height"));
 	return y + height;
 }
 
@@ -206,18 +230,45 @@ describe("renderHtml: document shape", () => {
 	it("never emits NaN or Infinity for a populated window", () => {
 		expect(renderHtml(buildWindow())).not.toMatch(/NaN|Infinity/);
 	});
+
+	it("labels each chart's SVG aria-label 'Daily cost', matching the visible heading and the JSON payload's title", () => {
+		const html = renderHtml(buildWindow());
+
+		expect(html).toContain(
+			'<svg viewBox="0 0 840 360" class="chart-svg" role="img" aria-label="Daily cost">',
+		);
+		expect(html).toContain(
+			'<svg viewBox="0 0 840 360" class="chart-svg" role="img" aria-label="Daily cost (Tokens)">',
+		);
+	});
 });
 
 describe("renderHtml: KPI row", () => {
-	it("sums the window through windowTotals and formats with the real formatters", () => {
-		const days = buildWindow();
-		const totals = windowTotals(days);
+	it("pairs each tile's own label with its own formatter's output, not another tile's", () => {
+		// Hand-computed literal expectations, not a re-run of windowTotals/the formatters
+		// under test (the self-referential shape myusage-4xu.29 flagged: that version
+		// stayed green under both a label swap and a formatter swap). notionalCost 12.25,
+		// tokens 2,340,000 and responses 1,234 format under their OWN tile's formatter as
+		// three visibly different strings ("$12.25", "2.34M", "1,234"), so mispairing any
+		// tile's label with another's value, or swapping any tile's formatter for
+		// another's, changes what's asserted here - unlike the original fixture, where
+		// formatCount and formatTokens happened to agree on the response count.
+		const days = [
+			day("2026-09-01", [series({ cost: 5, tokens: 1_000_000 })], 600),
+			day("2026-09-02", [series({ cost: 7.25, tokens: 1_340_000 })], 634),
+		];
 
 		const html = renderHtml(days);
 
-		expect(html).toContain(`>${formatCurrency(totals.notionalCost)}<`);
-		expect(html).toContain(`>${formatTokens(totals.tokens)}<`);
-		expect(html).toContain(`>${formatCount(totals.responses)}<`);
+		expect(html).toContain(
+			'<div class="kpi-tile">\n<div class="kpi-label">Notional cost</div>\n<div class="kpi-value">$12.25</div>\n</div>',
+		);
+		expect(html).toContain(
+			'<div class="kpi-tile">\n<div class="kpi-label">Tokens</div>\n<div class="kpi-value">2.34M</div>\n</div>',
+		);
+		expect(html).toContain(
+			'<div class="kpi-tile">\n<div class="kpi-label">Responses</div>\n<div class="kpi-value">1,234</div>\n</div>',
+		);
 	});
 });
 
@@ -278,10 +329,10 @@ describe("renderHtml: daily chart", () => {
 		const html = renderHtml(buildWindow());
 
 		const group = dayBarMarkup(html, "2026-09-07");
+		const elements = filledSegmentElements(group);
 
-		expect(group).toMatch(/<path d="[^"]+" fill="var\(--/);
-		const squareSegments =
-			group.match(/<rect x="[^"]*" y="[^"]*"[^>]*fill="var\(--/g) ?? [];
+		expect(elements.some((el) => el.startsWith("<path"))).toBe(true);
+		const squareSegments = elements.filter((el) => el.startsWith("<rect"));
 		expect(squareSegments.length).toBeGreaterThan(0);
 	});
 
@@ -289,10 +340,10 @@ describe("renderHtml: daily chart", () => {
 		const html = renderHtml(buildWindow());
 
 		const group = dayBarMarkup(html, "2026-09-08");
+		const elements = filledSegmentElements(group);
 
-		const fillPaths = group.match(/<path d="[^"]+" fill="var\(--/g) ?? [];
-		const fillRects =
-			group.match(/<rect x="[^"]*" y="[^"]*"[^>]*fill="var\(--/g) ?? [];
+		const fillPaths = elements.filter((el) => el.startsWith("<path"));
+		const fillRects = elements.filter((el) => el.startsWith("<rect"));
 		expect(fillPaths).toHaveLength(1);
 		expect(fillRects).toHaveLength(0);
 	});
@@ -373,6 +424,142 @@ describe("renderHtml: chart geometry", () => {
 	});
 });
 
+describe("renderHtml: chart axis", () => {
+	it("labels an x-axis tick with MM-DD, not the full date", () => {
+		const html = renderHtml(buildWindow());
+
+		expect(html).toMatch(
+			/<text[^>]*class="axis-label axis-label-x"[^>]*>09-07<\/text>/,
+		);
+		expect(html).not.toMatch(
+			/<text[^>]*class="axis-label axis-label-x"[^>]*>2026-09-07<\/text>/,
+		);
+	});
+
+	it("always shows a tick for the last day, even off the every-Nth-day spacing rule", () => {
+		// 14 days at the default label spacing (labelEvery = round(14 / 6) = 2) ticks every
+		// second day by that rule alone; day 13 (index 13, odd) only gets a tick because of
+		// the "always show the last day" exception.
+		const html = renderHtml(buildWindow());
+
+		const lastDayTicks =
+			html.match(
+				/<text[^>]*class="axis-label axis-label-x"[^>]*>09-20<\/text>/g,
+			) ?? [];
+
+		// Once per measure panel (cost, tokens).
+		expect(lastDayTicks).toHaveLength(2);
+	});
+
+	it("draws three y-axis gridlines per panel, at 0%, 50% and 100% of the max value, each labeled", () => {
+		const html = renderHtml(buildWindow());
+
+		// Two panels, three fractions each - dropping the 0.5 fraction (down to just [0, 1])
+		// would halve this to 4.
+		const gridlines = html.match(/<line[^>]*class="gridline"[^>]*\/>/g) ?? [];
+		expect(gridlines).toHaveLength(6);
+
+		// The cost panel's busiest day (2026-09-07) totals $24: the 50% gridline sits at
+		// half the plot height and is labeled at half that max value.
+		expect(html).toContain(
+			'<line x1="64.00" y1="172.00" x2="824.00" y2="172.00" class="gridline" />',
+		);
+		expect(html).toContain(
+			'<text x="56.00" y="172.00" class="axis-label axis-label-y" text-anchor="end" dominant-baseline="middle">$12.00</text>',
+		);
+	});
+});
+
+describe("renderHtml: chart color assignment", () => {
+	it("gives each named series its own distinct, consistent color across the legend and the bar", () => {
+		const days = [
+			day("2026-01-01", [
+				series({ model: "model-a", cost: 10 }),
+				series({ model: "model-b", cost: 5 }),
+			]),
+		];
+
+		const html = renderHtml(days);
+
+		// Ranked by cost: model-a (10) first, model-b (5) second - buildColorLookup assigns
+		// palette slots in that rank order, one each, never repeating a slot.
+		const legendPairs = [
+			...html.matchAll(
+				/<span class="swatch" style="background:(var\(--[^)]+\))"><\/span>\s*<span class="legend-label">([^<]*)<\/span>/g,
+			),
+		].map((m) => [m[2], m[1]]);
+		expect(legendPairs).toEqual([
+			["model-a", "var(--series-1)"],
+			["model-b", "var(--series-2)"],
+		]);
+
+		// The same colors, in the same bottom-to-top stacking order, show up on the bar.
+		const group = dayBarMarkup(html, "2026-01-01");
+		const segmentFills = filledSegmentElements(group).map((el) =>
+			attr(el, "fill"),
+		);
+		expect(segmentFills).toEqual(["var(--series-1)", "var(--series-2)"]);
+	});
+
+	it("gives the Other roll-up its own fixed color, never one of the named-series slots", () => {
+		const html = renderHtml(buildWindow());
+
+		const legendPairs = [
+			...html.matchAll(
+				/<span class="swatch" style="background:(var\(--[^)]+\))"><\/span>\s*<span class="legend-label">([^<]*)<\/span>/g,
+			),
+		].map((m) => [m[2], m[1]]);
+
+		const otherPair = legendPairs.find(([label]) => label === OTHER_LABEL);
+		if (!otherPair) throw new Error("fixture folds a tail into Other");
+		expect(otherPair[1]).toBe("var(--other)");
+
+		const namedColors = legendPairs
+			.filter(([label]) => label !== OTHER_LABEL)
+			.map(([, color]) => color);
+		expect(namedColors).not.toContain("var(--other)");
+	});
+});
+
+describe("renderHtml: bar width", () => {
+	it("caps the bar width at a maximum of 24px when few days give a wide natural slot", () => {
+		const days = [
+			day("day-0", [
+				series({ model: "model-a", cost: 5 }),
+				series({ model: "model-b", cost: 3 }),
+			]),
+			day("day-1", []),
+		];
+
+		const group = dayBarMarkup(renderHtml(days), "day-0");
+		const rect = filledSegmentElements(group).find((el) =>
+			el.startsWith("<rect"),
+		);
+		if (!rect) throw new Error("fixture's first day has a square segment");
+
+		expect(attr(rect, "width")).toBe("24.00");
+	});
+
+	it("floors the bar width at a minimum of 2px when enough days make the natural slot tiny", () => {
+		const manyQuietDays: DayBucket[] = Array.from({ length: 300 }, (_, i) =>
+			i === 0
+				? day("day-0", [
+						series({ model: "model-a", cost: 5 }),
+						series({ model: "model-b", cost: 3 }),
+					])
+				: day(`day-${i}`, []),
+		);
+
+		const group = dayBarMarkup(renderHtml(manyQuietDays), "day-0");
+		const rect = filledSegmentElements(group).find((el) =>
+			el.startsWith("<rect"),
+		);
+		if (!rect) throw new Error("fixture's first day has a square segment");
+
+		expect(attr(rect, "width")).toBe("2.00");
+	});
+});
+
 describe("renderHtml: cost/token toggle", () => {
 	it("starts on cost, with the tokens panel hidden", () => {
 		const html = renderHtml(buildWindow());
@@ -428,6 +615,19 @@ describe("renderHtml: day drill-down payload", () => {
 
 		expect(quietDay?.entries).toEqual([]);
 		expect(quietDay?.total).toBe(formatCurrency(0));
+	});
+
+	it("appends the measure's unit label after the formatted value, for tokens", () => {
+		// A no-op withUnit (dropping the unitLabel suffix) would leave this reading "25.0k"
+		// instead of "25.0k tokens" - still a valid-looking number, so nothing else in the
+		// suite would catch it.
+		const payload = readPanelData(renderHtml(buildWindow()), "panel-tokens");
+
+		const busyDay = payload.days.find((d) => d.day === "2026-09-07");
+		if (!busyDay) throw new Error("fixture has 2026-09-07");
+
+		// 2026-09-07's token total: 12,000 + 9,000 + 4,000 = 25,000.
+		expect(busyDay.total).toBe("25.0k tokens");
 	});
 });
 

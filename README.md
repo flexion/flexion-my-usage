@@ -14,11 +14,11 @@ This closes that gap - an over-time view of your usage, with a notional cost wor
 
 - Reads your local coding-agent session data, read-only - opencode first, more agents to follow.
 - Computes notional cost as tokens times published per-model rates, with cache reads and writes priced separately.
-- Rolls it into an over-time view and renders a single self-contained web page.
+- Rolls it into an over-time view and serves it from a local server, opened in your browser.
 
 ## Local by design
 
-Everything runs on your machine. It reads local files, writes a local page, and never phones home - no account, no upload, no back end. That's the point: it's what lets it run in locked-down environments.
+Everything runs on your machine. It reads local files and serves a local page from a local server - no account, no upload, nothing ever leaves the machine. That's the point: it's what lets it run in locked-down environments.
 
 ## Proxies and offline machines
 
@@ -41,7 +41,7 @@ Planned, not wired up yet:
 npx <package-tbd>
 ```
 
-Scans your local session data, writes an `index.html`, and opens it.
+Scans your local session data, starts a local server, and opens it in your browser.
 
 ## License
 

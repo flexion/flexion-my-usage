@@ -17,7 +17,7 @@
 		"build": "tsc -p tsconfig.build.json",
 		"dev": "tsx src/index.ts",
 		"typecheck": "tsc --noEmit && tsc -p tsconfig.config.json",
-		"check:package": "yarn build && node scripts/check-package.mjs",
+		"check:package": "yarn build && tsx scripts/check-package.mjs",
 		"lint": "biome check . && sh scripts/check-coverage-pragmas.sh",
 		"format": "biome format --write .",
 		"test": "vitest run --coverage"

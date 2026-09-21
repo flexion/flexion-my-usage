@@ -79,7 +79,7 @@ function bucketCost(
  * `output_cost_per_reasoning_token` when it has one and the output rate otherwise, which is
  * how both LiteLLM and opencode bill it.
  *
- * Caveat: opencode releases before v1.3.17 (fix landed 2026-04-04) stored `output` INCLUDING
+ * Caveat: opencode releases before v1.3.16 (fix landed 2026-04-04) stored `output` INCLUDING
  * reasoning tokens, so their rows overlap the reasoning bucket. Reading those rows correctly
  * is the source adapter's job; this function trusts the disjoint-bucket contract.
  */

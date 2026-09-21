@@ -7,13 +7,17 @@
 # v8 also honors inline comments such as `/* v8 ignore next */`, which would let any
 # change carve out untested code without touching config. Those are banned.
 #
-# Scans src/ plus COVERED_NON_SRC below: scripts/package-rules.ts (bead myusage-4xu.19) is
-# build-time-only tooling that lives outside src/ on purpose (src/ is what `yarn build`
-# ships, and this checker must not ship itself), but vitest.config.ts's coverage.include
-# still covers it at 100% like every src/ file - so it needs the same pragma ban. One
-# explicit path here, not a scripts/**/*.ts glob, matching how tsconfig.config.json and
-# vitest.config.ts already reference it: nothing else under scripts/ is covered, so nothing
-# else needs scanning.
+# Scans src/ plus every path in COVERED_NON_SRC below: scripts/package-rules.ts (bead
+# myusage-4xu.19) is build-time-only tooling that lives outside src/ on purpose (src/ is what
+# `yarn build` ships, and this checker must not ship itself), but vitest.config.ts's
+# coverage.include still covers it at 100% like every src/ file - so it needs the same pragma
+# ban. Explicit paths here, not a scripts/**/*.ts glob, matching how tsconfig.config.json and
+# vitest.config.ts already reference them: nothing else under scripts/ is covered, so nothing
+# else needs scanning. scripts/critical-persisted.ts (bead myusage-4xu.25) and
+# scripts/fixtures-guard.ts (bead myusage-9os) are the same shape, for the same reason;
+# critical-persisted.ts was covered by vitest.config.ts's coverage.include from the start but
+# missed here until myusage-9os noticed the two lists had drifted apart while auditing this
+# exact class of "covered somewhere, gated nowhere" gap.
 #
 # Fails closed: a missing or renamed src/ or COVERED_NON_SRC entry is a hard error, not a
 # silent pass, and grep's own error exit (2) is treated the same as a match, not swallowed
@@ -31,16 +35,20 @@ if [ ! -d src ]; then
   exit 1
 fi
 
-COVERED_NON_SRC="scripts/package-rules.ts"
-if [ ! -f "$COVERED_NON_SRC" ]; then
-  echo "coverage-pragmas: $COVERED_NON_SRC not found; refusing to pass a check that scanned nothing." >&2
-  exit 1
-fi
+COVERED_NON_SRC="scripts/package-rules.ts scripts/critical-persisted.ts scripts/fixtures-guard.ts"
+for f in $COVERED_NON_SRC; do
+  if [ ! -f "$f" ]; then
+    echo "coverage-pragmas: $f not found; refusing to pass a check that scanned nothing." >&2
+    exit 1
+  fi
+done
 
 pattern='(v8|c8|istanbul|node:coverage)[[:space:]]+ignore'
 
 set +e
-hits=$(grep -rniE "$pattern" src "$COVERED_NON_SRC")
+# shellcheck disable=SC2086  # COVERED_NON_SRC is a deliberate space-separated path list, not a
+# single quoted argument - none of its entries contain a space, so word-splitting is safe here.
+hits=$(grep -rniE "$pattern" src $COVERED_NON_SRC)
 rc=$?
 set -e
 

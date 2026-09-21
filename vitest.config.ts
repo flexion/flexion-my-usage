@@ -33,7 +33,7 @@ type CoverageGate = {
 // expected type").
 type PoolGate = "forks";
 
-// --- coverage.exclude: every entry must be an explicit path, never a glob (myusage-c2a) ---
+// --- coverage.exclude: two policies share one array (myusage-c2a, myusage-9os) ---
 //
 // CoverageGate above pins the four threshold numbers by name, but says nothing about the
 // SHAPE of coverage.exclude/coverage.include - and nothing else did either. Confirmed by
@@ -46,16 +46,20 @@ type PoolGate = "forks";
 // against on-disk variants of this file, not a lint rule) - see that file's own header for
 // why the enforcement boundary is `tsc -p tsconfig.config.json`, not `yarn lint`.
 //
-// TestSupportPattern whitelists the three globs AGENTS.md itself carves out ("Test code and
-// test support are excluded by naming: *.test.*, *.spec.*, *.fixtures.*"). Everything else
-// coverage.exclude holds is a humble-object path (AGENTS.md: "explicit paths, never globs"),
-// so ExplicitPath below lets the three whitelisted globs through unchanged and maps every
-// OTHER entry containing a glob metacharacter to `never` - unassignable to anything, so it
-// fails right where the offending literal sits.
-type TestSupportPattern =
-	| "src/**/*.test.*"
-	| "src/**/*.spec.*"
-	| "src/**/*.fixtures.*";
+// The array below holds two DIFFERENT kinds of entry, not one (myusage-9os: the original
+// header here claimed "every entry must be an explicit path, never a glob", which was never
+// true of the first two entries and said nothing about why that was fine): TestSupportPattern
+// whitelists the globs AGENTS.md itself carves out for test code and test support (*.test.*,
+// *.fixtures.* - *.spec.* was dropped from this convention entirely, see the exclude array's
+// own comment below for why). Everything else coverage.exclude holds is a humble-object path
+// (AGENTS.md: "Humble objects are listed as explicit paths, never globs"), so ExplicitPath
+// below lets the whitelisted test-support globs through unchanged and maps every OTHER entry
+// containing a glob metacharacter to `never` - unassignable to anything, so it fails right
+// where the offending literal sits. A fixtures file's own CONTENT (does it actually behave
+// like test support, or does it hide real logic production code depends on?) is a different
+// question this type-level guard cannot ask - see scripts/fixtures-guard.ts, wired into
+// `yarn lint`, for the runtime half of that check.
+type TestSupportPattern = "src/**/*.test.*" | "src/**/*.fixtures.*";
 
 // Deliberately a flat ternary chain, not a distributive conditional over a union of
 // characters: distributing over a union (`GlobChar extends infer C ? ... : never`)
@@ -146,7 +150,15 @@ const config = {
 		// Only this checkout's tests. Vitest's default glob also matches other agents'
 		// git worktrees under .claude/worktrees/, which would run (and report) their
 		// in-flight work as if it were ours.
-		include: ["src/**/*.test.ts"],
+		//
+		// `*.test.*`, not the literal `*.test.ts` this held before myusage-9os: the old,
+		// narrower glob silently dropped `.test.mts`/`.test.cts`/`.test.tsx` too (none exist in
+		// this repo today, but nothing stopped one from being added and never running, the same
+		// blind spot that let a whole `*.spec.ts` file go unrun - see coverage.exclude's own
+		// comment below for that half of the story). Matching coverage.exclude's own
+		// `src/**/*.test.*` keeps include and exclude symmetric on the one convention they both
+		// still recognize.
+		include: ["src/**/*.test.*"],
 
 		// Pinned, not left to vitest's default. src/aggregate.test.ts's beforeEach mutates
 		// process.env.TZ to exercise daylight-saving edge cases, then asserts a known
@@ -176,16 +188,38 @@ const config = {
 			// scripts/critical-persisted.ts (bead myusage-4xu.25) is the same shape of file
 			// for the same reason: non-product tooling that must not ship in dist/, listed
 			// here explicitly rather than folded into a glob.
+			//
+			// scripts/fixtures-guard.ts (bead myusage-9os) is the same shape again: the pure
+			// decision logic behind the runtime check that a *.fixtures.* file excluded below
+			// is actually test support (see that file's header and
+			// scripts/check-fixtures-guard.mjs, wired into `yarn lint`).
 			include: requireCoveragePattern([
 				"src/**/*.ts",
 				"scripts/package-rules.ts",
 				"scripts/critical-persisted.ts",
+				"scripts/fixtures-guard.ts",
 			]),
 
 			exclude: explicitPaths([
 				// Test code and test support. Same convention as tsconfig.build.json.
+				//
+				// *.spec.* is deliberately NOT here (myusage-9os): it used to be, alongside
+				// *.test.* and *.fixtures.*, but test.include above only ever matched literal
+				// `.test.ts` - so a src/x.spec.ts landed here, in coverage.exclude, while never
+				// once being run by test.include. It was invisible either way: not run, not
+				// counted, a failing assertion inside one produced a green `yarn test`.
+				// Reproduced by hand before this fix: a throwaway src/zzz-scratch.spec.ts with
+				// `expect(true).toBe(false)` left `yarn test` exiting 0, the file named nowhere
+				// in its output, while an identical src/zzz-scratch-control.test.ts failed
+				// loudly, as expected. Confirmed no src/**/*.spec.* file exists anywhere in this
+				// repo (`find src -name '*.spec.*'` - empty) - the convention was copied in from
+				// a template and never actually used, so this drops it everywhere it was
+				// documented (AGENTS.md, CLAUDE.md, tsconfig.build.json,
+				// scripts/package-rules.ts) rather than widening test.include to make an unused
+				// convention work. Reintroducing `.spec.` as a recognized test-file suffix needs
+				// test.include widened first, in the same commit - see this array's sibling
+				// comment on `include` above.
 				"src/**/*.test.*",
-				"src/**/*.spec.*",
 				//
 				// This is *why* the gitignored coverage/ directory never leaks
 				// src/pricing.fixtures.ts's throwaway TEST_ORIGIN_KEY (myusage-qhc,
@@ -199,6 +233,20 @@ const config = {
 				// after `yarn test`, `grep -rl 'BEGIN PRIVATE KEY' coverage/` returns
 				// nothing, and `find coverage -iname '*fixtures*'` finds no report file
 				// at all.
+				//
+				// Unlike *.test.*, excluding a *.fixtures.* file here is not by itself proof
+				// it's actually test support (myusage-9os): this array only says a file named
+				// this way is skipped, never why that name is trustworthy. Reproduced by hand
+				// before this fix: a throwaway src/zzz-scratch.fixtures.ts holding a real,
+				// uncovered branch, imported and called from src/aggregate.ts exactly like a
+				// normal dependency, left `yarn lint`, `yarn typecheck` and `yarn test` all
+				// exiting 0 - `yarn test` reported 100% coverage having never looked at the
+				// branch. scripts/fixtures-guard.ts (wired into `yarn lint` via
+				// scripts/check-fixtures-guard.mjs) is the runtime check this array's shape
+				// alone can't express: it fails the moment anything outside test support imports
+				// a *.fixtures.* file, and separately fails a *.fixtures.* file that can't be
+				// verified as test-only (it doesn't import vitest, and no real *.test.* file
+				// references it either).
 				"src/**/*.fixtures.*",
 
 				// Humble objects (invasive-species rule): I/O and wiring only, no logic.

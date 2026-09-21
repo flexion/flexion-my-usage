@@ -308,74 +308,82 @@ describe("loadPriceTable: a real proxy tunneling a real response body", () => {
 	);
 	// Comfortably past the ~15s stall this test guards against, and comfortably past the
 	// fixed path's real latency (well under 100ms on loopback) - a regression shows up as a
-	// timeout warning, not a slow pass.
+	// timeout warning, not a slow pass. myusage-50y: this only governs because it(...) below
+	// is given TIMEOUT_MS as its own third argument - without that, vitest's 5000ms default
+	// governs instead (confirmed empirically: a probe test with no third argument hit "Error:
+	// Test timed out in 5000ms"), and this constant, along with the exit-wait promise below
+	// that also reads it, would be dead code.
 	const TIMEOUT_MS = 20_000;
 
-	it("parses the full table instead of hanging until the timeout", async () => {
-		// Large enough to land well past the size where the original bug always reproduced
-		// (200KB and up, by hand-testing while diagnosing this): the real LiteLLM table is
-		// roughly 2.8-3MB, so this fixture body is sized to be decisively over the failure
-		// threshold without needing the real file.
-		const bigTable: Record<string, unknown> = {};
-		for (let i = 0; i < 6000; i++) {
-			bigTable[`model-${i}`] = {
-				litellm_provider: "openai",
-				input_cost_per_token: 0.00001,
-				output_cost_per_token: 0.00002,
-			};
-		}
-		const body = JSON.stringify(bigTable);
-		expect(body.length).toBeGreaterThan(256 * 1024);
+	it(
+		"parses the full table instead of hanging until the timeout",
+		async () => {
+			// Large enough to land well past the size where the original bug always reproduced
+			// (200KB and up, by hand-testing while diagnosing this): the real LiteLLM table is
+			// roughly 2.8-3MB, so this fixture body is sized to be decisively over the failure
+			// threshold without needing the real file.
+			const bigTable: Record<string, unknown> = {};
+			for (let i = 0; i < 6000; i++) {
+				bigTable[`model-${i}`] = {
+					litellm_provider: "openai",
+					input_cost_per_token: 0.00001,
+					output_cost_per_token: 0.00002,
+				};
+			}
+			const body = JSON.stringify(bigTable);
+			expect(body.length).toBeGreaterThan(256 * 1024);
 
-		const origin = await startFakeOrigin(body);
-		const proxy = await startTunnelingProxy(origin.port);
-		try {
-			const cacheDir = await newCacheDir();
-			// NODE_EXTRA_CA_CERTS only exists as a file path, and is read once at Node
-			// startup, so it has to be a real file on disk in the CHILD's env, set before
-			// that child process starts.
-			const certPath = join(cacheDir, "test-origin-ca.pem");
-			await writeFile(certPath, TEST_ORIGIN_CERT);
+			const origin = await startFakeOrigin(body);
+			const proxy = await startTunnelingProxy(origin.port);
+			try {
+				const cacheDir = await newCacheDir();
+				// NODE_EXTRA_CA_CERTS only exists as a file path, and is read once at Node
+				// startup, so it has to be a real file on disk in the CHILD's env, set before
+				// that child process starts.
+				const certPath = join(cacheDir, "test-origin-ca.pem");
+				await writeFile(certPath, TEST_ORIGIN_CERT);
 
-			// Deliberately spawn(), not spawnSync(): this test's fake origin and tunneling
-			// proxy run as event listeners IN THIS SAME PROCESS. spawnSync blocks the whole
-			// event loop until the child exits, so neither server could ever accept the
-			// child's connection - confirmed by hand while building this fixture (the child
-			// hung until spawnSync's own external timeout killed it, well past
-			// loadPriceTable's own internal timeout, with no output at all). Async spawn()
-			// keeps this process's event loop - and so its origin/proxy servers - running
-			// while the child talks to them.
-			const child = spawn(TSX, [RUNNER, proxy.url, cacheDir, "18000"], {
-				env: { ...process.env, NODE_EXTRA_CA_CERTS: certPath },
-			});
-			let stdout = "";
-			let stderr = "";
-			child.stdout.on("data", (chunk: Buffer) => {
-				stdout += chunk;
-			});
-			child.stderr.on("data", (chunk: Buffer) => {
-				stderr += chunk;
-			});
-			const exitCode = await new Promise<number | null>((resolve, reject) => {
-				const timer = setTimeout(() => {
-					child.kill();
-					reject(new Error(`runner did not exit within ${TIMEOUT_MS}ms`));
-				}, TIMEOUT_MS);
-				child.on("exit", (code) => {
-					clearTimeout(timer);
-					resolve(code);
+				// Deliberately spawn(), not spawnSync(): this test's fake origin and tunneling
+				// proxy run as event listeners IN THIS SAME PROCESS. spawnSync blocks the whole
+				// event loop until the child exits, so neither server could ever accept the
+				// child's connection - confirmed by hand while building this fixture (the child
+				// hung until spawnSync's own external timeout killed it, well past
+				// loadPriceTable's own internal timeout, with no output at all). Async spawn()
+				// keeps this process's event loop - and so its origin/proxy servers - running
+				// while the child talks to them.
+				const child = spawn(TSX, [RUNNER, proxy.url, cacheDir, "18000"], {
+					env: { ...process.env, NODE_EXTRA_CA_CERTS: certPath },
 				});
-			});
+				let stdout = "";
+				let stderr = "";
+				child.stdout.on("data", (chunk: Buffer) => {
+					stdout += chunk;
+				});
+				child.stderr.on("data", (chunk: Buffer) => {
+					stderr += chunk;
+				});
+				const exitCode = await new Promise<number | null>((resolve, reject) => {
+					const timer = setTimeout(() => {
+						child.kill();
+						reject(new Error(`runner did not exit within ${TIMEOUT_MS}ms`));
+					}, TIMEOUT_MS);
+					child.on("exit", (code) => {
+						clearTimeout(timer);
+						resolve(code);
+					});
+				});
 
-			expect(exitCode, stderr).toBe(0);
-			expect(JSON.parse(stdout)).toEqual({
-				table: Object.keys(bigTable).length,
-			});
-		} finally {
-			await proxy.close();
-			await origin.close();
-		}
-	});
+				expect(exitCode, stderr).toBe(0);
+				expect(JSON.parse(stdout)).toEqual({
+					table: Object.keys(bigTable).length,
+				});
+			} finally {
+				await proxy.close();
+				await origin.close();
+			}
+		},
+		TIMEOUT_MS,
+	);
 });
 
 // round-3 review (F4): no test in either file exercised a malformed HTTPS_PROXY through

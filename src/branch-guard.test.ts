@@ -361,6 +361,48 @@ describe("checkBranchGuard", () => {
 		expect(checkBranchGuard(files)).toEqual([]);
 	});
 
+	it("does not flag an optional method signature (discover?(): Promise<void>;) as a ternary (myusage-4xu.64: the original optional-marker guard excluded x?:/x?)/x?, but not ?( - reproduced end-to-end before this fix by planting this exact shape into a scratch src/sources/types.ts and confirming the real driver reported a banned-ternary violation)", () => {
+		const files = [
+			{
+				path: "src/sources/types.ts",
+				text: [
+					"export interface UsageSource {",
+					"\treadonly name: string;",
+					"\tdiscover?(): Promise<void>;",
+					"\tclose?(): Promise<void>;",
+					"}",
+					"",
+				].join("\n"),
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([]);
+	});
+
+	it("does not flag an optional generic method signature (load?<T>(id: string): Promise<T>;) as a ternary - the ?< half of the same fix", () => {
+		const files = [
+			{
+				path: "src/sources/types.ts",
+				text: "export interface Loader {\n\tload?<T>(id: string): Promise<T>;\n}\n",
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([]);
+	});
+
+	it("still flags a real ternary whose consequent starts with a parenthesized expression (x ? (x) : -x) - proves the ?( exclusion above didn't also swallow this legitimate shape, since a real ternary always has whitespace between ? and (, unlike an optional method signature's ?(", () => {
+		const files = [
+			{
+				path: "src/index.ts",
+				text: "export const t = (x: number) => (x > 0 ? (x) : -x);\n",
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{ path: "src/index.ts", kind: "ternary", line: 1, snippet: "?" },
+		]);
+	});
+
 	it("does not flag branch-shaped text inside a string or comment literal", () => {
 		const files = [
 			{

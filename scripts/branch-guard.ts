@@ -137,10 +137,24 @@ interface ConstructMatcher {
 //   side of `??`/`??=` - without the lookbehind half, the SECOND `?` of `??` independently
 //   satisfies the two lookaheads below and would double-report a nullish-coalescing site as a
 //   ternary too; caught during this file's own test-writing by a planted `x ??= 1;` fixture, not
-//   by inspection), not immediately followed by `.` (optional chaining), and not, allowing
+//   by inspection), not immediately followed by `.` (optional chaining), not, allowing
 //   whitespace, immediately followed by `:`/`)`/`,` (an optional property/parameter marker -
 //   `x?:`, `x?)`, `x?,` - which has nothing between the `?` and that next token; a real ternary's
-//   consequent expression can never be empty, so this is a safe split between the two shapes).
+//   consequent expression can never be empty, so this is a safe split between the two shapes),
+//   and not immediately (ZERO whitespace - no `\s*` here) followed by `(` or `<` (myusage-4xu.64:
+//   an optional METHOD signature - `discover?(): Promise<void>;`, or its generic form
+//   `load?<T>(id: string): Promise<T>;` - is the same "empty consequent" shape as `x?:`/`x?)`/
+//   `x?,`, just spelled with `(`/`<` instead of `:`/`)`/`,`. Unlike those three, whitespace can't
+//   be allowed here: `(` and `<` CAN legally start a real ternary's consequent expression -
+//   `x ? (a) : b` is ordinary, idiomatic code - so "whitespace then `(`" is not proof of an empty
+//   consequent the way "whitespace then `:`" is. Requiring zero whitespace between `?` and
+//   `(`/`<` is what keeps that real ternary correctly flagged (src/branch-guard.test.ts pins this
+//   with an `x ? (x) : -x`-shaped test) while still excluding the method-signature shape, which
+//   this codebase's own formatting convention never writes with a space before its `(`/`<`.
+//   Known, accepted gap this narrower rule doesn't attempt to close (fails CLOSED, matching this
+//   file's other documented gaps): a genuinely zero-whitespace terse ternary immediately followed
+//   by `(` or `<` - `cond?(a):(b)` - would be misread as an optional marker and go unflagged. Not
+//   a realistic shape in the type-only humble-object files this guard actually scans today.
 const CONSTRUCT_PATTERNS: readonly ConstructMatcher[] = [
 	{ kind: "if", pattern: /\bif\s*\(/g },
 	{ kind: "switch", pattern: /\bswitch\s*\(/g },
@@ -150,7 +164,7 @@ const CONSTRUCT_PATTERNS: readonly ConstructMatcher[] = [
 	},
 	{ kind: "&&", pattern: /&&/g },
 	{ kind: "??", pattern: /\?\?/g },
-	{ kind: "ternary", pattern: /(?<!\?)\?(?!\.|\?)(?!\s*[:),])/g },
+	{ kind: "ternary", pattern: /(?<!\?)\?(?!\.|\?)(?!\s*[:),])(?![(<])/g },
 ];
 
 function lineAt(text: string, index: number): number {

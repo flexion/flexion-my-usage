@@ -18,18 +18,24 @@ import {
 } from "../scripts/package-rules.js";
 
 describe("filterTestOrSupportPaths: the test-or-support name pattern and its offender filter", () => {
-	it("flags a fixtures file and a spec file", () => {
-		const paths = [
-			"src/pricing.fixtures.ts",
-			"src/pricing-table.spec.ts",
-			"src/aggregate.test.ts",
-		];
+	it("flags a fixtures file and a test file", () => {
+		const paths = ["src/pricing.fixtures.ts", "src/aggregate.test.ts"];
 
 		expect(filterTestOrSupportPaths(paths)).toEqual([
 			"src/pricing.fixtures.ts",
-			"src/pricing-table.spec.ts",
 			"src/aggregate.test.ts",
 		]);
+	});
+
+	it("does not flag a .spec. file - that suffix is not part of this convention (myusage-9os)", () => {
+		// vitest.config.ts's test.include never matched *.spec.ts, so a file named this way was
+		// invisible to the coverage gate while also never running as a test - the repo dropped
+		// the suffix from the convention entirely rather than widen test.include to match a
+		// pattern nothing here actually uses. This pins that a *.spec.ts file is now treated
+		// like any other real source file by this check, not test support.
+		const paths = ["src/pricing-table.spec.ts"];
+
+		expect(filterTestOrSupportPaths(paths)).toEqual([]);
 	});
 
 	it("does not flag testing.ts or contest.ts - real names that merely contain the substring 'test'", () => {

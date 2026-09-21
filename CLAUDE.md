@@ -79,7 +79,7 @@ _Add a brief overview of your project architecture_
 Full policy is in `AGENTS.md` under "Testing & coverage policy". That file is the source of truth. The short version:
 
 - `yarn test` fails below 100%. Every file under `src/` counts, tested or not.
-- Exclude only **humble objects** (zero logic, I/O or wiring only), in `coverage.exclude` in `vitest.config.ts`, as explicit paths. No globs. Test code is excluded by name: `*.test.*`, `*.spec.*`, `*.fixtures.*`.
+- Exclude only **humble objects** (zero logic, I/O or wiring only), in `coverage.exclude` in `vitest.config.ts`, as explicit paths. No globs. Test code is excluded by name (these two ARE globs, on purpose): `*.test.*`, `*.fixtures.*`. `*.spec.*` is not a recognized suffix here (myusage-9os) - `test.include` never matched it, so it was invisible to both halves of the gate.
 - Inline `v8`/`c8`/`istanbul ignore` comments fail `yarn lint`.
 - Invasive-species rule: keep application logic free of vendor imports. Adapters stay thin, and one with real logic is covered, not excluded.
 - Don't `vi.mock` a vendor to reach a line. Use a real local fixture or a fake behind a seam we own, or extract the logic.

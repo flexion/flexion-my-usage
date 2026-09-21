@@ -18,10 +18,14 @@ import { basename } from "node:path";
  * this instead of repeating the literal. */
 export const DIST = "dist";
 
-// Convention (keep in sync with tsconfig.build.json): a file whose name contains ".test.",
-// ".spec." or ".fixtures." is test code or test support. Anything only tests import belongs
-// in one of those names so the build leaves it out.
-const TEST_OR_SUPPORT = /\.(test|spec|fixtures)\./;
+// Convention (keep in sync with tsconfig.build.json): a file whose name contains ".test." or
+// ".fixtures." is test code or test support. Anything only tests import belongs in one of
+// those names so the build leaves it out. ".spec." is deliberately NOT part of this
+// convention (myusage-9os): it used to be, but vitest.config.ts's test.include never matched
+// it, so a *.spec.ts file was invisible to the coverage gate while also never running as a
+// test - see that file's own comment for the full reasoning. No *.spec.* file has ever
+// existed in this repo.
+const TEST_OR_SUPPORT = /\.(test|fixtures)\./;
 
 // bead myusage-4xu.20: a second, independent way a path can be test support - living under one
 // of these directories, regardless of the file's own name inside it (test-utils.ts under

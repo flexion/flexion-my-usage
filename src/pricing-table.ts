@@ -7,7 +7,7 @@
 // should ignore unknown fields. The body is treated as untrusted data: it is only ever parsed
 // with JSON.parse and read field by field, never evaluated.
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { ProxyAgent, fetch as undiciFetch } from "undici";
@@ -19,6 +19,17 @@ export const PRICE_TABLE_URL =
 /** The published table is ~3 MB; this leaves headroom without letting a bad response fill memory. */
 export const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_TIMEOUT_MS = 15_000;
+
+/**
+ * Maximum age before a cached price table is stale enough to trigger one refresh attempt on
+ * the next run, instead of being served forever (see `isCacheStale`). LiteLLM's table moves on
+ * the order of days to weeks - new models land, rates get corrected - so 24 hours bounds how
+ * long a newly-added or repriced model can stay unpriced to about a day, while keeping the
+ * common case (rerunning within the same day) on the fast, no-fetch path this module is built
+ * around. Overridable via `LoadOptions.maxCacheAgeMs` for callers - and tests - that need a
+ * different bound.
+ */
+export const DEFAULT_MAX_CACHE_AGE_MS = 24 * 60 * 60 * 1000;
 
 const CACHE_DIR_NAME = "my-usage";
 const CACHE_FILE_NAME = "litellm-model-prices.json";
@@ -57,6 +68,12 @@ export interface LoadOptions {
 	cacheDir?: string;
 	/** Fetch even when a usable cache exists. Off by default: with a cache, nothing is sent. */
 	refresh?: boolean;
+	/**
+	 * Maximum cache age, in milliseconds, before a stale cache triggers one refresh attempt on
+	 * the next run; defaults to `DEFAULT_MAX_CACHE_AGE_MS`. A cache within this age is returned
+	 * immediately, with no fetch, exactly like a cache hit today - unless `refresh` is also set.
+	 */
+	maxCacheAgeMs?: number;
 	/** Fetch timeout in milliseconds. */
 	timeoutMs?: number;
 	/** Maximum accepted response size in bytes. */
@@ -157,6 +174,17 @@ export function resolveCacheDir(
 	return join(base, CACHE_DIR_NAME);
 }
 
+/**
+ * Whether a cache this old should trigger a refresh attempt on the next run. A pure decision
+ * over plain numbers - exercised directly in tests, so nothing about its truth table depends
+ * on real time passing or a real file's mtime. The boundary is inclusive of `maxAgeMs` itself
+ * (an age exactly at the limit still counts as fresh), matching this module's other ceiling
+ * check (`isRate`'s `<= MAX_RATE_PER_TOKEN`).
+ */
+export function isCacheStale(ageMs: number, maxAgeMs: number): boolean {
+	return ageMs > maxAgeMs;
+}
+
 /** One short, single-line reason suitable for a warning. */
 export function describeError(error: unknown): string {
 	if (error instanceof Error && error.name === "TimeoutError")
@@ -172,15 +200,23 @@ export function describeError(error: unknown): string {
 async function readCache(
 	path: string,
 	maxBytes: number,
-): Promise<PriceTable | undefined> {
+): Promise<{ table: PriceTable; ageMs: number } | undefined> {
 	let text: string;
+	let mtimeMs: number;
 	try {
-		text = await readFile(path, "utf8");
+		const [content, info] = await Promise.all([
+			readFile(path, "utf8"),
+			stat(path),
+		]);
+		text = content;
+		mtimeMs = info.mtimeMs;
 	} catch {
 		return undefined;
 	}
 	if (Buffer.byteLength(text, "utf8") > maxBytes) return undefined;
-	return parseBody(text);
+	const table = parseBody(text);
+	if (!table) return undefined;
+	return { table, ageMs: Date.now() - mtimeMs };
 }
 
 /** Reads the body as text, refusing more than `maxBytes` whether or not the size was declared. */
@@ -319,10 +355,12 @@ async function writeCache(
 /**
  * Returns the price table, or undefined when none is available.
  *
- * - A usable cached copy is returned as-is, with no network call (unless `refresh` is set).
- * - Otherwise the table is fetched once, validated, and cached for next time.
- * - If the fetch fails and a cache exists, the cache is used; if there is no cache, the
- *   caller gets undefined. Failures produce one short warning line and never throw.
+ * - A usable cached copy no older than `maxCacheAgeMs` (see `DEFAULT_MAX_CACHE_AGE_MS`) is
+ *   returned as-is, with no network call.
+ * - A cache older than that, or `refresh: true`, triggers exactly one fetch attempt.
+ * - If that fetch succeeds, the fresh table is validated, cached for next time, and used.
+ * - If it fails and a cache exists (however old), the cache is used, with one warning line.
+ *   If there is no cache, the caller gets undefined. Failures never throw.
  * - A corrupt or empty cache file counts as no cache.
  */
 export async function loadPriceTable(
@@ -338,7 +376,13 @@ export async function loadPriceTable(
 		cachePath,
 		options.maxBytes ?? DEFAULT_MAX_BYTES,
 	);
-	if (cached && !options.refresh) return cached;
+	const stale =
+		cached !== undefined &&
+		isCacheStale(
+			cached.ageMs,
+			options.maxCacheAgeMs ?? DEFAULT_MAX_CACHE_AGE_MS,
+		);
+	if (cached && !options.refresh && !stale) return cached.table;
 
 	let fetched: { table: PriceTable; text: string };
 	try {
@@ -349,7 +393,7 @@ export async function loadPriceTable(
 			warn(
 				`my-usage: price table refresh failed (${reason}); using the cached copy`,
 			);
-			return cached;
+			return cached.table;
 		}
 		warn(
 			`my-usage: price table unavailable (${reason}); rows will show as unpriced`,

@@ -15,7 +15,9 @@ import {
 	useTempCacheDirs,
 } from "./pricing.fixtures.js";
 import {
+	DEFAULT_MAX_CACHE_AGE_MS,
 	describeError,
+	isCacheStale,
 	loadPriceTable,
 	PRICE_TABLE_URL,
 	parsePriceTable,
@@ -107,6 +109,27 @@ describe("parsePriceTable: the rate ceiling", () => {
 			expect(table.has("ceiling/optional")).toBe(false);
 		},
 	);
+});
+
+describe("isCacheStale: the age/max-age boundary", () => {
+	it.each([
+		["far younger than the max age", 1000, DEFAULT_MAX_CACHE_AGE_MS, false],
+		[
+			"exactly at the max age (the boundary is inclusive - still fresh)",
+			DEFAULT_MAX_CACHE_AGE_MS,
+			DEFAULT_MAX_CACHE_AGE_MS,
+			false,
+		],
+		[
+			"one millisecond past the max age",
+			DEFAULT_MAX_CACHE_AGE_MS + 1,
+			DEFAULT_MAX_CACHE_AGE_MS,
+			true,
+		],
+		["zero age (just written)", 0, DEFAULT_MAX_CACHE_AGE_MS, false],
+	])("%s", (_name, ageMs, maxAgeMs, expected) => {
+		expect(isCacheStale(ageMs, maxAgeMs)).toBe(expected);
+	});
 });
 
 describe("parsePriceTable: untrusted top-level shape", () => {

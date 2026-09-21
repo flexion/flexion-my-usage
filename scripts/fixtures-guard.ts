@@ -135,8 +135,29 @@ function isFixturesFile(path: string): boolean {
 	return /\.fixtures\./.test(posix.basename(path));
 }
 
+// bead myusage-4xu.58: a legitimate test-support helper shaped like src/__tests__/helper.ts (no
+// ".test." anywhere in its own basename) wasn't counted as a real test referencer, producing a
+// false-positive unverified-fixtures violation on an otherwise-fine fixtures file only referenced
+// by such a helper. Mirrors package-rules.ts's own hasTestSupportDir - exact directory-segment
+// match, not a substring check, same discipline isFixturesFile/isRealTestFile's basename checks
+// already apply - but deliberately a narrower set than package-rules.ts's TEST_SUPPORT_DIR: that
+// one also includes "fixtures", which is right for ITS purpose (classifying what a build may ship)
+// but wrong for this one (a bare fixtures/ directory proves a file is test SUPPORT, not that it's
+// a REAL test able to verify another fixtures file - the same distinction hasRealTestReferencer
+// already draws against a *.fixtures.* referencer below).
+const TEST_SUPPORT_DIR = new Set(["__tests__", "__mocks__"]);
+
+function isUnderTestSupportDir(path: string): boolean {
+	// SourceFile's contract is already POSIX-separated repo-relative paths (see that interface's
+	// own doc comment), so unlike package-rules.ts's normalizeSeparators (built for npm's raw,
+	// possibly Windows-separated pack output) no separator normalization is needed here.
+	const segments = path.split("/");
+	segments.pop(); // the basename itself is not a directory segment
+	return segments.some((segment) => TEST_SUPPORT_DIR.has(segment));
+}
+
 function isRealTestFile(path: string): boolean {
-	return /\.test\./.test(posix.basename(path));
+	return /\.test\./.test(posix.basename(path)) || isUnderTestSupportDir(path);
 }
 
 export type FixturesGuardViolation =

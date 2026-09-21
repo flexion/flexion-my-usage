@@ -36,14 +36,25 @@ describe("stripComments", () => {
 		expect(stripComments(source)).toBe(source);
 	});
 
-	it("does not corrupt a single-quoted string literal containing /*", () => {
-		const source = "const u = 'not /* a comment';";
+	it("does not corrupt a single-quoted string literal containing a terminated /* ... */-shaped sequence", () => {
+		// myusage-4xu.57: the previous fixture's "/*" was UNTERMINATED, so the lazy block-comment
+		// branch (/\*[\s\S]*?\*\//) never matched it regardless of whether string-awareness
+		// worked - this fixture terminates it, so a naive strip (matching comment shapes without
+		// regard to surrounding quotes) would actually consume it, and leaving it alone is what
+		// this test proves.
+		const source = "const u = 'not /* a comment */ here';";
 
 		expect(stripComments(source)).toBe(source);
 	});
 
-	it("does not corrupt a template literal", () => {
-		const source = "const u = `a template literal`;";
+	it("does not corrupt a template literal containing a //- or /*-shaped substring", () => {
+		// myusage-4xu.57: the previous fixture held no "//" or "/*" at all, so it could not tell
+		// "stripComments works" apart from "stripComments does nothing" - this one holds both
+		// shapes inside the backticks, so a naive strip (matching comment shapes without regard
+		// to the enclosing template literal) would corrupt it, and leaving it alone is what this
+		// test proves.
+		const source =
+			"const u = `see https://example.com/x or /* not a comment */ inside`;";
 
 		expect(stripComments(source)).toBe(source);
 	});
@@ -306,6 +317,74 @@ describe("checkFixturesGuard", () => {
 				text: 'import type { PricedRow } from "./pricing.js";\n',
 			},
 			{ path: "src/pricing.ts", text: "export interface PricedRow {}\n" },
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([]);
+	});
+
+	it("matches isFixturesFile on the basename, not the full path - a directory segment shaped like '.fixtures.' must not itself make a resolved path count as a fixtures file", () => {
+		// myusage-4xu.57: src/package-rules.test.ts has a parity test for this exact discipline
+		// on its own analogous helper ("matches on the basename, not the full path"); this mirrors
+		// it for isFixturesFile. The resolved reference here is "src/my.fixtures.dir/index.ts" -
+		// its basename ("index.ts") has no ".fixtures." in it, only an ancestor directory segment
+		// ("my.fixtures.dir") does, so it must not be treated as a fixtures-file reference at all.
+		const files = [
+			{
+				path: "src/aggregate.ts",
+				text: 'import { helper } from "./my.fixtures.dir/index.js";\nhelper();\n',
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([]);
+	});
+
+	it("matches isRealTestFile on the basename, not the full path - a directory segment shaped like '.test.' does not count as a real test referencer", () => {
+		// myusage-4xu.57: same discipline as the isFixturesFile parity test above, for
+		// isRealTestFile. src/my.test.thing/helper.ts's own basename ("helper.ts") has no
+		// ".test." in it, only an ancestor directory segment ("my.test.thing") does, so it must
+		// not count as a real *.test.* referencer - leaving src/thing.fixtures.ts unverified (it
+		// imports no test framework and has no other referencer). The banned-import violation
+		// fires either way (src/my.test.thing/helper.ts is production code regardless of this
+		// distinction), so its presence in the expected result doesn't mask the difference: only
+		// the second, unverified-fixtures violation depends on basename-only matching.
+		const files = [
+			{
+				path: "src/my.test.thing/helper.ts",
+				text: 'import { helper } from "../thing.fixtures.js";\nhelper();\n',
+			},
+			{
+				path: "src/thing.fixtures.ts",
+				text: "export function helper() {\n\treturn 1;\n}\n",
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([
+			{
+				kind: "banned-import",
+				importer: "src/my.test.thing/helper.ts",
+				fixturesFile: "src/thing.fixtures.ts",
+			},
+			{ kind: "unverified-fixtures", fixturesFile: "src/thing.fixtures.ts" },
+		]);
+	});
+
+	it("does not false-positive an unverified-fixtures violation when the only referencer is a __tests__-directory helper without '.test.' in its own basename", () => {
+		// myusage-4xu.58: isRealTestFile required ".test." in the basename, so a legitimate
+		// test-support helper shaped like src/__tests__/helper.ts (no ".test." in "helper.ts")
+		// didn't count as a valid referencer on its own. REPRODUCED by hand against the pre-fix
+		// isRealTestFile (basename-only, no directory check): this exact input produced a
+		// false-positive unverified-fixtures violation for src/thing.fixtures.ts. The importer
+		// itself is exempt from banned-import already (package-rules.ts's own __tests__/
+		// directory convention), so this isolates the unverified-fixtures half of the fix.
+		const files = [
+			{
+				path: "src/__tests__/helper.ts",
+				text: 'import { helper } from "../thing.fixtures.js";\nhelper();\n',
+			},
+			{
+				path: "src/thing.fixtures.ts",
+				text: "export function helper() {\n\treturn 1;\n}\n",
+			},
 		];
 
 		expect(checkFixturesGuard(files)).toEqual([]);

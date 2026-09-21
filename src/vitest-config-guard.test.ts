@@ -804,12 +804,24 @@ describe("vitest.config.ts: coverage.exclude/coverage.include stay explicit", ()
 		// (before myusage-4xu.51's fix), and that workaround is still in place today - so nothing
 		// in the real, unmodified config exercises a `//` comment containing a double-quoted word
 		// inside coverage.exclude's array. This plants one on purpose. If stripComments regressed
-		// (the myusage-4xu.51 bug, or the myusage-4xu.53 block-comment variant), the planted
-		// comment's own quoted text would either get miscounted as an array entry or merge two
-		// real entries together - either way `assertLooksLikeCoveragePathArray` (called from
-		// `findKeyedArray`, itself called by `graftIntoExcludeArray` below) would throw its own
-		// "fixture anchor stale" assertion before typecheck ever runs, failing this test loudly
-		// for the right reason.
+		// the myusage-4xu.51 bug specifically - a `//` comment's own quoted text getting
+		// miscounted as a real array entry, or merged with the entry that follows it - this
+		// test's own `assertLooksLikeCoveragePathArray` (called from `findKeyedArray`, itself
+		// called by `graftIntoExcludeArray` below) would throw its own "fixture anchor stale"
+		// assertion before typecheck ever runs, failing this test loudly for the right reason.
+		//
+		// This does NOT also cover the myusage-4xu.53 block-comment cross-literal-merge variant
+		// (corrected here, myusage-4xu.59, after a reviewer proved the original wording overstated
+		// this test's reach): that bug paired a `*/`-like substring inside one glob-shaped entry
+		// with a `/*`-like substring inside a LATER, separate entry, blanking the comma and quotes
+		// between them as if they were one block comment. Reproducing it needs that specific
+		// adjacent pair, which a single planted `//` line comment doesn't create and which no
+		// entry in the real coverage.exclude/coverage.include holds today - confirmed by hand by
+		// reintroducing the old block-comment-handling regex verbatim into stripComments here and
+		// finding every test in this file, including this one, still green. myusage-4xu.53's own
+		// fix - deleting that code path entirely rather than hardening it (see stripComments' own
+		// comment above for why that's the correct resolution, not a gap) - is what actually
+		// closes that variant; there is no live code path left for a test to regress against.
 		it("still scans coverage.exclude correctly when a comment containing a quoted word sits inside the array", async () => {
 			const real = await realConfigSource();
 			const withComment = insertCommentIntoExcludeArray(

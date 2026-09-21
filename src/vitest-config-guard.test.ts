@@ -459,6 +459,66 @@ function removeCoverageInclude(source: string): string {
 	return source.slice(0, keyStart) + source.slice(end);
 }
 
+/** Replaces test.include's own required-literal entry (`include:
+ * requireTestIncludePattern(["src/**\/*.test.*"])` - see vitest.config.ts's own comment above
+ * `test: {`) with `value` (already quoted) - the test.include mirror of replacePoolValue below,
+ * for the narrowing myusage-4xu.56 protects against: PR #63 (myusage-9os) widened this from the
+ * literal "src/**\/*.test.ts" to "src/**\/*.test.*" so .test.mts/.cts/.tsx files actually run;
+ * narrowing it back silently reopens that exact blind spot, and confirmed by hand nothing caught
+ * it before requireTestIncludePattern (vitest.config.ts) existed.
+ *
+ * Anchored the same way replacePoolValue is, for the same reason: `include:` must be the first
+ * non-whitespace text on its own line (`^[ \t]*include:`, multiline) with a quoted literal on
+ * that same line. This file's own new header comment above `test: {` (explaining the widening
+ * itself) quotes this exact literal in prose, but every comment line starts with `//` first, so
+ * the anchor can only ever land on the real field - never that comment. It also requires the
+ * match to land before coverage.include's own `include:` (a later, unrelated field spelled the
+ * same way, guarded separately above and with no quoted literal on its own opening line), so a
+ * genuinely stale anchor fails loudly here instead of quietly mutating the wrong field. Uses the
+ * `d` (indices) regex flag to get the quoted literal's own start/end directly, rather than
+ * re-deriving them from the match's offset and captured text the way replacePoolValue does -
+ * either approach works; this one reads slightly more directly for a capture that's the whole
+ * quoted literal rather than a scalar value's trailing fragment.
+ *
+ * The capture group is `"[^"\n]*"`, not `"[^"]*"` (caught by hand while writing this test, the
+ * same class of bug stripComments' own header comment documents for myusage-4xu.53): `[^"]`
+ * alone doesn't exclude newlines, so a greedy `[^\n]*` before it backtracks latest-first and can
+ * land ON the real literal's own closing quote, treating it as a fresh opening quote, then scans
+ * forward across every newline in between for the next `"` it can find to close that - which,
+ * against the real file, is a quote inside this very doc comment's own prose two paragraphs up.
+ * Verified by hand: with the unrestricted `[^"]*`, the match spans from test.include's real
+ * closing quote clear through to a quote several comment lines later, and the resulting mutated
+ * source fails to parse (TS1005) instead of exercising the guard. Excluding `\n` from the
+ * capture forces that backtrack attempt to fail before it can cross a line, so it keeps retrying
+ * earlier positions until it lands on the literal's real opening quote instead. */
+function narrowTestInclude(
+	source: string,
+	value: string,
+): { source: string; entryLine: number } {
+	const pattern = /^[ \t]*include:[^\n]*("[^"\n]*")/dm;
+	const match = pattern.exec(source);
+	expect(
+		match,
+		'expected an `include: ...("...")` field (not inside a comment) in vitest.config.ts before coverage.include (fixture anchor stale?)',
+	).not.toBeNull();
+	const indices = match?.indices?.[1];
+	expect(
+		indices,
+		"expected the matched field to capture its quoted literal (fixture anchor stale?)",
+	).toBeDefined();
+	const [literalStart, literalEnd] = indices ?? [-1, -1];
+	const coverageStart = findCoverageBlock(source);
+	expect(
+		literalStart,
+		"expected test.include's field to appear before the coverage block (fixture anchor stale - matched coverage.include instead?)",
+	).toBeLessThan(coverageStart);
+	const entryLine = source.slice(0, literalStart).split("\n").length;
+	return {
+		source: source.slice(0, literalStart) + value + source.slice(literalEnd),
+		entryLine,
+	};
+}
+
 /** Replaces `pool`'s own quoted value (`pool: "forks"`) with `value` (already quoted) - the
  * scalar-field mirror of `replaceEntryInPlace` above, needed because PoolGate (vitest.config.ts,
  * myusage-7j2) guards a single string field, not an array, so there's no `findKeyedArray` span to
@@ -977,6 +1037,35 @@ describe("vitest.config.ts: test.pool and coverage.thresholds stay guarded", () 
 			"statements: 99",
 			entryLine,
 			"coverage.thresholds.statements weakened to 99",
+		);
+	});
+});
+
+// myusage-4xu.56: PR #63's own headline fix (widening test.include from the literal
+// "src/**/*.test.ts" to "src/**/*.test.*", so .test.mts/.cts/.tsx files actually get run
+// instead of being silently invisible to both the test runner and, via coverage.exclude's own
+// matching glob, the coverage gate too) had zero regression protection. Confirmed by hand before
+// requireTestIncludePattern (vitest.config.ts) existed: narrowing test.include back to the old
+// literal compiled clean under `tsc -p tsconfig.config.json` and left `yarn test` green, since
+// no .test.mts/.cts/.tsx file exists in this repo today - the exact same class of gap
+// explicitPaths/requireCoveragePattern close for coverage.exclude/coverage.include above, just
+// never extended to this one remaining field.
+describe("vitest.config.ts: test.include stays widened", () => {
+	it("fails typecheck when narrowed back to the literal src/**/*.test.ts", async () => {
+		const real = await realConfigSource();
+		const { source: mutated, entryLine } = narrowTestInclude(
+			real,
+			'"src/**/*.test.ts"',
+		);
+		const dir = await typecheckProjectWith(mutated);
+
+		const result = runTypecheck(dir);
+
+		expectDiagnosticNaming(
+			result,
+			'"src/**/*.test.ts"',
+			entryLine,
+			"test.include narrowed back to the literal src/**/*.test.ts",
 		);
 	});
 });

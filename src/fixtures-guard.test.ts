@@ -421,6 +421,37 @@ describe("checkFixturesGuard", () => {
 		]);
 	});
 
+	it("does not let a referencer matching both *.test.* and *.fixtures.* vouch for another fixtures file, even though it would itself run as a real test per test.include's own glob", () => {
+		// myusage-4xu.61: src/x.test.fixtures.ts genuinely matches BOTH vitest.config.ts's
+		// test.include (src/**/*.test.* - it would actually run as a test) AND isFixturesFile's
+		// own ".fixtures." check. isRealTestFile's `!isFixturesFile(path)` exclusion
+		// (myusage-4xu.60) already treats this dual-suffix shape as ineligible to vouch for
+		// another fixtures file, fail-closed - but nothing pinned that as the INTENDED behavior,
+		// rather than an accidental side effect of the exclusion, until this test. Pins the
+		// existing behavior: src/x.test.fixtures.ts is itself a *.fixtures.* file (nothing
+		// references it, so it's separately unverified), and it cannot vouch for
+		// src/thing.fixtures.ts either, so both end up flagged - the same two-violation shape
+		// the __tests__/-vouching test above produces for the analogous directory-based case.
+		const files = [
+			{
+				path: "src/x.test.fixtures.ts",
+				text: 'import { helper } from "./thing.fixtures.js";\nhelper();\n',
+			},
+			{
+				path: "src/thing.fixtures.ts",
+				text: "export function helper() {\n\treturn 1;\n}\n",
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([
+			{
+				kind: "unverified-fixtures",
+				fixturesFile: "src/x.test.fixtures.ts",
+			},
+			{ kind: "unverified-fixtures", fixturesFile: "src/thing.fixtures.ts" },
+		]);
+	});
+
 	it("does not count a directory segment that merely contains __tests__ as a substring as a real test referencer", () => {
 		// myusage-4xu.60 test-quality gap (a): exact-segment match, the same discipline
 		// package-rules.test.ts already pins for its own analogous directory check ("does not
@@ -449,7 +480,7 @@ describe("checkFixturesGuard", () => {
 		]);
 	});
 
-	it("does not count a __mocks__-directory helper without '.test.' in its own basename as a real test referencer", () => {
+	it("does not false-positive an unverified-fixtures violation when the only referencer is a __mocks__-directory helper without '.test.' in its own basename", () => {
 		// myusage-4xu.60 test-quality gap (c): the __tests__ case just above (and the
 		// myusage-4xu.58 test further up) exercises __tests__, but __mocks__ - half of
 		// TEST_SUPPORT_DIR - had zero dedicated coverage. Mirrors the __tests__ shape.

@@ -18,7 +18,8 @@ async function main(): Promise<void> {
 	// TODO(myusage-4xu.7): write index.html to a temp/output path and open it in the browser.
 	void html;
 	process.stdout.write(
-		`my-usage: ${rows.length} responses across ${days.length} days (scaffold)\n`,
+		`my-usage: ${rows.length} responses across ${days.length} days (scaffold)\n` +
+			"Note: usage from before opencode v1.3.16 may be over-billed on reasoning-heavy models (OpenAI, Gemini) - an old bug double-counted reasoning tokens, and there's no way to spot or correct affected rows after the fact.\n",
 	);
 }
 

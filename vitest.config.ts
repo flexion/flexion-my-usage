@@ -38,7 +38,15 @@ const config = {
 
 			// Count every source file, tested or not. Without `include`, a module no test
 			// imports is invisible to the report and the gate passes on a lie.
-			include: ["src/**/*.ts"],
+			//
+			// scripts/package-rules.ts is listed explicitly alongside the src/ glob: it is
+			// build-time-only tooling that deliberately lives outside src/ (bead
+			// myusage-4xu.19 - src/ is what `yarn build` ships, and this file must not ship),
+			// but it still holds real logic and stays covered like everything else. One
+			// explicit path, matching the humble-object exclusions' own convention below,
+			// not a scripts/**/*.ts glob - a future non-logic .ts file added under scripts/
+			// should not be swept into the coverage gate by accident.
+			include: ["src/**/*.ts", "scripts/package-rules.ts"],
 
 			exclude: [
 				// Test code and test support. Same convention as tsconfig.build.json.

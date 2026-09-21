@@ -3,10 +3,19 @@
 	"extends": ["config:recommended"],
 	"minimumReleaseAge": "3 days",
 	"dependencyDashboard": true,
+	"constraints": {
+		"node": ">=22.13.0"
+	},
 	"packageRules": [
 		{
 			"matchManagers": ["github-actions"],
 			"pinDigests": true
+		},
+		{
+			"matchManagers": ["npm"],
+			"matchPackageNames": ["@types/node"],
+			"allowedVersions": "<22.14.0",
+			"description": "Keep @types/node on the 22.13.x patch line so it never runs ahead of engines.node's floor (>=22.13.0). A types package ahead of the runtime floor lets tsc silently accept Node APIs that don't exist at runtime on the floor. This is a silent, permanent block with no expiry: when engines.node's floor moves to a new minor line, update allowedVersions here to match, or Renovate will keep quietly rejecting every @types/node update."
 		}
 	]
 }

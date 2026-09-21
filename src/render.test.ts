@@ -1,3 +1,4 @@
+import { createContext, runInContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import type { DayBucket, ModelTotals } from "./aggregate.js";
 import {
@@ -818,6 +819,13 @@ describe("renderHtml: client script embedding", () => {
 	// already proves what these functions do; this test only proves the shipped page still
 	// contains them. readJson (myusage-3ef) joined the other three the same way, after living
 	// untested inside CLIENT_SCRIPT's own string literal, invisible to v8 coverage.
+	//
+	// What this test does NOT prove: that CLIENT_SCRIPT's own call sites invoke these functions
+	// correctly. It pins the embedded TEXT against each function's own source, nothing about the
+	// arguments the surrounding glue passes them - an arity bug or a typo'd element id at a call
+	// site (e.g. readJson(document, "panel-cost-data")) leaves this assertion just as green,
+	// since the compiled source is still byte-for-byte embedded either way (myusage-cq8). See
+	// "renderHtml: client script execution (vm)" below for a test that runs the real call sites.
 	it("embeds each toggle/drill-down function's own compiled source, not a hand-copied duplicate", () => {
 		const html = renderHtml(buildWindow());
 
@@ -825,5 +833,230 @@ describe("renderHtml: client script embedding", () => {
 		expect(html).toContain(findDayDetail.toString());
 		expect(html).toContain(renderDayDetail.toString());
 		expect(html).toContain(readJson.toString());
+	});
+});
+
+/** CLIENT_SCRIPT's own source, extracted from real `renderHtml()` output - the plain `<script>` tag (no `type` attribute), which always comes last, right before `</body>`. */
+function clientScriptSource(html: string): string {
+	const match = html.match(/<script>([\s\S]*?)<\/script>/);
+	if (!match?.[1])
+		throw new Error("plain <script> (CLIENT_SCRIPT) tag not found");
+	return match[1];
+}
+
+/**
+ * The same `<script type="application/json" id="{panelId}-data">` lookup `readPanelData` uses,
+ * but the raw text rather than `JSON.parse`d data - exactly the string a real browser exposes as
+ * that element's `textContent`, which is what gets fed to the fake DOM below so `readJson`'s real
+ * call site parses genuine embedded data, not a hand-built stand-in for it.
+ */
+function panelDataText(html: string, panelId: string): string {
+	const scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/g) ?? [];
+	const target = scripts.find((tag) => {
+		const openTag = tag.match(/^<script\b[^>]*>/)?.[0] ?? "";
+		return (
+			attr(openTag, "type") === "application/json" &&
+			attr(openTag, "id") === `${panelId}-data`
+		);
+	});
+	const match = target?.match(/^<script\b[^>]*>([\s\S]*?)<\/script>$/);
+	if (!match?.[1]) throw new Error(`${panelId}-data script not found`);
+	return match[1];
+}
+
+interface FakeButton {
+	classList: { active: boolean; toggle(cls: string, force: boolean): void };
+	ariaPressed: string;
+	setAttribute(name: string, value: string): void;
+	addEventListener(type: string, cb: () => void): void;
+	dispatchClick(): void;
+}
+
+/** A fake `<button>`: tracks the "active" class, the `aria-pressed` attribute, and its own click listener - just enough surface for CLIENT_SCRIPT's `setMeasure` wiring. */
+function fakeButton(): FakeButton {
+	let onClick: (() => void) | undefined;
+	return {
+		classList: {
+			active: false,
+			toggle(cls, force) {
+				if (cls === "active") this.active = force;
+			},
+		},
+		ariaPressed: "",
+		setAttribute(name, value) {
+			if (name === "aria-pressed") this.ariaPressed = value;
+		},
+		addEventListener(type, cb) {
+			if (type === "click") onClick = cb;
+		},
+		dispatchClick() {
+			onClick?.();
+		},
+	};
+}
+
+interface FakeDetailChild {
+	className: string;
+	textContent: string;
+	style: { background: string };
+	children: FakeDetailChild[];
+	appendChild(child: FakeDetailChild): void;
+}
+
+/** What `document.createElement` returns in the fake DOM below: satisfies `renderDayDetail`'s `DomElementLike`. */
+function fakeDetailChild(): FakeDetailChild {
+	return {
+		className: "",
+		textContent: "",
+		style: { background: "" },
+		children: [],
+		appendChild(child) {
+			this.children.push(child);
+		},
+	};
+}
+
+interface FakeDetail {
+	hidden: boolean;
+	children: FakeDetailChild[];
+	readonly firstChild: FakeDetailChild | null;
+	appendChild(child: FakeDetailChild): void;
+	removeChild(child: FakeDetailChild): void;
+}
+
+/** The fake `#day-detail` container: satisfies `renderDayDetail`'s `DomContainerLike`. */
+function fakeDetail(): FakeDetail {
+	return {
+		hidden: true,
+		children: [],
+		get firstChild() {
+			return this.children[0] ?? null;
+		},
+		appendChild(child) {
+			this.children.push(child);
+		},
+		removeChild(child) {
+			const i = this.children.indexOf(child);
+			if (i >= 0) this.children.splice(i, 1);
+		},
+	};
+}
+
+interface FakeDayBar {
+	getAttribute(name: string): string | null;
+	addEventListener(type: string, cb: () => void): void;
+	dispatchClick(): void;
+}
+
+/** A fake `.day-bar` element for one `day`, whose only real datum is its own `data-day` attribute. */
+function fakeDayBar(day: string): FakeDayBar {
+	let onClick: (() => void) | undefined;
+	return {
+		getAttribute(name) {
+			return name === "data-day" ? day : null;
+		},
+		addEventListener(type, cb) {
+			if (type === "click") onClick = cb;
+		},
+		dispatchClick() {
+			onClick?.();
+		},
+	};
+}
+
+/**
+ * Runs the ACTUAL `<script>` block extracted from real `renderHtml(html)` output in a `node:vm`
+ * context, against a fake DOM built from plain objects (never jsdom, per this repo's
+ * zero-dependency convention). The two data elements (`panel-cost-data`/`panel-tokens-data`) hand
+ * back the page's own real embedded JSON text, so `readJson`'s real call site - untyped and
+ * unexercised before myusage-cq8 - parses genuine data, not a test-authored stand-in for it. The
+ * day bar is fixed to "2026-09-07", the fixture's busiest day (see `buildWindow`).
+ */
+function runClientScript(html: string) {
+	const panels = { cost: { hidden: false }, tokens: { hidden: true } };
+	const buttons = { cost: fakeButton(), tokens: fakeButton() };
+	const titleEl = { textContent: "Daily cost" };
+	const detailEl = fakeDetail();
+	const dayBar = fakeDayBar("2026-09-07");
+
+	const elementsById: Record<string, unknown> = {
+		"panel-cost": panels.cost,
+		"panel-tokens": panels.tokens,
+		"measure-cost": buttons.cost,
+		"measure-tokens": buttons.tokens,
+		"chart-title": titleEl,
+		"day-detail": detailEl,
+		"panel-cost-data": { textContent: panelDataText(html, "panel-cost") },
+		"panel-tokens-data": { textContent: panelDataText(html, "panel-tokens") },
+	};
+
+	const document = {
+		getElementById(id: string) {
+			return elementsById[id] ?? null;
+		},
+		querySelectorAll(selector: string) {
+			return selector === ".day-bar" ? [dayBar] : [];
+		},
+		createElement(_tag: string) {
+			return fakeDetailChild();
+		},
+	};
+
+	runInContext(clientScriptSource(html), createContext({ document }));
+
+	return { panels, buttons, titleEl, detailEl, dayBar };
+}
+
+describe("renderHtml: client script execution (vm)", () => {
+	// myusage-cq8: CLIENT_SCRIPT's readJson(document, "panel-cost-data") call site sits inside a
+	// string literal - untyped, and (until this test) never executed by anything. Reverting it to
+	// the pre-extraction one-argument form, readJson("panel-cost-data"), left typecheck, lint, and
+	// 100% coverage on all four metrics green: the arity mismatch only throws once a real
+	// `document`-shaped object hits `doc.getElementById(id)` with `doc` bound to the string
+	// "panel-cost-data" and `id` to `undefined`. These tests run the real <script> block extracted
+	// from real renderHtml() output - not a re-typed copy of it - in a node:vm context against a
+	// fake DOM, then drive the same interactions a browser would (clicking the Tokens toggle,
+	// clicking a day bar) and assert the rendered result traces back to the page's own embedded
+	// JSON. That exercises readJson's real call site, not just readJson in isolation (already
+	// covered by client-script.test.ts) - and also catches a typo'd element id at the call site,
+	// which an arity check alone would miss: a wrong id makes readJson return null without
+	// throwing, so the toggle/drill-down below would silently stop reflecting real data.
+
+	it("switches to tokens and updates the chart title from the real embedded tokens payload", () => {
+		const html = renderHtml(buildWindow());
+		const tokensPayload = readPanelData(html, "panel-tokens");
+
+		const { panels, buttons, titleEl } = runClientScript(html);
+		buttons.tokens.dispatchClick();
+
+		expect(titleEl.textContent).toBe(tokensPayload.title);
+		expect(panels.cost.hidden).toBe(true);
+		expect(panels.tokens.hidden).toBe(false);
+		expect(buttons.tokens.classList.active).toBe(true);
+		expect(buttons.tokens.ariaPressed).toBe("true");
+	});
+
+	it("renders the real per-day drill-down from the embedded payload when a day bar is clicked", () => {
+		const html = renderHtml(buildWindow());
+		const costPayload = readPanelData(html, "panel-cost");
+		const busyDay = costPayload.days.find((d) => d.day === "2026-09-07");
+		if (!busyDay) throw new Error("fixture has 2026-09-07");
+
+		const { detailEl, dayBar } = runClientScript(html);
+		dayBar.dispatchClick();
+
+		expect(detailEl.hidden).toBe(false);
+		expect(detailEl.children).toHaveLength(1 + busyDay.entries.length);
+		expect(detailEl.children[0]?.textContent).toBe(
+			`2026-09-07 - ${busyDay.total}`,
+		);
+
+		const rows = detailEl.children.slice(1);
+		rows.forEach((row, i) => {
+			const entry = busyDay.entries[i];
+			const [, label, value] = row.children;
+			expect(label?.textContent).toBe(entry?.label);
+			expect(value?.textContent).toBe(entry?.value);
+		});
 	});
 });

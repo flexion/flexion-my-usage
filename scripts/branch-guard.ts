@@ -118,9 +118,19 @@ interface ConstructMatcher {
 // - "switch": same shape as "if"; GritQL could not generally match this construct (see header),
 //   but a plain keyword-and-paren scan has no such limitation.
 // - "loop": `for (`/`while (` (one alternation, since the bead groups "loops" as a single
-//   category, not three), or `do {` - the closing `while (...)` of a do/while loop also matches
-//   the `while (` half of this pattern independently, so a single do-while loop is reported as
-//   two violations (its `do {` and its `while (...)`), both true statements about the file.
+//   category, not three), `for await (` (the async form of a for-of loop - myusage-4xu.63: the
+//   plain `for`/`while` alternation alone doesn't match this, since the `await` keyword sits
+//   between `for` and `(`, and the original pattern only ever allowed whitespace there; `\bfor\b`
+//   below matches the "for" keyword on its own word boundary, then an optional `(?:\s+await)?`
+//   consumes a real `for await`'s extra keyword before the same `\s*\(` every other loop shape
+//   already used), or `do {` - the closing `while (...)` of a do/while loop also matches the
+//   `while (` half of this pattern independently, so a single do-while loop is reported as two
+//   violations (its `do {` and its `while (...)`), both true statements about the file.
+//   `for...of` and `for...in` loops need no dedicated pattern of their own: `for (` matches
+//   before this scan ever looks inside the parens, so both shapes are already caught by the same
+//   classic-`for` alternative - src/branch-guard.test.ts (myusage-4xu.63) now pins that with its
+//   own dedicated test cases instead of leaving it an unproven, easily-broken accident of the
+//   regex.
 // - "&&" / "??": the bare two-character operator. "??=" contains "??" and is caught as a "??"
 //   violation too (nullish assignment IS nullish coalescing, just also an assignment).
 // - "ternary": a `?` that is not immediately preceded BY, or followed by, another `?` (either
@@ -134,7 +144,10 @@ interface ConstructMatcher {
 const CONSTRUCT_PATTERNS: readonly ConstructMatcher[] = [
 	{ kind: "if", pattern: /\bif\s*\(/g },
 	{ kind: "switch", pattern: /\bswitch\s*\(/g },
-	{ kind: "loop", pattern: /\b(?:for|while)\s*\(|\bdo\b\s*\{/g },
+	{
+		kind: "loop",
+		pattern: /\bfor\b(?:\s+await)?\s*\(|\bwhile\s*\(|\bdo\b\s*\{/g,
+	},
 	{ kind: "&&", pattern: /&&/g },
 	{ kind: "??", pattern: /\?\?/g },
 	{ kind: "ternary", pattern: /(?<!\?)\?(?!\.|\?)(?!\s*[:),])/g },

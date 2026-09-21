@@ -190,6 +190,50 @@ describe("checkBranchGuard", () => {
 		]);
 	});
 
+	it("flags a for...of loop as a loop violation, not just classic for (myusage-4xu.63: this shape shared the classic-for pattern with no dedicated test pinning it)", () => {
+		const files = [
+			{
+				path: "src/index.ts",
+				text: "for (const x of [1, 2, 3]) {\n\tuse(x);\n}\n",
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{ path: "src/index.ts", kind: "loop", line: 1, snippet: "for (" },
+		]);
+	});
+
+	it("flags a for...in loop as a loop violation, not just classic for (myusage-4xu.63: same unpinned gap as for...of above)", () => {
+		const files = [
+			{
+				path: "src/index.ts",
+				text: "for (const k in { a: 1 }) {\n\tuse(k);\n}\n",
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{ path: "src/index.ts", kind: "loop", line: 1, snippet: "for (" },
+		]);
+	});
+
+	it("flags a for-await-of loop as a loop violation (myusage-4xu.63: the await token between for and ( broke the original pattern entirely - this planted a real for-await-of loop and confirmed the pre-fix driver reported no violations at all)", () => {
+		const files = [
+			{
+				path: "src/index.ts",
+				text: "async function drain(xs: AsyncIterable<number>): Promise<void> {\n\tfor await (const x of xs) {\n\t\tuse(x);\n\t}\n}\n",
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{
+				path: "src/index.ts",
+				kind: "loop",
+				line: 2,
+				snippet: "for await (",
+			},
+		]);
+	});
+
 	it("flags a while loop as a loop violation", () => {
 		const files = [
 			{ path: "src/index.ts", text: "while (running) {\n\ttick();\n}\n" },

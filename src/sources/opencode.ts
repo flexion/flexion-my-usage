@@ -20,8 +20,10 @@ import type { NormalizedUsageRow, SourceHandle, UsageSource } from "./types.js";
 // 'compaction' | ...) and a `data` JSON column shaped like { model: { id, providerID }, tokens,
 // time, ... } - no `role` field, unlike `message.data`. Upstream calls this schema experimental
 // and has reset it four times through v1.18.31; this reader only counts real V2 assistant-usage
-// rows (see V2_ASSISTANT_USAGE_COUNT_QUERY below) to report when V1 usage was missed - it never
-// reads them into a NormalizedUsageRow.
+// rows (see countV2AssistantUsageRows below) to report when V1 usage was missed - it never reads
+// them into a NormalizedUsageRow. A row whose tokens carry no real usage (empty or all-zero,
+// e.g. an in-flight or aborted response) is excluded from that count too, the same way toRow
+// already drops all-zero-token V1 rows (myusage-4xu.93; see hasZeroUsage below).
 
 const SOURCE = "opencode";
 
@@ -67,14 +69,23 @@ const QUERY = `
 	WHERE (CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.role') END) = 'assistant'
 `;
 
-// Counts opencode's V2 (2.0-preview) assistant usage rows: session_message entries with
-// type = 'assistant' and a data.tokens object. Only real V2 assistant-usage rows count: not
-// 'user' or 'compaction' rows (excluded by the type = 'assistant' column check), and not an
-// 'assistant' row whose data has no tokens object (excluded by the json_type check below).
-// json_type raises on malformed JSON exactly like json_extract does above, so this reuses the
-// same json_valid CASE guard to keep one bad row from aborting the count.
-const V2_ASSISTANT_USAGE_COUNT_QUERY = `
-	SELECT COUNT(*) AS count
+// Selects opencode's V2 (2.0-preview) assistant-usage candidates: session_message entries with
+// type = 'assistant' and a data.tokens object, plus the same five token sub-fields QUERY above
+// already extracts from V1's message.data.tokens - V2's tokens shape matches V1's (see
+// v2AssistantData() in opencode.test.ts). Not every candidate counts as real usage: 'user' and
+// 'compaction' rows are excluded by the type = 'assistant' column check, an 'assistant' row with
+// no tokens object at all is excluded by the json_type check below, and - mirroring V1's own
+// toRow() - a candidate whose tokens are empty or all-zero is filtered out afterward in JS by
+// hasZeroUsage (myusage-4xu.93). json_type raises on malformed JSON exactly like json_extract
+// does above, so this reuses the same json_valid CASE guard to keep one bad row from aborting
+// the whole query.
+const V2_ASSISTANT_USAGE_CANDIDATES_QUERY = `
+	SELECT
+		json_extract(sm.data, '$.tokens.input') AS input,
+		json_extract(sm.data, '$.tokens.output') AS output,
+		json_extract(sm.data, '$.tokens.reasoning') AS reasoning,
+		json_extract(sm.data, '$.tokens.cache.read') AS cache_read,
+		json_extract(sm.data, '$.tokens.cache.write') AS cache_write
 	FROM session_message AS sm
 	WHERE sm.type = 'assistant'
 		AND (CASE WHEN json_valid(sm.data) THEN json_type(sm.data, '$.tokens') END) = 'object'
@@ -105,6 +116,21 @@ function bucket(value: unknown): number {
 	return n !== undefined && n > 0 ? n : 0;
 }
 
+// True when every one of the five token sub-fields buckets to 0 - absent, zero, negative, or
+// otherwise unusable (see bucket() above) - meaning the row carries no real usage to report.
+// toRow (V1) and countV2AssistantUsageRows (V2, myusage-4xu.93) both call this on the same raw
+// shape (the column names QUERY and V2_ASSISTANT_USAGE_CANDIDATES_QUERY both use), so "no real
+// usage" is one decision, not two that could drift apart.
+function hasZeroUsage(raw: Record<string, unknown>): boolean {
+	return (
+		bucket(raw.input) === 0 &&
+		bucket(raw.output) === 0 &&
+		bucket(raw.reasoning) === 0 &&
+		bucket(raw.cache_read) === 0 &&
+		bucket(raw.cache_write) === 0
+	);
+}
+
 function text(value: unknown): string | undefined {
 	return typeof value === "string" && value !== "" ? value : undefined;
 }
@@ -121,15 +147,8 @@ function toRow(raw: Record<string, unknown>): NormalizedUsageRow | undefined {
 	const timestamp = new Date(completed);
 	if (Number.isNaN(timestamp.getTime())) return undefined;
 
-	const tokens = {
-		input: bucket(raw.input),
-		output: bucket(raw.output),
-		reasoning: bucket(raw.reasoning),
-		cacheRead: bucket(raw.cache_read),
-		cacheWrite: bucket(raw.cache_write),
-	};
 	// A response that reported no usage at all carries nothing to aggregate.
-	if (Object.values(tokens).every((n) => n === 0)) return undefined;
+	if (hasZeroUsage(raw)) return undefined;
 
 	return {
 		source: SOURCE,
@@ -138,7 +157,13 @@ function toRow(raw: Record<string, unknown>): NormalizedUsageRow | undefined {
 		timestamp,
 		sessionId,
 		messageId,
-		tokens,
+		tokens: {
+			input: bucket(raw.input),
+			output: bucket(raw.output),
+			reasoning: bucket(raw.reasoning),
+			cacheRead: bucket(raw.cache_read),
+			cacheWrite: bucket(raw.cache_write),
+		},
 	};
 }
 
@@ -190,7 +215,7 @@ export interface ReadOptions {
 	DatabaseSyncCtor?: SqliteModule["DatabaseSync"];
 	/**
 	 * Receives one line when V1 rows were found alongside skipped V2 (session_message) usage
-	 * rows - see readRows and the V2_ASSISTANT_USAGE_COUNT_QUERY comment above. Defaults to a
+	 * rows - see readRows and the countV2AssistantUsageRows comment above. Defaults to a
 	 * single stderr line, the same seam shape and default as pricing.ts's own `PriceOptions.warn`.
 	 * When V1 yields no rows at all and V2 usage exists, read() rejects instead of warning - see
 	 * the check in read() below.
@@ -257,13 +282,13 @@ function countV2AssistantUsageRows(
 		)
 		.get();
 	if (!hasSessionMessageTable) return 0;
-	// COUNT(*) always returns exactly one row, even over zero matches, so this cast - unlike
-	// hasMessageTable/hasSessionMessageTable's plain truthy checks above - never needs an
-	// undefined fallback: there is no real input that makes `.get()` return undefined here.
-	const result = db.prepare(V2_ASSISTANT_USAGE_COUNT_QUERY).get() as {
-		count: number | bigint;
-	};
-	return bucket(result.count);
+	const statement = db.prepare(V2_ASSISTANT_USAGE_CANDIDATES_QUERY);
+	statement.setReadBigInts(true);
+	const candidates = statement.all().filter(isRow);
+	// Same "no real usage" decision as toRow's V1 exclusion, applied to V2 candidates
+	// (myusage-4xu.93): an in-flight or aborted V2 assistant row - no tokens reported yet - must
+	// not trip the reject-or-warn path as if real usage had happened.
+	return candidates.filter((raw) => !hasZeroUsage(raw)).length;
 }
 
 function readRows(

@@ -1070,6 +1070,24 @@ describe("opencodeSource.read", () => {
 			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(/V2/);
 		});
 
+		// myusage-4xu.92: every other fixture in this file uses exactly one V2 row, so a mutation
+		// clamping the reported count to 1 (e.g. Math.min(count, 1)) or hardcoding a wrong number
+		// in the reject message would survive every test above untouched. Three distinct rows,
+		// none of them fixture row #1, pins the count as real rather than assumed.
+		it("names the exact V2 usage row count in the reject error, not just 1", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = createDb(path);
+			insertSessionMessage(db, "sm_fixture_a", "assistant", v2AssistantData());
+			insertSessionMessage(db, "sm_fixture_b", "assistant", v2AssistantData());
+			insertSessionMessage(db, "sm_fixture_c", "assistant", v2AssistantData());
+			db.close();
+
+			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
+				/found 3 assistant usage/,
+			);
+		});
+
 		it("returns the V1 row and reports exactly 1 skipped V2 row for a mixed database", async () => {
 			const dir = await sandbox();
 			const path = join(dir, "opencode.db");
@@ -1087,6 +1105,31 @@ describe("opencodeSource.read", () => {
 			expect(warnings).toHaveLength(1);
 			expect(warnings[0]).toMatch(/\b1\b/);
 			expect(warnings[0]).toMatch(/session_message/);
+		});
+
+		// myusage-4xu.92: same reasoning as the reject-error test above, applied to the warning -
+		// a count clamped to 1 or a hardcoded wrong number would survive the single-row test above.
+		// A distinct count (4, not 1 or 3) also proves this isn't the reject path's count leaking
+		// through some shared, miscounted state.
+		it("names the exact V2 usage row count in the warning, not just 1", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = createDb(path);
+			insertMessage(db, "msg_fixture_001", assistantData());
+			insertSessionMessage(db, "sm_fixture_a", "assistant", v2AssistantData());
+			insertSessionMessage(db, "sm_fixture_b", "assistant", v2AssistantData());
+			insertSessionMessage(db, "sm_fixture_c", "assistant", v2AssistantData());
+			insertSessionMessage(db, "sm_fixture_d", "assistant", v2AssistantData());
+			db.close();
+
+			const warnings: string[] = [];
+			const rows = await opencodeSource.read(handleFor(path), {
+				warn: (message) => warnings.push(message),
+			});
+
+			expect(rows.map((r) => r.messageId)).toEqual(["msg_fixture_001"]);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toMatch(/\bskipped 4\b/);
 		});
 
 		it("emits no warning for a V1-only database with an empty session_message table", async () => {
@@ -1136,6 +1179,10 @@ describe("opencodeSource.read", () => {
 				expect(rows.map((r) => r.messageId)).toEqual(["msg_fixture_001"]);
 				expect(writeSpy).toHaveBeenCalledTimes(1);
 				expect(writeSpy.mock.calls[0]?.[0]).toMatch(/session_message/);
+				// myusage-4xu.92: pins the trailing newline that makes this "a single stderr line"
+				// (this test's own title), not a bare string with no line terminator - a mutation
+				// dropping the "\n" in defaultWarn's template literal survived every assertion above.
+				expect(writeSpy.mock.calls[0]?.[0]).toMatch(/\n$/);
 			} finally {
 				// mockRestore() also clears recorded calls, so assertions above must run first.
 				writeSpy.mockRestore();
@@ -1159,6 +1206,27 @@ describe("opencodeSource.read", () => {
 					"assistant",
 					'{"tokens":',
 				],
+				// myusage-4xu.93: mirrors toRow's own all-zero-tokens exclusion for V1 rows (see
+				// "an assistant message with an empty tokens object" / "...all-zero tokens" above) -
+				// an in-flight or aborted V2 assistant row looks exactly like this before it has any
+				// real usage to report, and must not trip the reject path any more than V1 does.
+				[
+					"an assistant row with an empty tokens object",
+					"assistant",
+					v2AssistantData({ tokens: {} }),
+				],
+				[
+					"an assistant row with all-zero tokens",
+					"assistant",
+					v2AssistantData({
+						tokens: {
+							input: 0,
+							output: 0,
+							reasoning: 0,
+							cache: { read: 0, write: 0 },
+						},
+					}),
+				],
 			];
 
 			it.each(cases)("%s", async (_name, type, data) => {
@@ -1176,6 +1244,43 @@ describe("opencodeSource.read", () => {
 				).resolves.toEqual([]);
 				expect(warn).not.toHaveBeenCalled();
 			});
+		});
+
+		// myusage-4xu.93: the reject-path cases above prove empty/all-zero V2 tokens don't count
+		// when message is empty; this proves the same exclusion holds on the warn path too - a
+		// mixed database where the only V2 assistant rows have no real usage must stay silent,
+		// not warn about "usage" that never happened. The V1 row's own retrieval is unaffected.
+		it("does not warn when a mixed database's only V2 assistant rows have empty or all-zero tokens", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = createDb(path);
+			insertMessage(db, "msg_fixture_001", assistantData());
+			insertSessionMessage(
+				db,
+				"sm_fixture_empty",
+				"assistant",
+				v2AssistantData({ tokens: {} }),
+			);
+			insertSessionMessage(
+				db,
+				"sm_fixture_zero",
+				"assistant",
+				v2AssistantData({
+					tokens: {
+						input: 0,
+						output: 0,
+						reasoning: 0,
+						cache: { read: 0, write: 0 },
+					},
+				}),
+			);
+			db.close();
+
+			const warn = vi.fn();
+			const rows = await opencodeSource.read(handleFor(path), { warn });
+
+			expect(rows.map((r) => r.messageId)).toEqual(["msg_fixture_001"]);
+			expect(warn).not.toHaveBeenCalled();
 		});
 	});
 

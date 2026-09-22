@@ -15,6 +15,7 @@ This closes that gap - an over-time view of your usage, with a notional cost wor
 - Reads your local coding-agent session data, read-only - opencode first, more agents to follow.
 - Computes notional cost as tokens times published per-model rates, with cache reads and writes priced separately.
 - Rolls it into an over-time view and serves it from a local server, opened in your browser.
+- Reading opencode's database may leave an empty `-wal` file and a `-shm` file of about 32 KB next to it, if those sidecars weren't already there - SQLite's own machinery for reading a WAL-mode database, even read-only. opencode's next clean close removes them; the database file itself is never modified.
 
 ## Local by design
 

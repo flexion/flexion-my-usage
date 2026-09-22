@@ -18,7 +18,8 @@
 # critical-persisted.ts was covered by vitest.config.ts's coverage.include from the start but
 # missed here until myusage-9os noticed the two lists had drifted apart while auditing this
 # exact class of "covered somewhere, gated nowhere" gap. scripts/branch-guard.ts (bead
-# myusage-qx9) is the same shape once more.
+# myusage-qx9) is the same shape once more. scripts/renovate-engines-guard.ts (bead
+# myusage-4xu.85) is the same shape again.
 #
 # Fails closed: a missing or renamed src/ or COVERED_NON_SRC entry is a hard error, not a
 # silent pass, and grep's own error exit (2) is treated the same as a match, not swallowed
@@ -36,7 +37,7 @@ if [ ! -d src ]; then
   exit 1
 fi
 
-COVERED_NON_SRC="scripts/package-rules.ts scripts/critical-persisted.ts scripts/fixtures-guard.ts scripts/branch-guard.ts"
+COVERED_NON_SRC="scripts/package-rules.ts scripts/critical-persisted.ts scripts/fixtures-guard.ts scripts/branch-guard.ts scripts/renovate-engines-guard.ts"
 for f in $COVERED_NON_SRC; do
   if [ ! -f "$f" ]; then
     echo "coverage-pragmas: $f not found; refusing to pass a check that scanned nothing." >&2

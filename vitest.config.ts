@@ -232,12 +232,19 @@ const config = {
 			// decision logic behind the runtime check that every humble-object path below
 			// actually stays logic-free (see that file's header and
 			// scripts/check-branch-guard.mjs, wired into `yarn lint`).
+			//
+			// scripts/renovate-engines-guard.ts (bead myusage-4xu.85) is the same shape again:
+			// the pure decision logic behind the runtime check that renovate.json's @types/node
+			// allowedVersions ceiling still corresponds to package.json's engines.node floor
+			// (see that file's header and scripts/check-renovate-engines.mjs, wired into
+			// `yarn lint`).
 			include: requireCoveragePattern([
 				"src/**/*.ts",
 				"scripts/package-rules.ts",
 				"scripts/critical-persisted.ts",
 				"scripts/fixtures-guard.ts",
 				"scripts/branch-guard.ts",
+				"scripts/renovate-engines-guard.ts",
 			]),
 
 			exclude: explicitPaths([

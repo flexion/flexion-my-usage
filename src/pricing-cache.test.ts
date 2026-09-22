@@ -161,6 +161,27 @@ describe("price table: fetch once, then stay offline", () => {
 		expect(row?.notionalCost).toBeCloseTo(3, 9);
 	});
 
+	it("noPriceRefresh: true still performs the very first fetch against a completely empty cache (myusage-4xu.87)", async () => {
+		// cached === undefined makes the staleness check moot - there is nothing to judge stale
+		// yet - so noPriceRefresh's documented scope ("skip the automatic refresh of a stale
+		// cache") does not apply on a fresh install; the very first fetch must still happen. A
+		// mutation that instead made noPriceRefresh short-circuit straight to an unpriced result
+		// whenever there is no cache would survive every other noPriceRefresh test in this file,
+		// since all of them seed a cache before setting the flag.
+		const cacheDir = await newCacheDir();
+		const fetch = fakeFetch(LITELLM_FIXTURE);
+
+		const [row] = await price([sonnetRow()], {
+			cacheDir,
+			fetch,
+			noPriceRefresh: true,
+		});
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(row?.unpriced).toBe(false);
+		expect(row?.notionalCost).toBeCloseTo(3, 9);
+	});
+
 	it("noPriceRefresh: true does not block an explicit refresh: true on the same stale cache", async () => {
 		const cacheDir = await newCacheDir();
 		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });

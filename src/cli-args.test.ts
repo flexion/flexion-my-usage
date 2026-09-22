@@ -47,13 +47,6 @@ describe("parseCliArgs: each flag", () => {
 		});
 	});
 
-	it("--refresh-prices and --no-price-refresh combine without either canceling the other - they answer different questions", () => {
-		expect(parseCliArgs(["--refresh-prices", "--no-price-refresh"])).toEqual({
-			ok: true,
-			options: { ...DEFAULTS, refreshPrices: true, noPriceRefresh: true },
-		});
-	});
-
 	it("--no-open turns the browser off", () => {
 		expect(parseCliArgs(["--no-open"])).toEqual({
 			ok: true,
@@ -89,6 +82,11 @@ describe("parseCliArgs: each flag", () => {
 		});
 	});
 
+	// Also covers --refresh-prices and --no-price-refresh combining without either canceling
+	// the other (they answer different questions): both come out true below, alongside the
+	// other two flags, so a dedicated two-flag-only version of this case was trimmed as a
+	// mutation-equivalent duplicate - hand-verified by reintroducing a cancellation bug and
+	// confirming this test alone still caught it.
 	it("flags combine, in any order", () => {
 		expect(
 			parseCliArgs([

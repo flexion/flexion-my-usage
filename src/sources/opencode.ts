@@ -12,6 +12,16 @@ import type { NormalizedUsageRow, SourceHandle, UsageSource } from "./types.js";
 // time.completed (epoch ms, set when the response finishes) and tokens { input, output,
 // reasoning, cache: { read, write } }. Only those fields are selected: message text,
 // prompts, and tool output (the `part` table) are never read.
+//
+// V2 (2.0-preview) schema (myusage-f87, myusage-4xu.12's finding): released opencode can also
+// write assistant usage to a `session_message` table, with no corresponding `message` row, when
+// a V2 API client or the preview CLI drives the runner (or desktop with
+// OPENCODE_SIDECAR_V2=1). `session_message` has its own `type` column ('user' | 'assistant' |
+// 'compaction' | ...) and a `data` JSON column shaped like { model: { id, providerID }, tokens,
+// time, ... } - no `role` field, unlike `message.data`. Upstream calls this schema experimental
+// and has reset it four times through v1.18.31; this reader only counts real V2 assistant-usage
+// rows (see V2_ASSISTANT_USAGE_COUNT_QUERY below) to report when V1 usage was missed - it never
+// reads them into a NormalizedUsageRow.
 
 const SOURCE = "opencode";
 
@@ -55,6 +65,19 @@ const QUERY = `
 		json_extract(m.data, '$.tokens.cache.write') AS cache_write
 	FROM message AS m
 	WHERE (CASE WHEN json_valid(m.data) THEN json_extract(m.data, '$.role') END) = 'assistant'
+`;
+
+// Counts opencode's V2 (2.0-preview) assistant usage rows: session_message entries with
+// type = 'assistant' and a data.tokens object. Only real V2 assistant-usage rows count: not
+// 'user' or 'compaction' rows (excluded by the type = 'assistant' column check), and not an
+// 'assistant' row whose data has no tokens object (excluded by the json_type check below).
+// json_type raises on malformed JSON exactly like json_extract does above, so this reuses the
+// same json_valid CASE guard to keep one bad row from aborting the count.
+const V2_ASSISTANT_USAGE_COUNT_QUERY = `
+	SELECT COUNT(*) AS count
+	FROM session_message AS sm
+	WHERE sm.type = 'assistant'
+		AND (CASE WHEN json_valid(sm.data) THEN json_type(sm.data, '$.tokens') END) = 'object'
 `;
 
 type SqliteModule = typeof import("node:sqlite");
@@ -142,6 +165,21 @@ export interface DiscoverOptions {
 	readdir?: typeof readdir;
 }
 
+// One short line, same shape as src/pricing-table.ts's own `Warn` type - defined locally rather
+// than imported from there so this adapter doesn't reach up into the pricing layer for a type
+// alias. Not restructuring the shared `UsageSource.read()` signature for this (myusage-f87):
+// `warn`, like `DatabaseSyncCtor` below, lives on opencode's own `ReadOptions` instead.
+export type Warn = (message: string) => void;
+
+// Default warn: one line to stderr, same as pricing.ts's own default. Unlike pricing.ts's
+// `safeWarn`, this is not wrapped in a try/catch - a caller-supplied `warn` that throws is
+// their bug to fix, and the default `process.stderr.write` failing (a closed pipe) is rare
+// enough, and this repo's own precedent narrow enough (see AGENTS.md's "fabricated-input-only
+// branches" rule), not to earn an unreachable-in-practice catch branch here.
+const defaultWarn: Warn = (message) => {
+	process.stderr.write(`${message}\n`);
+};
+
 // read() takes an injectable DatabaseSync constructor, the same seam shape as DiscoverOptions'
 // `stat` above: a named field on an options object, defaulting to the real node:sqlite export
 // (loaded lazily via loadSqlite()) when omitted. This is what lets the readonly-directory
@@ -150,6 +188,14 @@ export interface DiscoverOptions {
 // signature in types.ts, so every other source's `read()` stays one-arg.
 export interface ReadOptions {
 	DatabaseSyncCtor?: SqliteModule["DatabaseSync"];
+	/**
+	 * Receives one line when V1 rows were found alongside skipped V2 (session_message) usage
+	 * rows - see readRows and the V2_ASSISTANT_USAGE_COUNT_QUERY comment above. Defaults to a
+	 * single stderr line, the same seam shape and default as pricing.ts's own `PriceOptions.warn`.
+	 * When V1 yields no rows at all and V2 usage exists, read() rejects instead of warning - see
+	 * the check in read() below.
+	 */
+	warn?: Warn;
 }
 
 // Codes that mean "no readable opencode data at this path", not "something is wrong":
@@ -198,10 +244,32 @@ function isRow(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
 
+// Zero when session_message doesn't exist (an older, pre-V2 database - acceptance criterion 3's
+// "or nonexistent" case) or exists but has no matching rows; otherwise the real V2
+// assistant-usage row count. Called on the same open connection readRows already holds, so it
+// shares its transaction snapshot with the V1 query above it - no separate open, no race.
+function countV2AssistantUsageRows(
+	db: InstanceType<SqliteModule["DatabaseSync"]>,
+): number {
+	const hasSessionMessageTable = db
+		.prepare(
+			"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_message'",
+		)
+		.get();
+	if (!hasSessionMessageTable) return 0;
+	// COUNT(*) always returns exactly one row, even over zero matches, so this cast - unlike
+	// hasMessageTable/hasSessionMessageTable's plain truthy checks above - never needs an
+	// undefined fallback: there is no real input that makes `.get()` return undefined here.
+	const result = db.prepare(V2_ASSISTANT_USAGE_COUNT_QUERY).get() as {
+		count: number | bigint;
+	};
+	return bucket(result.count);
+}
+
 function readRows(
 	DatabaseSyncCtor: SqliteModule["DatabaseSync"],
 	path: string,
-): NormalizedUsageRow[] {
+): { rows: NormalizedUsageRow[]; v2AssistantUsageCount: number } {
 	// readOnly maps to SQLITE_OPEN_READONLY: never creates, writes, checkpoints, or
 	// changes journal mode. A WAL database is still read correctly, including
 	// committed rows that have not been checkpointed into the main file yet.
@@ -224,12 +292,13 @@ function readRows(
 		}
 		const statement = db.prepare(QUERY);
 		statement.setReadBigInts(true);
-		return statement
+		const rows = statement
 			.all()
 			.filter(isRow)
 			.map((raw) => toRow(raw))
 			.filter((row): row is NormalizedUsageRow => row !== undefined)
 			.sort(compareRows);
+		return { rows, v2AssistantUsageCount: countV2AssistantUsageRows(db) };
 	} finally {
 		db.close();
 	}
@@ -317,8 +386,32 @@ export const opencodeSource = {
 	): Promise<NormalizedUsageRow[]> {
 		const DatabaseSyncCtor =
 			options.DatabaseSyncCtor ?? (await loadSqlite()).DatabaseSync;
+		const warn = options.warn ?? defaultWarn;
 		try {
-			return readRows(DatabaseSyncCtor, handle.path);
+			const { rows, v2AssistantUsageCount } = readRows(
+				DatabaseSyncCtor,
+				handle.path,
+			);
+			// V1 found nothing, but real V2 (session_message) assistant usage exists:
+			// returning [] here would silently look like "no usage data", the exact bug
+			// myusage-f87 exists to fix - reject instead, naming the case so it's actionable.
+			if (v2AssistantUsageCount > 0 && rows.length === 0) {
+				throw new Error(
+					`Cannot read ${handle.path}: found ${v2AssistantUsageCount} assistant usage ` +
+						'row(s) in "session_message" but none in "message" - this database looks ' +
+						"like it was written by opencode's V2 (2.0-preview) schema, which this " +
+						"reader does not read yet.",
+				);
+			}
+			// Mixed database: V1 rows are returned as usual, but the skipped V2 rows are
+			// real usage too - warn once rather than dropping them without a trace.
+			if (v2AssistantUsageCount > 0) {
+				warn(
+					`my-usage: skipped ${v2AssistantUsageCount} opencode "session_message" ` +
+						"row(s) using the V2 (2.0-preview) schema (not read yet)",
+				);
+			}
+			return rows;
 		} catch (error) {
 			if (!isReadonlyDirectoryError(error)) throw error;
 			// Opening a WAL database read-only still needs to create its -wal/-shm sidecars

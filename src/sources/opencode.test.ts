@@ -58,7 +58,41 @@ const DDL = `
     \`data\` text NOT NULL,
     CONSTRAINT \`fk_message_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
   );
+  CREATE TABLE \`session_message\` (
+    \`id\` text PRIMARY KEY,
+    \`session_id\` text NOT NULL,
+    \`type\` text NOT NULL,
+    \`time_created\` integer NOT NULL,
+    \`time_updated\` integer NOT NULL,
+    \`data\` text NOT NULL,
+    CONSTRAINT \`fk_session_message_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+  );
   CREATE INDEX \`message_session_time_created_id_idx\` ON \`message\` (\`session_id\`, \`time_created\`, \`id\`);
+`;
+
+// V1-only shape (no session_message table at all) - the database predates opencode's V2
+// migration (see myusage-4xu.12's finding). createDb() above always creates session_message
+// (empty), which covers the "table exists but is empty" half of acceptance criterion 3; this
+// DDL covers the "table doesn't exist" half.
+const V1_ONLY_DDL = `
+  CREATE TABLE \`session\` (
+    \`id\` text PRIMARY KEY,
+    \`project_id\` text NOT NULL,
+    \`slug\` text NOT NULL,
+    \`directory\` text NOT NULL,
+    \`title\` text NOT NULL,
+    \`version\` text NOT NULL,
+    \`time_created\` integer NOT NULL,
+    \`time_updated\` integer NOT NULL
+  );
+  CREATE TABLE \`message\` (
+    \`id\` text PRIMARY KEY,
+    \`session_id\` text NOT NULL,
+    \`time_created\` integer NOT NULL,
+    \`time_updated\` integer NOT NULL,
+    \`data\` text NOT NULL,
+    CONSTRAINT \`fk_message_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+  );
 `;
 
 const CREATED = 1_700_000_000_000;
@@ -136,6 +170,50 @@ function insertMessage(
 	).run(
 		id,
 		sessionId,
+		CREATED,
+		CREATED,
+		typeof data === "string" ? data : JSON.stringify(data),
+	);
+}
+
+// opencode's V2 (2.0-preview) assistant-message shape, per the bead's own fixture (myusage-f87):
+// model is a nested { id, providerID } object (not the V1 columns' flat modelID/providerID), and
+// there is no "role" field - "type" is a column on session_message itself (see the DDL above),
+// not part of the JSON payload.
+function v2AssistantData(overrides: Record<string, unknown> = {}) {
+	return {
+		agent: "build",
+		model: { id: "m", providerID: "p" },
+		content: [],
+		finish: "stop",
+		cost: 0,
+		tokens: {
+			input: 10,
+			output: 5,
+			reasoning: 0,
+			cache: { read: 0, write: 0 },
+		},
+		time: { created: 1, completed: 2 },
+		...overrides,
+	};
+}
+
+function insertSessionMessage(
+	db: DatabaseSync,
+	id: string,
+	type: string,
+	data: unknown,
+	sessionId = "ses_fixture_a",
+): void {
+	db.prepare(
+		"INSERT OR IGNORE INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?, 'prj_fixture', 'slug', '/work/fixture', 'title', '1.0.0', ?, ?)",
+	).run(sessionId, CREATED, CREATED);
+	db.prepare(
+		"INSERT INTO session_message (id, session_id, type, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)",
+	).run(
+		id,
+		sessionId,
+		type,
 		CREATED,
 		CREATED,
 		typeof data === "string" ? data : JSON.stringify(data),
@@ -970,6 +1048,135 @@ describe("opencodeSource.read", () => {
 		db.close();
 
 		expect(await opencodeSource.read(handleFor(path))).toEqual([]);
+	});
+
+	// opencode's V2 (2.0-preview) schema (myusage-f87, myusage-4xu.12's finding): released
+	// builds can write assistant usage to session_message with no corresponding row in message,
+	// when a V2 API client or the preview CLI drives the runner (OPENCODE_SIDECAR_V2=1 on
+	// desktop). Before this bead's fix, read() silently returned [] for a V2-only database and
+	// silently dropped V2 rows from a mixed one - these tests are written against that
+	// (unfixed) behavior first; see the bead comment for the failing-first confirmation.
+	describe("V2 session_message reporting", () => {
+		it("rejects when message is empty but session_message has V2 assistant usage rows", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = createDb(path);
+			insertSessionMessage(db, "sm_fixture_a", "assistant", v2AssistantData());
+			db.close();
+
+			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
+				/session_message/,
+			);
+			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(/V2/);
+		});
+
+		it("returns the V1 row and reports exactly 1 skipped V2 row for a mixed database", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = createDb(path);
+			insertMessage(db, "msg_fixture_001", assistantData());
+			insertSessionMessage(db, "sm_fixture_a", "assistant", v2AssistantData());
+			db.close();
+
+			const warnings: string[] = [];
+			const rows = await opencodeSource.read(handleFor(path), {
+				warn: (message) => warnings.push(message),
+			});
+
+			expect(rows.map((r) => r.messageId)).toEqual(["msg_fixture_001"]);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toMatch(/\b1\b/);
+			expect(warnings[0]).toMatch(/session_message/);
+		});
+
+		it("emits no warning for a V1-only database with an empty session_message table", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = createDb(path);
+			insertMessage(db, "msg_fixture_001", assistantData());
+			db.close();
+
+			const warn = vi.fn();
+			const rows = await opencodeSource.read(handleFor(path), { warn });
+
+			expect(rows.map((r) => r.messageId)).toEqual(["msg_fixture_001"]);
+			expect(warn).not.toHaveBeenCalled();
+		});
+
+		it("emits no warning for a V1-only database with no session_message table at all", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = new DatabaseSync(path);
+			openDbs.push(db);
+			db.exec("PRAGMA journal_mode = WAL");
+			db.exec(V1_ONLY_DDL);
+			insertMessage(db, "msg_fixture_001", assistantData());
+			db.close();
+
+			const warn = vi.fn();
+			const rows = await opencodeSource.read(handleFor(path), { warn });
+
+			expect(rows.map((r) => r.messageId)).toEqual(["msg_fixture_001"]);
+			expect(warn).not.toHaveBeenCalled();
+		});
+
+		it("uses the default warn (a single stderr line) when no warn option is given", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = createDb(path);
+			insertMessage(db, "msg_fixture_001", assistantData());
+			insertSessionMessage(db, "sm_fixture_a", "assistant", v2AssistantData());
+			db.close();
+
+			const writeSpy = vi
+				.spyOn(process.stderr, "write")
+				.mockImplementation(() => true);
+			try {
+				const rows = await opencodeSource.read(handleFor(path));
+				expect(rows.map((r) => r.messageId)).toEqual(["msg_fixture_001"]);
+				expect(writeSpy).toHaveBeenCalledTimes(1);
+				expect(writeSpy.mock.calls[0]?.[0]).toMatch(/session_message/);
+			} finally {
+				// mockRestore() also clears recorded calls, so assertions above must run first.
+				writeSpy.mockRestore();
+			}
+		});
+
+		describe("does not count session_message rows that are not real V2 assistant usage", () => {
+			const cases: Array<[string, string, unknown]> = [
+				["a user row", "user", v2AssistantData()],
+				["a compaction row", "compaction", v2AssistantData()],
+				[
+					"an assistant row with no tokens object",
+					"assistant",
+					(() => {
+						const { tokens: _tokens, ...rest } = v2AssistantData();
+						return rest;
+					})(),
+				],
+				[
+					"an assistant row with malformed JSON data",
+					"assistant",
+					'{"tokens":',
+				],
+			];
+
+			it.each(cases)("%s", async (_name, type, data) => {
+				const dir = await sandbox();
+				const path = join(dir, "opencode.db");
+				const db = createDb(path);
+				// message stays empty on purpose: if the session_message row above were
+				// miscounted as V2 usage, read() would reject instead of resolving to [].
+				insertSessionMessage(db, "sm_fixture_skip", type, data);
+				db.close();
+
+				const warn = vi.fn();
+				await expect(
+					opencodeSource.read(handleFor(path), { warn }),
+				).resolves.toEqual([]);
+				expect(warn).not.toHaveBeenCalled();
+			});
+		});
 	});
 
 	it("fails clearly, without creating a file, when the database is missing", async () => {

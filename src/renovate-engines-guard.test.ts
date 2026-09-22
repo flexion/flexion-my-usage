@@ -55,6 +55,10 @@ describe("parseFloor", () => {
 	it("rejects an empty string", () => {
 		expect(parseFloor("")).toBeUndefined();
 	});
+
+	it("rejects extra content before the comparator - the leading anchor isn't satisfied by a substring match", () => {
+		expect(parseFloor("x>=22.13.0")).toBeUndefined();
+	});
 });
 
 describe("parseCeiling", () => {
@@ -84,6 +88,30 @@ describe("parseCeiling", () => {
 
 	it("rejects a non-numeric version segment", () => {
 		expect(parseCeiling("<22.x.0")).toBeUndefined();
+	});
+
+	it("rejects extra content before the comparator - the leading anchor isn't satisfied by a substring match", () => {
+		expect(parseCeiling("x<22.14.0")).toBeUndefined();
+	});
+
+	it("rejects extra content after the version - the trailing anchor isn't satisfied by a prefix match", () => {
+		expect(parseCeiling("<22.14.0x")).toBeUndefined();
+	});
+
+	it("rejects a <= comparator - only a strict < ceiling is supported", () => {
+		expect(parseCeiling("<=22.14.0")).toBeUndefined();
+	});
+
+	it("rejects a compound OR range", () => {
+		expect(parseCeiling("<22.14.0 || >=23.0.0")).toBeUndefined();
+	});
+
+	it("rejects a space-separated compound range", () => {
+		expect(parseCeiling(">=22.13.0 <22.14.0")).toBeUndefined();
+	});
+
+	it("rejects a caret range", () => {
+		expect(parseCeiling("^22.13.0")).toBeUndefined();
 	});
 });
 
@@ -241,6 +269,42 @@ describe("checkRenovateEnginesGuard", () => {
 				kind: "ceiling-drift",
 				floor: "22.13.0",
 				actualCeiling: "22.20.0",
+				expectedCeiling: "22.14.0",
+			},
+		]);
+	});
+
+	it("flags ceiling-drift when only the ceiling's major differs from the expected next-minor ceiling", () => {
+		const result = checkRenovateEnginesGuard({
+			enginesNode: ">=22.13.0",
+			packageRules: [
+				{ matchPackageNames: ["@types/node"], allowedVersions: "<23.14.0" },
+			],
+		});
+
+		expect(result).toEqual([
+			{
+				kind: "ceiling-drift",
+				floor: "22.13.0",
+				actualCeiling: "23.14.0",
+				expectedCeiling: "22.14.0",
+			},
+		]);
+	});
+
+	it("flags ceiling-drift when only the ceiling's patch differs from the required .0", () => {
+		const result = checkRenovateEnginesGuard({
+			enginesNode: ">=22.13.0",
+			packageRules: [
+				{ matchPackageNames: ["@types/node"], allowedVersions: "<22.14.1" },
+			],
+		});
+
+		expect(result).toEqual([
+			{
+				kind: "ceiling-drift",
+				floor: "22.13.0",
+				actualCeiling: "22.14.1",
 				expectedCeiling: "22.14.0",
 			},
 		]);

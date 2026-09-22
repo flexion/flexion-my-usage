@@ -51,6 +51,18 @@ export function errorMessage(error: unknown): string {
 }
 
 /**
+ * One `deps.read(handle)` outcome, kept per-handle so a rejection from one database never
+ * propagates past its own entry (myusage-4xu.95). Before this, all reads shared one
+ * `Promise.all`/`try` with the rest of `runCli`, so a single V2-only channel database (PR #87's
+ * own reject-loudly behavior) took the entire run down - no chart at all, even with perfectly
+ * good data in the primary database. `ok: true` carries that database's rows; `ok: false` carries
+ * the handle and the error so the caller can name exactly which database failed and why.
+ */
+type ReadResult =
+	| { ok: true; rows: NormalizedUsageRow[] }
+	| { ok: false; handle: SourceHandle; error: unknown };
+
+/**
  * Runs the CLI end to end and resolves with the process exit code. Never rejects: every failure
  * is written to `deps.stderr` and reported as EXIT_FAILURE (or EXIT_USAGE for a bad command
  * line). On success the server is left running - this process stays alive until a stop signal
@@ -84,9 +96,28 @@ export async function runCli(
 	try {
 		const handles = await deps.discover();
 		if (handles.length === 0) deps.stderr(NO_DATA_HINT);
-		const rows = (
-			await Promise.all(handles.map((handle) => deps.read(handle)))
-		).flat();
+		// Each handle's read is caught right here, not left to reject out of this Promise.all: a
+		// promise that always resolves (to an ok/error result) can never abort the run its sibling
+		// reads are part of. If every handle fails, this falls through to the same rendered-with-
+		// zero-rows path handles.length === 0 already takes above - the per-handle warnings below
+		// already say why, so a second, more generic "no data" hint would only be noise.
+		const reads = await Promise.all(
+			handles.map(async (handle): Promise<ReadResult> => {
+				try {
+					return { ok: true, rows: await deps.read(handle) };
+				} catch (error) {
+					return { ok: false, handle, error };
+				}
+			}),
+		);
+		const rows = reads.flatMap((result) => {
+			if (result.ok) return result.rows;
+			deps.stderr(
+				`my-usage: couldn't read ${result.handle.path} (${errorMessage(result.error)}) - ` +
+					"skipping it, continuing with what's left.\n",
+			);
+			return [];
+		});
 		const priced = await deps.price(rows, {
 			refresh: options.refreshPrices,
 			noPriceRefresh: options.noPriceRefresh,

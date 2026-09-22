@@ -1,5 +1,14 @@
 import { spawn } from "node:child_process";
-import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+	mkdir,
+	readdir,
+	readFile,
+	rm,
+	stat,
+	utimes,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -606,6 +615,52 @@ describe("loadPriceTable: noPriceRefresh suppresses the staleness check", () => 
 
 		expect(fetch).toHaveBeenCalledTimes(1);
 		expect(table?.size).toBeGreaterThan(0);
+	});
+
+	// myusage-4xu.86: "zero fetch attempts" above proves the network side of the guarantee, but
+	// not the other half - that the no-fetch path never touches the cache file itself. A
+	// mutation that reads the cache on this path, appends a byte, rewrites it and bumps its
+	// mtime (with no error swallowing) would still leave every assertion above green, since
+	// none of them look at the file after the call. This test ages the cache with a real
+	// `utimes` call (not the `maxCacheAgeMs: -1` shortcut above, so the file's real mtime is
+	// meaningful) and fingerprints the file itself, before and after.
+	it("leaves the stale cache file byte-identical - same content hash and mtime - when noPriceRefresh suppresses the fetch (myusage-4xu.86)", async () => {
+		const cacheDir = await newCacheDir();
+		await loadPriceTable(
+			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
+			vi.fn(),
+		);
+		const [cacheFileName] = await readdir(cacheDir);
+		const cachePath = join(cacheDir, cacheFileName as string);
+
+		const wellPastMaxAge = new Date(
+			Date.now() - DEFAULT_MAX_CACHE_AGE_MS - 3600 * 1000,
+		);
+		await utimes(cachePath, wellPastMaxAge, wellPastMaxAge);
+
+		// Content hash + mtime, the same fingerprint pair src/sources/opencode.test.ts's
+		// "WAL and read-only safety" suite uses to prove a read-only path never touches a file
+		// (sha256 of the bytes, plus `stat().mtimeMs` - this repo's existing precedent for mtime
+		// precision; nothing here reads `mtimeNs`).
+		const hashBefore = createHash("sha256")
+			.update(await readFile(cachePath))
+			.digest("hex");
+		const mtimeMsBefore = (await stat(cachePath)).mtimeMs;
+
+		const offline = forbiddenFetch();
+		const table = await loadPriceTable(
+			{ cacheDir, fetch: offline, noPriceRefresh: true },
+			vi.fn(),
+		);
+
+		expect(table?.size).toBeGreaterThan(0);
+		expect(offline).not.toHaveBeenCalled();
+		const hashAfter = createHash("sha256")
+			.update(await readFile(cachePath))
+			.digest("hex");
+		const mtimeMsAfter = (await stat(cachePath)).mtimeMs;
+		expect(hashAfter).toBe(hashBefore);
+		expect(mtimeMsAfter).toBe(mtimeMsBefore);
 	});
 });
 

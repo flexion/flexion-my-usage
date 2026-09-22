@@ -143,7 +143,17 @@ export async function runCli(
 			noPriceRefresh: options.noPriceRefresh,
 		});
 		const days = aggregateDaily(priced);
-		const html = renderHtml(days);
+		// Names the skip count on the rendered page itself (myusage-4xu.98): the per-database
+		// warnings above already went to stderr, but once the browser opens, stderr is out of
+		// sight - without this, a partial dashboard renders with zero on-page sign anything was
+		// skipped. `handles.length` (not `rows.length` or `reads.length`) is the right
+		// denominator: it's every database this run discovered, the same population `reads` -
+		// and its failures - was built from.
+		const skippedCount = reads.filter((result) => !result.ok).length;
+		const html = renderHtml(days, {
+			skipped: skippedCount,
+			total: handles.length,
+		});
 
 		const server = await deps.serve(html, options.port);
 		// Report what the page shows (the window's responses), and separately how many rows were

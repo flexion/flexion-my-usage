@@ -295,6 +295,43 @@ describe("renderHtml: KPI row", () => {
 	});
 });
 
+describe("renderHtml: skipped-database callout (myusage-4xu.98)", () => {
+	it("shows no callout when the skipped argument is omitted, the shape every other test in this file exercises", () => {
+		const html = renderHtml(buildWindow());
+
+		// Not a bare "skip-note" check: the STYLE block always defines that CSS class, skipped or
+		// not, so only the rendered <p> element (or its message text) proves anything about
+		// whether the callout itself appears.
+		expect(html).not.toContain('<p class="skip-note">');
+		expect(html).not.toContain("could not be read");
+	});
+
+	it("shows no callout when skipped is explicitly zero, not just when the argument is omitted", () => {
+		const html = renderHtml(buildWindow(), { skipped: 0, total: 3 });
+
+		expect(html).not.toContain('<p class="skip-note">');
+		expect(html).not.toContain("could not be read");
+	});
+
+	it("names how many of how many databases were skipped when one or more failed to read", () => {
+		const html = renderHtml(buildWindow(), { skipped: 1, total: 3 });
+
+		expect(html).toContain(
+			'<p class="skip-note">1 of 3 databases could not be read - see terminal for details.</p>',
+		);
+	});
+
+	it("places the callout above the KPI row, not buried after the chart", () => {
+		const html = renderHtml(buildWindow(), { skipped: 2, total: 5 });
+
+		const skipIndex = html.indexOf('class="skip-note"');
+		const kpiIndex = html.indexOf('class="kpi-row"');
+		expect(skipIndex).toBeGreaterThan(-1);
+		expect(kpiIndex).toBeGreaterThan(-1);
+		expect(skipIndex).toBeLessThan(kpiIndex);
+	});
+});
+
 describe("renderHtml: legend / breakdown", () => {
 	it("lists every ranked cost series, folding the tail into Other", () => {
 		const days = buildWindow();

@@ -129,6 +129,9 @@ describe("runCli: the happy path", () => {
 		expect(r.served?.port).toBe(0);
 		expect(r.served?.html.startsWith("<!doctype html>")).toBe(true);
 		expect(r.served?.html).toContain("<title>my-usage</title>");
+		// No skipped-database callout when every discovered database read fine (myusage-4xu.98).
+		// Not a bare "skip-note" check: the page's STYLE block always defines that CSS class.
+		expect(r.served?.html).not.toContain('<p class="skip-note">');
 		expect(r.opened).toBe(SERVER_URL);
 		expect(r.stdout).toBe(
 			`my-usage: 3 responses in the last 30 days (3 scanned in total)\n${PRE_1_3_16_NOTE}` +
@@ -342,6 +345,22 @@ describe("runCli: failures", () => {
 		// so that's the model's exact legend label - a page that never got the rows wouldn't show it.
 		expect(r.served?.html).toContain("claude-sonnet-4-5");
 		expect(r.served?.html).not.toContain("No usage recorded in this window.");
+	});
+
+	it("names the skipped count on the served page itself, not just on stderr, when one of several databases fails to read (myusage-4xu.98)", async () => {
+		const r = record({
+			read: async (handle) => {
+				r.calls.push(`read ${handle.path}`);
+				if (handle === HANDLE_B) {
+					return Promise.reject(new Error(`Cannot read ${handle.path}: boom`));
+				}
+				return [row("a1", 10), row("a2", 20)];
+			},
+		});
+		expect(await runCli([], r.deps)).toBe(EXIT_OK);
+		expect(r.served?.html).toContain(
+			'<p class="skip-note">1 of 2 databases could not be read - see terminal for details.</p>',
+		);
 	});
 
 	it("a port already in use -> the server's remedy message, exit 1, no browser", async () => {

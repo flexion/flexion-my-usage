@@ -20,6 +20,11 @@
 	// scripts/branch-guard.ts (bead myusage-qx9) is the same shape once more: the pure decision
 	// logic scripts/check-branch-guard.mjs wires to real fs I/O (and to vitest.config.ts's own
 	// coverage.exclude, imported directly rather than copied), listed here for the same reason.
+	//
+	// scripts/renovate-engines-guard.ts (bead myusage-4xu.85) is the same shape again: the pure
+	// decision logic scripts/check-renovate-engines.mjs wires to real fs I/O (package.json's
+	// engines.node and renovate.json's @types/node packageRules entry), listed here so a type
+	// error in it fails `yarn typecheck` instead of only surfacing at `yarn lint` runtime.
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"rootDir": ".",
@@ -30,6 +35,7 @@
 		"scripts/package-rules.ts",
 		"scripts/critical-persisted.ts",
 		"scripts/fixtures-guard.ts",
-		"scripts/branch-guard.ts"
+		"scripts/branch-guard.ts",
+		"scripts/renovate-engines-guard.ts"
 	]
 }

@@ -313,6 +313,34 @@ ${legend}
 	return { html, dataScript };
 }
 
+/**
+ * How many of the discovered databases failed to read, and how many were discovered in total
+ * (myusage-4xu.98). PR #88 made a per-database read failure non-fatal - the run continues on
+ * what's left, with a warning on stderr - but that warning never reached the rendered page, so a
+ * user looking at the browser saw what read as a complete dashboard built from a subset of their
+ * real data. `total` is every database `cli.ts` discovered, `skipped` however many of those never
+ * made it into `days`; `skipped === total` never reaches this file; that all-failed case is
+ * `runCli`'s own EXIT_FAILURE branch, which returns before rendering anything.
+ */
+export interface SkippedDatabases {
+	skipped: number;
+	total: number;
+}
+
+/**
+ * The callout naming how many discovered databases failed to read, or "" when none did.
+ * Deliberately count-only: which database failed, and why, already went to stderr in `cli.ts` (a
+ * terminal a user only sees if they're looking), and a failed database contributes zero rows, so
+ * there's nothing to flag on a per-day basis - a `path` on the page would only duplicate what
+ * stderr already said, in front of an audience (the browser) that skip-a-path warning was never
+ * meant for.
+ */
+function renderSkipNote(skipped: SkippedDatabases): string {
+	if (skipped.skipped === 0) return "";
+	const message = `${skipped.skipped} of ${skipped.total} databases could not be read - see terminal for details.`;
+	return `<p class="skip-note">${escapeHtml(message)}</p>`;
+}
+
 /** The KPI row: notional cost, tokens and responses, summed over the window. */
 function renderKpiRow(totals: WindowTotals): string {
 	const tiles: { label: string; value: string }[] = [
@@ -353,6 +381,8 @@ const STYLE = `:root {
   --series-7: #4a3aa7;
   --series-8: #e34948;
   --other: #898781;
+  --warning: #9a6300;
+  --warning-bg: #fdf3dc;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -374,6 +404,8 @@ const STYLE = `:root {
     --series-7: #9085e9;
     --series-8: #e66767;
     --other: #898781;
+    --warning: #e3a008;
+    --warning-bg: #2a2210;
   }
 }
 * { box-sizing: border-box; }
@@ -390,6 +422,15 @@ main {
 }
 h1 { font-size: 20px; margin: 0 0 20px; }
 h2 { font-size: 16px; margin: 0; font-weight: 600; }
+.skip-note {
+  background: var(--warning-bg);
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin: 0 0 16px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
 .kpi-row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 24px; }
 .kpi-tile {
   flex: 1 1 160px;
@@ -544,7 +585,10 @@ const CLIENT_SCRIPT = `(function () {
   buttons.tokens.addEventListener("click", function () { setMeasure("tokens"); });
 })();`;
 
-export function renderHtml(days: DayBucket[]): string {
+export function renderHtml(
+	days: DayBucket[],
+	skipped: SkippedDatabases = { skipped: 0, total: 0 },
+): string {
 	const totals = windowTotals(days);
 	const costPanel = renderMeasurePanel(days, "cost", "panel-cost", false);
 	const tokensPanel = renderMeasurePanel(days, "tokens", "panel-tokens", true);
@@ -560,6 +604,7 @@ export function renderHtml(days: DayBucket[]): string {
 <body>
 <main>
 <h1>my-usage</h1>
+${renderSkipNote(skipped)}
 ${renderKpiRow(totals)}
 <section class="chart-card">
 <div class="chart-toolbar">

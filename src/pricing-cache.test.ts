@@ -140,6 +140,52 @@ describe("price table: fetch once, then stay offline", () => {
 		expect(String(warn.mock.calls[0]?.[0])).toMatch(/refresh failed/i);
 	});
 
+	it("noPriceRefresh: true serves a real, well-aged stale cache with zero fetch attempts (myusage-4xu.84)", async () => {
+		const cacheDir = await newCacheDir();
+		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });
+		const file = await cacheFile(cacheDir);
+		await ageCacheFile(file);
+
+		const offline = forbiddenFetch();
+		const warn = vi.fn();
+		const [row] = await price([sonnetRow()], {
+			cacheDir,
+			fetch: offline,
+			noPriceRefresh: true,
+			warn,
+		});
+
+		expect(offline).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
+		expect(row?.unpriced).toBe(false);
+		expect(row?.notionalCost).toBeCloseTo(3, 9);
+	});
+
+	it("noPriceRefresh: true does not block an explicit refresh: true on the same stale cache", async () => {
+		const cacheDir = await newCacheDir();
+		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });
+		const file = await cacheFile(cacheDir);
+		await ageCacheFile(file);
+		const repriced = {
+			...LITELLM_FIXTURE,
+			"claude-sonnet-4-5": {
+				...LITELLM_FIXTURE["claude-sonnet-4-5"],
+				input_cost_per_token: 0.000004,
+			},
+		};
+		const fetch = fakeFetch(repriced);
+
+		const [row] = await price([sonnetRow()], {
+			cacheDir,
+			fetch,
+			noPriceRefresh: true,
+			refresh: true,
+		});
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(row?.notionalCost).toBeCloseTo(4, 9);
+	});
+
 	it("shows a model missing from the cached table as unpriced until a refresh", async () => {
 		const cacheDir = await newCacheDir();
 		const { "claude-opus-5": _dropped, ...older } = LITELLM_FIXTURE;

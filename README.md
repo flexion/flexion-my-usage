@@ -31,7 +31,7 @@ On a machine with no outbound access at all, seed the cache by hand: copy that s
 - macOS / Linux: `~/.cache/my-usage/litellm-model-prices.json` (note: not `~/Library/Caches` on macOS)
 - Windows: `<home>\.cache\my-usage\litellm-model-prices.json`, where `<home>` is your account's home directory
 
-or, on any OS, to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` if `XDG_CACHE_HOME` is set to an absolute path. That keeps this tool silent on the network for 24 hours at a time, not indefinitely: once the seeded file passes 24 hours old, every run makes one outbound fetch attempt before falling back to the seeded copy (with a stderr warning) if that attempt fails. There's currently no flag to turn that attempt off, so on a permanently air-gapped machine, expect one blocked connection and one warning line on every run, forever, after the first day.
+or, on any OS, to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` if `XDG_CACHE_HOME` is set to an absolute path. That keeps this tool silent on the network for 24 hours at a time, not indefinitely: once the seeded file passes 24 hours old, every run makes one outbound fetch attempt before falling back to the seeded copy (with a stderr warning) if that attempt fails. Pass `--no-price-refresh` to turn that attempt off for good - it treats the cache as always fresh, so a permanently air-gapped machine with a hand-seeded cache stays silent on the network indefinitely instead of one blocked connection and one warning line per run.
 
 ## Usage
 
@@ -54,13 +54,14 @@ Scans your local opencode usage, works out a notional cost, and serves a dashboa
 local server (bound to 127.0.0.1 only), opened in your default browser. Press Ctrl+C to stop.
 
 Options:
-  --port <n>        Listen on this port (default: a free port chosen by the OS)
-  --no-open         Don't open a browser; just print the URL
-  --refresh-prices  Refetch the LiteLLM price table instead of using the cached copy
-  -h, --help        Show this help
+  --port <n>          Listen on this port (default: a free port chosen by the OS)
+  --no-open           Don't open a browser; just print the URL
+  --refresh-prices    Refetch the LiteLLM price table instead of using the cached copy
+  --no-price-refresh  Skip the automatic refresh of a stale price cache (--refresh-prices still forces one)
+  -h, --help          Show this help
 ```
 
-`--port` is for when you want a stable URL to bookmark; if that port is already taken, the command fails and says so rather than quietly picking another. `--no-open` is for headless or SSH sessions. `--refresh-prices` is the way to pick up rates for a newly released model without deleting the cache file by hand (see [Proxies and offline machines](#proxies-and-offline-machines) for where that file lives).
+`--port` is for when you want a stable URL to bookmark; if that port is already taken, the command fails and says so rather than quietly picking another. `--no-open` is for headless or SSH sessions. `--refresh-prices` is the way to pick up rates for a newly released model without deleting the cache file by hand (see [Proxies and offline machines](#proxies-and-offline-machines) for where that file lives). `--no-price-refresh` is the opposite: it suppresses the automatic refresh a stale cache would otherwise trigger, for a permanently offline machine that hand-seeds the cache - an explicit `--refresh-prices` still works even with this set, since the two answer different questions.
 
 If no opencode database is found, you get a hint on stderr and an empty dashboard rather than an error.
 

@@ -7,6 +7,7 @@ import { parseCliArgs, parsePort, USAGE } from "./cli-args.js";
 const DEFAULTS = {
 	help: false,
 	refreshPrices: false,
+	noPriceRefresh: false,
 	open: true,
 	port: 0,
 };
@@ -36,6 +37,20 @@ describe("parseCliArgs: each flag", () => {
 		expect(parseCliArgs(["--refresh-prices"])).toEqual({
 			ok: true,
 			options: { ...DEFAULTS, refreshPrices: true },
+		});
+	});
+
+	it("--no-price-refresh", () => {
+		expect(parseCliArgs(["--no-price-refresh"])).toEqual({
+			ok: true,
+			options: { ...DEFAULTS, noPriceRefresh: true },
+		});
+	});
+
+	it("--refresh-prices and --no-price-refresh combine without either canceling the other - they answer different questions", () => {
+		expect(parseCliArgs(["--refresh-prices", "--no-price-refresh"])).toEqual({
+			ok: true,
+			options: { ...DEFAULTS, refreshPrices: true, noPriceRefresh: true },
 		});
 	});
 
@@ -76,10 +91,22 @@ describe("parseCliArgs: each flag", () => {
 
 	it("flags combine, in any order", () => {
 		expect(
-			parseCliArgs(["--no-open", "--port", "9000", "--refresh-prices"]),
+			parseCliArgs([
+				"--no-open",
+				"--port",
+				"9000",
+				"--refresh-prices",
+				"--no-price-refresh",
+			]),
 		).toEqual({
 			ok: true,
-			options: { help: false, refreshPrices: true, open: false, port: 9000 },
+			options: {
+				help: false,
+				refreshPrices: true,
+				noPriceRefresh: true,
+				open: false,
+				port: 9000,
+			},
 		});
 	});
 });
@@ -169,6 +196,7 @@ describe("USAGE", () => {
 			"--port <n>",
 			"--no-open",
 			"--refresh-prices",
+			"--no-price-refresh",
 			"-h, --help",
 		]) {
 			expect(USAGE).toContain(flag);

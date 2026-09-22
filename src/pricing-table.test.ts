@@ -541,6 +541,74 @@ describe("loadPriceTable: a cache hit makes no network calls, even with a proxy 
 	});
 });
 
+// myusage-4xu.84: a permanently offline caller with a hand-seeded cache otherwise gets one
+// outbound fetch attempt (and one warning) on every run once the cache passes maxCacheAgeMs,
+// forever, with no way to turn it off. `maxCacheAgeMs: -1` forces `isCacheStale` to treat any
+// real, non-negative file age as stale without waiting or touching the file's mtime - the same
+// decisive, no-real-time-dependency approach the "isCacheStale: the age/max-age boundary" suite
+// above already relies on - so these tests isolate `noPriceRefresh` itself rather than
+// re-proving staleness detection.
+describe("loadPriceTable: noPriceRefresh suppresses the staleness check", () => {
+	it("serves a stale cache with zero fetch attempts when noPriceRefresh is set", async () => {
+		const cacheDir = await newCacheDir();
+		await loadPriceTable(
+			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
+			vi.fn(),
+		);
+
+		const offline = forbiddenFetch();
+		const warn = vi.fn();
+		const table = await loadPriceTable(
+			{ cacheDir, fetch: offline, maxCacheAgeMs: -1, noPriceRefresh: true },
+			warn,
+		);
+
+		expect(table?.size).toBeGreaterThan(0);
+		expect(offline).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
+	});
+
+	it("still honors an explicit refresh: true even with noPriceRefresh set - the two answer different questions", async () => {
+		const cacheDir = await newCacheDir();
+		await loadPriceTable(
+			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
+			vi.fn(),
+		);
+
+		const fetch = fakeFetch(LITELLM_FIXTURE);
+		const table = await loadPriceTable(
+			{
+				cacheDir,
+				fetch,
+				maxCacheAgeMs: -1,
+				noPriceRefresh: true,
+				refresh: true,
+			},
+			vi.fn(),
+		);
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(table?.size).toBeGreaterThan(0);
+	});
+
+	it("without noPriceRefresh, the same forced-stale cache does trigger one refresh attempt (baseline)", async () => {
+		const cacheDir = await newCacheDir();
+		await loadPriceTable(
+			{ cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) },
+			vi.fn(),
+		);
+
+		const fetch = fakeFetch(LITELLM_FIXTURE);
+		const table = await loadPriceTable(
+			{ cacheDir, fetch, maxCacheAgeMs: -1 },
+			vi.fn(),
+		);
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(table?.size).toBeGreaterThan(0);
+	});
+});
+
 describe("loadPriceTable: a response with no body", () => {
 	it("rejects a null body rather than treating it as empty text, using a real Response", async () => {
 		const cacheDir = await newCacheDir();

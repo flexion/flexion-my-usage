@@ -21,7 +21,7 @@ export interface CliDeps {
 	read(handle: SourceHandle): Promise<NormalizedUsageRow[]>;
 	price(
 		rows: NormalizedUsageRow[],
-		options: { refresh: boolean },
+		options: { refresh: boolean; noPriceRefresh: boolean },
 	): Promise<PricedRow[]>;
 	/** Starts serving `html` on `port` (0 = any free port) and resolves once it's listening. */
 	serve(html: string, port: number): Promise<RunningServer>;
@@ -87,7 +87,10 @@ export async function runCli(
 		const rows = (
 			await Promise.all(handles.map((handle) => deps.read(handle)))
 		).flat();
-		const priced = await deps.price(rows, { refresh: options.refreshPrices });
+		const priced = await deps.price(rows, {
+			refresh: options.refreshPrices,
+			noPriceRefresh: options.noPriceRefresh,
+		});
 		const days = aggregateDaily(priced);
 		const html = renderHtml(days);
 

@@ -13,6 +13,14 @@ export interface CliOptions {
 	help: boolean;
 	/** Force a refetch of the LiteLLM price table instead of using the cached copy. */
 	refreshPrices: boolean;
+	/**
+	 * Treat the price cache as always fresh, skipping the automatic refresh attempt a stale
+	 * (24h+) cache would otherwise trigger on every run. Independent of `refreshPrices`: one
+	 * answers "never auto-refresh on age," the other "refetch right now regardless of age," and
+	 * an explicit `refreshPrices` still fetches even when this is set. For a permanently
+	 * offline machine with a hand-seeded cache (see README's "Proxies and offline machines").
+	 */
+	noPriceRefresh: boolean;
 	/** Open the served page in the default browser (off with --no-open). */
 	open: boolean;
 	/**
@@ -33,10 +41,11 @@ Scans your local opencode usage, works out a notional cost, and serves a dashboa
 local server (bound to 127.0.0.1 only), opened in your default browser. Press Ctrl+C to stop.
 
 Options:
-  --port <n>        Listen on this port (default: a free port chosen by the OS)
-  --no-open         Don't open a browser; just print the URL
-  --refresh-prices  Refetch the LiteLLM price table instead of using the cached copy
-  -h, --help        Show this help
+  --port <n>          Listen on this port (default: a free port chosen by the OS)
+  --no-open           Don't open a browser; just print the URL
+  --refresh-prices    Refetch the LiteLLM price table instead of using the cached copy
+  --no-price-refresh  Skip the automatic refresh of a stale price cache (--refresh-prices still forces one)
+  -h, --help          Show this help
 `;
 
 const MAX_PORT = 65535;
@@ -52,6 +61,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
 	let values: {
 		help?: boolean;
 		"refresh-prices"?: boolean;
+		"no-price-refresh"?: boolean;
 		"no-open"?: boolean;
 		port?: string;
 	};
@@ -61,6 +71,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
 			options: {
 				help: { type: "boolean", short: "h" },
 				"refresh-prices": { type: "boolean" },
+				"no-price-refresh": { type: "boolean" },
 				"no-open": { type: "boolean" },
 				port: { type: "string" },
 			},
@@ -93,6 +104,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedArgs {
 		options: {
 			help: values.help === true,
 			refreshPrices: values["refresh-prices"] === true,
+			noPriceRefresh: values["no-price-refresh"] === true,
 			open: values["no-open"] !== true,
 			port,
 		},

@@ -47,7 +47,7 @@ interface Recorded {
 	stdout: string;
 	stderr: string;
 	served: { html: string; port: number } | undefined;
-	priceOptions: { refresh: boolean } | undefined;
+	priceOptions: { refresh: boolean; noPriceRefresh: boolean } | undefined;
 	opened: string | undefined;
 }
 
@@ -125,7 +125,7 @@ describe("runCli: the happy path", () => {
 			"serve 0",
 			`open ${SERVER_URL}`,
 		]);
-		expect(r.priceOptions).toEqual({ refresh: false });
+		expect(r.priceOptions).toEqual({ refresh: false, noPriceRefresh: false });
 		expect(r.served?.port).toBe(0);
 		expect(r.served?.html.startsWith("<!doctype html>")).toBe(true);
 		expect(r.served?.html).toContain("<title>my-usage</title>");
@@ -166,7 +166,21 @@ describe("runCli: flags", () => {
 	it("--refresh-prices reaches price() as refresh: true", async () => {
 		const r = record();
 		expect(await runCli(["--refresh-prices"], r.deps)).toBe(EXIT_OK);
-		expect(r.priceOptions).toEqual({ refresh: true });
+		expect(r.priceOptions).toEqual({ refresh: true, noPriceRefresh: false });
+	});
+
+	it("--no-price-refresh reaches price() as noPriceRefresh: true", async () => {
+		const r = record();
+		expect(await runCli(["--no-price-refresh"], r.deps)).toBe(EXIT_OK);
+		expect(r.priceOptions).toEqual({ refresh: false, noPriceRefresh: true });
+	});
+
+	it("--refresh-prices and --no-price-refresh combine: both reach price() set, since they answer different questions", async () => {
+		const r = record();
+		expect(
+			await runCli(["--refresh-prices", "--no-price-refresh"], r.deps),
+		).toBe(EXIT_OK);
+		expect(r.priceOptions).toEqual({ refresh: true, noPriceRefresh: true });
 	});
 
 	it("--no-open serves but never touches the browser", async () => {

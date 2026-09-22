@@ -1088,6 +1088,33 @@ describe("opencodeSource.read", () => {
 			);
 		});
 
+		// myusage-4xu.100: statement.setReadBigInts(true) on the V2 candidates query is load-
+		// bearing - without it, node:sqlite tries to convert this row's out-of-range token value to
+		// a JS number and throws a raw "Value is too large to be represented as a JavaScript
+		// number" error instead of the deliberate reject below. Mirrors V1's own "does not throw on
+		// integers outside the safe JavaScript range" test above, applied to the V2 query. message
+		// stays empty on purpose, same as the reject-count tests above: a crash here propagates as
+		// a rejection whose message does not match /session_message/ or /V2/ (a raw bigint-
+		// conversion error, not this reject), so this test fails loudly rather than passing
+		// vacuously if setReadBigInts(true) is ever removed.
+		it("rejects with the V2 message, not a raw bigint-conversion error, when a V2 row's token value is outside the safe JavaScript integer range", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = createDb(path);
+			insertSessionMessage(
+				db,
+				"sm_fixture_huge",
+				"assistant",
+				'{"tokens":{"input":9223372036854775807,"output":1,"reasoning":0,"cache":{"read":0,"write":0}}}',
+			);
+			db.close();
+
+			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
+				/session_message/,
+			);
+			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(/V2/);
+		});
+
 		it("returns the V1 row and reports exactly 1 skipped V2 row for a mixed database", async () => {
 			const dir = await sandbox();
 			const path = join(dir, "opencode.db");
@@ -1244,6 +1271,51 @@ describe("opencodeSource.read", () => {
 				).resolves.toEqual([]);
 				expect(warn).not.toHaveBeenCalled();
 			});
+		});
+
+		// myusage-4xu.99: every V2 fixture used elsewhere in this file shares one shape (input and
+		// output both non-zero, reasoning and both cache fields zero), so no assertion anywhere else
+		// isolates whether hasZeroUsage's other four sub-field checks, or the V2 query's cache_read/
+		// cache_write column aliases, are independently wired - only input is pinned on its own.
+		// Each case below is a V2 row with exactly one of the five token sub-fields non-zero and the
+		// rest zero; message stays empty on purpose, same as the "does not count..." cases above: a
+		// correctly-counted row rejects with "found 1 assistant usage", while a miscounted one (that
+		// sub-field's zero-check broken, or - for cache.read/cache.write - the SQL alias renamed so
+		// the JSON value never reaches hasZeroUsage at all) resolves to [] instead.
+		describe("isolates each hasZeroUsage sub-field and the V2 cache_read/cache_write aliases", () => {
+			const allZeroTokens = {
+				input: 0,
+				output: 0,
+				reasoning: 0,
+				cache: { read: 0, write: 0 },
+			};
+			const cases: Array<[string, Record<string, unknown>]> = [
+				["input", { ...allZeroTokens, input: 7 }],
+				["output", { ...allZeroTokens, output: 7 }],
+				["reasoning", { ...allZeroTokens, reasoning: 7 }],
+				["cache.read", { ...allZeroTokens, cache: { read: 7, write: 0 } }],
+				["cache.write", { ...allZeroTokens, cache: { read: 0, write: 7 } }],
+			];
+
+			it.each(cases)(
+				"counts a V2 row with only %s non-zero as real usage",
+				async (_field, tokens) => {
+					const dir = await sandbox();
+					const path = join(dir, "opencode.db");
+					const db = createDb(path);
+					insertSessionMessage(
+						db,
+						"sm_fixture_isolated",
+						"assistant",
+						v2AssistantData({ tokens }),
+					);
+					db.close();
+
+					await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
+						/found 1 assistant usage/,
+					);
+				},
+			);
 		});
 
 		// myusage-4xu.93: the reject-path cases above prove empty/all-zero V2 tokens don't count

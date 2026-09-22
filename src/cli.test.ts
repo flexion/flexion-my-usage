@@ -269,13 +269,56 @@ describe("runCli: failures", () => {
 		expect(r.stdout).toBe("");
 	});
 
-	it("a failing read() -> exit 1 with the message", async () => {
+	it("every database's read() rejecting -> a named warning per database, exit 0 with an empty page (myusage-4xu.95)", async () => {
 		const r = record({
-			read: () => Promise.reject(new Error("Cannot read /data/opencode.db")),
+			read: (handle) => {
+				r.calls.push(`read ${handle.path}`);
+				return Promise.reject(new Error(`Cannot read ${handle.path}: boom`));
+			},
 		});
-		expect(await runCli([], r.deps)).toBe(EXIT_FAILURE);
-		expect(r.stderr).toBe("my-usage: Cannot read /data/opencode.db\n");
-		expect(r.served).toBeUndefined();
+		expect(await runCli([], r.deps)).toBe(EXIT_OK);
+		expect(r.stderr).toBe(
+			`my-usage: couldn't read ${HANDLE_A.path} (Cannot read ${HANDLE_A.path}: boom) - skipping it, continuing with what's left.\n` +
+				`my-usage: couldn't read ${HANDLE_B.path} (Cannot read ${HANDLE_B.path}: boom) - skipping it, continuing with what's left.\n`,
+		);
+		expect(r.calls).toEqual([
+			"discover",
+			`read ${HANDLE_A.path}`,
+			`read ${HANDLE_B.path}`,
+			"price 0",
+			"serve 0",
+			`open ${SERVER_URL}`,
+		]);
+		expect(r.stdout).toContain(
+			"my-usage: 0 responses in the last 30 days (0 scanned in total)",
+		);
+		expect(r.served?.html).toContain("No usage recorded in this window.");
+	});
+
+	it("one of several databases' read() rejecting (matching PR #87's V2-only shape) -> a named warning for it, the rest still render and aggregate", async () => {
+		const v2OnlyMessage =
+			`Cannot read ${HANDLE_B.path}: found 3 assistant usage row(s) in ` +
+			'"session_message" but none in "message" - this database looks like it was ' +
+			"written by opencode's V2 (2.0-preview) schema, which this reader does not read yet.";
+		const r = record({
+			read: async (handle) => {
+				if (handle === HANDLE_B) {
+					return Promise.reject(new Error(v2OnlyMessage));
+				}
+				return [row("a1", 10), row("a2", 20)];
+			},
+		});
+		expect(await runCli([], r.deps)).toBe(EXIT_OK);
+		expect(r.stderr).toBe(
+			`my-usage: couldn't read ${HANDLE_B.path} (${v2OnlyMessage}) - skipping it, continuing with what's left.\n`,
+		);
+		// The good database's rows still reached price() and, from there, the rendered page -
+		// the whole point of catching the bad database's rejection per-handle instead of letting
+		// it abort the shared Promise.all.
+		expect(r.calls).toContain("price 2");
+		expect(r.stdout).toContain(
+			"my-usage: 2 responses in the last 30 days (2 scanned in total)",
+		);
 	});
 
 	it("a port already in use -> the server's remedy message, exit 1, no browser", async () => {

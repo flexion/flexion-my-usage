@@ -56,7 +56,10 @@ export function errorMessage(error: unknown): string {
  * `Promise.all`/`try` with the rest of `runCli`, so a single V2-only channel database (PR #87's
  * own reject-loudly behavior) took the entire run down - no chart at all, even with perfectly
  * good data in the primary database. `ok: true` carries that database's rows; `ok: false` carries
- * the handle and the error so the caller can name exactly which database failed and why.
+ * the handle and the error so the caller can name exactly which database failed and why. When
+ * every result is `ok: false` and at least one was discovered, `runCli` treats that as
+ * EXIT_FAILURE (myusage-4xu.97) - distinct from `discover()` finding no handles at all, which
+ * stays the soft "nothing to show" case.
  */
 type ReadResult =
 	| { ok: true; rows: NormalizedUsageRow[] }
@@ -68,6 +71,15 @@ type ReadResult =
  * line). On success the server is left running - this process stays alive until a stop signal
  * closes it (see server.ts) - and the browser is opened as a courtesy: if that fails, the URL
  * is already on the terminal, so it's a warning, not a failure.
+ *
+ * Exit-code contract for discovered-but-unreadable databases (myusage-4xu.97): a database that
+ * fails to read is always a per-database warning on stderr, never fatal by itself. It only
+ * becomes EXIT_FAILURE for the whole run when EVERY discovered database failed to read - a
+ * caller scripting on the exit code (`my-usage || alert`) can then tell "something failed to
+ * read" apart from "nothing to show, nothing wrong." Both softer cases still exit EXIT_OK: no
+ * database discovered at all (unchanged - see NO_DATA_HINT), and a partial failure where at
+ * least one discovered database read successfully (unchanged since myusage-4xu.95 - one bad
+ * channel among several good ones shouldn't kill the run).
  */
 export async function runCli(
 	argv: readonly string[],
@@ -98,9 +110,10 @@ export async function runCli(
 		if (handles.length === 0) deps.stderr(NO_DATA_HINT);
 		// Each handle's read is caught right here, not left to reject out of this Promise.all: a
 		// promise that always resolves (to an ok/error result) can never abort the run its sibling
-		// reads are part of. If every handle fails, this falls through to the same rendered-with-
-		// zero-rows path handles.length === 0 already takes above - the per-handle warnings below
-		// already say why, so a second, more generic "no data" hint would only be noise.
+		// reads are part of. If every handle fails, that's the EXIT_FAILURE case checked for below
+		// (myusage-4xu.97) - distinct from handles.length === 0 above, which means no database was
+		// ever found. The per-handle warnings already say why each one failed, so nothing further
+		// is needed here.
 		const reads = await Promise.all(
 			handles.map(async (handle): Promise<ReadResult> => {
 				try {
@@ -118,6 +131,13 @@ export async function runCli(
 			);
 			return [];
 		});
+		// A genuine failure, not "nothing to show": at least one database was discovered and every
+		// single one of them failed to read. Distinct from handles.length === 0 (no database
+		// configured at all), which stays EXIT_OK with NO_DATA_HINT above. A partial failure - some
+		// handles ok, some not - still falls through to render what did come back (myusage-4xu.95).
+		if (handles.length > 0 && reads.every((result) => !result.ok)) {
+			return EXIT_FAILURE;
+		}
 		const priced = await deps.price(rows, {
 			refresh: options.refreshPrices,
 			noPriceRefresh: options.noPriceRefresh,

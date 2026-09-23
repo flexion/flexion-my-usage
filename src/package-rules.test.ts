@@ -343,13 +343,12 @@ describe("devDependencyOnlyPackages: package.json packages listed only in devDep
 
 describe("importsPackage: content-based import detection for one package name", () => {
 	it("matches a default import", () => {
+		// Also stands in for a named import (myusage-4xu.127): the regex only ever looks at
+		// `from "vitest"`, never at what's inside the import clause before it, so a dedicated
+		// "matches a named import" test using `import { describe } from "vitest"` was
+		// behaviorally identical to this one - no mutation could kill one without the other.
+		// Deleted as redundant rather than kept for its own sake.
 		expect(importsPackage('import x from "vitest";', "vitest")).toBe(true);
-	});
-
-	it("matches a named import", () => {
-		expect(importsPackage('import { describe } from "vitest";', "vitest")).toBe(
-			true,
-		);
 	});
 
 	it("matches a bare side-effect import", () => {
@@ -398,14 +397,14 @@ describe("importsPackage: content-based import detection for one package name", 
 	it("does not match a different real package whose name is a literal prefix of the imported specifier", () => {
 		// "vite" and "vitest" are both real, separately-published packages, and "vite" is a
 		// literal prefix of "vitest" - importing "vitest/config" must not be reported as
-		// importing "vite". Pins the anchored (not prefix-substring) matching this needs.
+		// importing "vite". Pins the anchored (not prefix-substring) matching this needs, and -
+		// being a strictly harder case - subsumes a plainer "does not match when the package
+		// isn't referenced at all" test (myusage-4xu.127: deleted as redundant, since no
+		// mutation could weaken the match enough to pass that plainer case without also
+		// failing this one).
 		expect(
 			importsPackage('import { defineConfig } from "vitest/config";', "vite"),
 		).toBe(false);
-	});
-
-	it("does not match when the package is not referenced at all", () => {
-		expect(importsPackage('import { z } from "zod";', "vitest")).toBe(false);
 	});
 
 	it("treats a regex metacharacter in the package name literally, not as a wildcard", () => {

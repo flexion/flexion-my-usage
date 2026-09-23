@@ -135,31 +135,41 @@ export function packListCoversDist(
 // package.json, not a hardcoded package-name list.
 
 /** The subset of package.json this module reads: just enough to tell a devDependency-only
- * package apart from one the published package also lists as a real runtime dependency. Both
- * keys are optional, matching real package.json shapes that omit either or both - most of this
- * repo's own integration fixtures write neither key at all. */
+ * package apart from one the published package also lists as a real runtime dependency, whether
+ * that promise comes from `dependencies` itself or from the standard peer-dep pattern
+ * (`peerDependencies` plus a matching `devDependencies` entry so contributors can still run it
+ * locally) or from `optionalDependencies` (myusage-4xu.123). All four keys are optional,
+ * matching real package.json shapes that omit any or all of them - most of this repo's own
+ * integration fixtures write none of them at all. */
 export type PackageJsonDeps = {
 	dependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
+	peerDependencies?: Record<string, string>;
+	optionalDependencies?: Record<string, string>;
 };
 
-/** Package names listed in `devDependencies` but not also in `dependencies` - the packages a
- * built file must never depend on, since nothing in `dependencies` promises they'll be
- * installed for a consumer of the published package. A missing `dependencies` and/or
- * `devDependencies` key is treated as empty, not an error - most of this repo's own dist/
- * fixtures (and plenty of real package.json files) omit one or both keys entirely, so `pkg.x ??
- * {}` must not throw on either being absent. Order matches `Object.keys(devDependencies)`'s own
- * insertion order, not sorted or otherwise reshaped. */
+/** Package names listed in `devDependencies` but not also in `dependencies`,
+ * `peerDependencies`, or `optionalDependencies` - the packages a built file must never depend
+ * on, since nothing else in package.json promises they'll be installed for a consumer of the
+ * published package. A missing key among the four is treated as empty, not an error - most of
+ * this repo's own dist/ fixtures (and plenty of real package.json files) omit some or all of
+ * them entirely, so `pkg.x ?? {}` must not throw on any being absent. Order matches
+ * `Object.keys(devDependencies)`'s own insertion order, not sorted or otherwise reshaped. */
 export function devDependencyOnlyPackages(pkg: PackageJsonDeps): string[] {
 	const dependencies = pkg.dependencies ?? {};
 	const devDependencies = pkg.devDependencies ?? {};
+	const peerDependencies = pkg.peerDependencies ?? {};
+	const optionalDependencies = pkg.optionalDependencies ?? {};
 	// Object.hasOwn, not `name in dependencies` (myusage-4xu.122): `in` also walks the
 	// prototype chain, so a devDependencies-only package literally named "constructor",
 	// "toString", or "hasOwnProperty" would silently read as "already in dependencies" - true
 	// for every plain object via Object.prototype, regardless of what `dependencies` itself
 	// actually declares.
 	return Object.keys(devDependencies).filter(
-		(name) => !Object.hasOwn(dependencies, name),
+		(name) =>
+			!Object.hasOwn(dependencies, name) &&
+			!Object.hasOwn(peerDependencies, name) &&
+			!Object.hasOwn(optionalDependencies, name),
 	);
 }
 

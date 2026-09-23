@@ -238,6 +238,15 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/devDependency/i);
+		// Pin the check's own literal header string, not just /devDependency/i - the .129 test
+		// below asserts `.not.toMatch(/devDependency-only package\(s\)/)` to pin the check
+		// #3/#5 dedup, and that negative assertion only means something if this positive
+		// assertion here fails loudly should the header ever get reworded (independently
+		// confirmed: rewording the header lets all 11 integration tests, including .129's, pass
+		// green with no other assertion catching it).
+		expect(result.stderr).toMatch(
+			/devDependency-only package\(s\) imported in dist\//,
+		);
 		expect(result.stderr).toMatch(/move that package to "dependencies"/);
 	});
 

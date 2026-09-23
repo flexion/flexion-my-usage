@@ -55,18 +55,27 @@ export function isOlder(a: Version, b: Version): boolean {
  * `running`'s type guarantees that; something has to decide what happens on the day it doesn't.
  *
  * That's also why the branch stays a real `if (have === undefined) return undefined` instead of
- * following scripts/branch-guard.ts's and scripts/fixtures-guard.ts's own `as Version` cast
- * convention for this same "TypeScript can't see what I can" shape - `parseVersion(running) as
- * Version` typechecks just as cleanly, so the type system alone does not force this branch to
- * exist either. The two situations only look alike: those scripts' casts rest on an ECMAScript
- * spec guarantee - `matchAll`'s contract always sets `.index` on a real match, a successful
- * `from "..."` match always fills capture group 1 - so a wrong cast there costs at most a wrong
- * line number in a lint diagnostic. This branch's guarantee would instead have to rest on
+ * following scripts/branch-guard.ts's and scripts/fixtures-guard.ts's own cast convention for
+ * this same "TypeScript can't see what I can" shape - both scripts double-cast a regex match
+ * through `unknown` rather than asserting a single narrower type: branch-guard.ts's
+ * checkBranchGuard casts `rawMatch as unknown as [string] & { index: number }`, and
+ * fixtures-guard.ts's allCaptures casts `raw as unknown as [string, string]`. A single-step
+ * `parseVersion(running) as Version` would typecheck just as cleanly here, so the type system
+ * alone does not force this branch to exist either. The two situations only look alike: those
+ * scripts' casts rest on an ECMAScript spec guarantee - `matchAll`'s contract always sets
+ * `.index` on a real match, a successful `from "..."` match always fills capture group 1 - but
+ * that guarantee makes the two precedent sites cheap to get wrong in different ways. In
+ * branch-guard.ts, a wrong `.index` only skews what `lineAt` reports, so a wrong cast there costs
+ * at most a wrong line number in a lint diagnostic. fixtures-guard.ts's cast isn't that cheap: a
+ * wrong cast there would feed an undefined `specifier` into resolveRelativeSpecifier's
+ * `.startsWith("./")` check, throwing a real `TypeError: Cannot read properties of undefined
+ * (reading 'startsWith')`, not just a misreported line number. Neither precedent site shares this
+ * branch's guarantee, though: this branch's guarantee would instead have to rest on
  * `process.versions.node`, typed as a plain `string` by @types/node with no spec backing it -
  * an untrusted value from the host runtime, not from the language. A wrong cast here doesn't
- * misreport a line number; it crashes at runtime (`isOlder` destructuring `undefined` throws
- * `TypeError: a is not iterable`, confirmed by hand) the first time a build ships a Node version
- * string `parseVersion` can't read.
+ * misreport a line number or throw from a downstream string method; it crashes at runtime
+ * (`isOlder` destructuring `undefined` throws `TypeError: a is not iterable`, confirmed by hand)
+ * the first time a build ships a Node version string `parseVersion` can't read.
  */
 export function nodeUpgradeMessage(
 	running: string,

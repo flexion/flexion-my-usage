@@ -153,7 +153,14 @@ export type PackageJsonDeps = {
 export function devDependencyOnlyPackages(pkg: PackageJsonDeps): string[] {
 	const dependencies = pkg.dependencies ?? {};
 	const devDependencies = pkg.devDependencies ?? {};
-	return Object.keys(devDependencies).filter((name) => !(name in dependencies));
+	// Object.hasOwn, not `name in dependencies` (myusage-4xu.122): `in` also walks the
+	// prototype chain, so a devDependencies-only package literally named "constructor",
+	// "toString", or "hasOwnProperty" would silently read as "already in dependencies" - true
+	// for every plain object via Object.prototype, regardless of what `dependencies` itself
+	// actually declares.
+	return Object.keys(devDependencies).filter(
+		(name) => !Object.hasOwn(dependencies, name),
+	);
 }
 
 function escapeRegExpLiteral(value: string): string {

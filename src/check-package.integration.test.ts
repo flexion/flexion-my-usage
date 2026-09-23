@@ -20,6 +20,16 @@
 //
 // The fixture root is allocated per-run via `mkdtemp` (bead myusage-4xu.114) - see
 // src/__tests__/test-fixture-root.ts for the canonical writeup of the cross-process race this avoids.
+//
+// Every test below carries an explicit 20s timeout (myusage-4xu.133), the same fix already
+// applied to browser.test.ts's spawnDetached test (myusage-4xu.117, PR #115): vitest's own
+// default (5000ms) is tight for a test that shells out to a real subprocess (tsx, which itself
+// shells out to a real `npm pack --dry-run`), and PR #119's independent reviewer hit real
+// 'Test timed out in 5000ms' failures here under heavy concurrent-worker load (several other
+// `yarn test` runs competing for the scheduler at once) even though the same tests pass
+// instantly in isolation. Unlike browser.test.ts's fix, there's no polling loop with its own
+// internal deadline driving the number here - just headroom over the observed real-world
+// contention - so 20s (4x the default) rather than that fix's 35s.
 import { spawnSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -106,7 +116,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		// Pin the message this guard specifically emits.
 		expect(result.status).toBe(2);
 		expect(result.stderr).toMatch(/lists only \d+ of \d+ dist\/ files/);
-	});
+	}, 20_000);
 
 	it("passes when the pack list covers every real dist/ file", async () => {
 		const dir = await fixtureDir();
@@ -118,7 +128,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		const result = runCheckPackage(dir);
 
 		expect(result.status).toBe(0);
-	});
+	}, 20_000);
 
 	it("still fails, for the separate and already-correct reason, on a stale test file left in dist/", async () => {
 		const dir = await fixtureDir();
@@ -136,7 +146,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		// that scan alone (leaving the pack-side scan intact) fails this test.
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/test or support files in dist\//);
-	});
+	}, 20_000);
 
 	it("catches a stale test file nested under a subdirectory of dist/", async () => {
 		const dir = await fixtureDir();
@@ -158,7 +168,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		// still pass if listFiles stopped recursing and only the pack-side scan caught it.
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/test or support files in dist\//);
-	});
+	}, 20_000);
 
 	it("catches a test file present only in the npm pack list, not in dist/", async () => {
 		const dir = await fixtureDir();
@@ -177,7 +187,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		// scan intact) fails this test, since dist/ itself has no test file here.
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/test or support files in the npm package:/);
-	});
+	}, 20_000);
 
 	it("still fails, for the separate and already-correct reason, on a file left under a stale dist/__mocks__/ directory", async () => {
 		// bead myusage-4xu.20: tsconfig.build.json now excludes __mocks__/** from a real
@@ -197,7 +207,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/test or support files in dist\//);
-	});
+	}, 20_000);
 
 	it("catches a devDependency import shipped in dist/ under a name/location that dodges the name-based filters (myusage-4xu.119)", async () => {
 		// TEST_OR_SUPPORT (".test."/".fixtures." in the basename) and TEST_OR_SUPPORT_DIR
@@ -248,7 +258,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 			/devDependency-only package\(s\) imported in dist\//,
 		);
 		expect(result.stderr).toMatch(/move that package to "dependencies"/);
-	});
+	}, 20_000);
 
 	it("does not flag a real dependency import - the guard is data-driven from package.json, not a hardcoded package-name list", async () => {
 		// Closes a gap the test above alone leaves open: it proves the guard catches a bad
@@ -285,7 +295,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		const result = runCheckPackage(dir);
 
 		expect(result.status).toBe(0);
-	});
+	}, 20_000);
 
 	it('flags a devDependency-only import even when the flagged package is not "vitest" - proves the guard reads package.json, not a fixed package-name list', async () => {
 		// A hardcoded `const devOnlyPackages = ["vitest"]` in check-package.mjs would pass
@@ -324,7 +334,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/devDependency/i);
-	});
+	}, 20_000);
 
 	it("does not re-flag a devDependency import in a file already caught by the test-or-support name check (myusage-4xu.129)", async () => {
 		// distFiles.filter((path) => !inDist.includes(path)) (the comment right above it in
@@ -373,7 +383,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/test or support files in dist\//);
 		expect(result.stderr).not.toMatch(/devDependency-only package\(s\)/);
-	});
+	}, 20_000);
 
 	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {
 		// npm never packs .DS_Store - it is on npm's own always-ignored list, regardless of
@@ -394,5 +404,5 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		const result = runCheckPackage(dir);
 
 		expect(result.status).toBe(0);
-	});
+	}, 20_000);
 });

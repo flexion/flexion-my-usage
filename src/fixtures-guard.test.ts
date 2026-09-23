@@ -58,6 +58,48 @@ describe("stripComments", () => {
 
 		expect(stripComments(source)).toBe(source);
 	});
+
+	it("still strips a real // comment that follows a regex literal with an unescaped quote character, when the comment is on a later line (myusage-4xu.131)", () => {
+		// package-rules.ts's identical STRING_OR_COMMENT technique has the same gap (see that
+		// file's test of the same name, in src/package-rules.test.ts) - this is the twin fix PR
+		// #119's independent reviewer asked for in both places. This scanner has no concept of a
+		// regex literal - it only tracks bare `"`, `'`, and backtick characters - so a regex
+		// literal containing an unescaped quote (this repo's own src/render.ts:43:
+		// `.replace(/"/g, "&quot;")`) contains a bare `"` inside `/.../` that the scanner reads
+		// as OPENING a phantom string. That flips string/comment parity for the rest of the
+		// file, so the real `//` comment on the next line is no longer recognized as a comment
+		// at all and survives untouched. REPRODUCED directly against the current regex: the
+		// comment line below is not removed from the output.
+		const source = [
+			'const html = value.replace(/"/g, "&quot;");',
+			'// import { helper } from "./thing.fixtures.js";',
+			"const real = 1;",
+		].join("\n");
+
+		expect(stripComments(source)).toBe(
+			[
+				'const html = value.replace(/"/g, "&quot;");',
+				"",
+				"const real = 1;",
+			].join("\n"),
+		);
+	});
+
+	it("does not misread a division expression as opening a regex literal - a real comment right after it still gets stripped (regression guard)", () => {
+		// Guards against the fix the myusage-4xu.131 reviewer explicitly REJECTED: adding a
+		// regex-literal-matching alternative to STRING_OR_COMMENT (instead of the fix actually
+		// applied - forbidding a raw newline inside the `"..."`/`'...'` branches) makes the test
+		// above pass too, but introduces a NEW false negative: `a / b` would read as opening a
+		// regex literal at the first `/`, consuming everything up to the next `/` - here, the
+		// `//` that starts the real comment - so the comment would never be recognized as a
+		// comment and would survive untouched. The fix actually applied doesn't touch `/`
+		// handling at all, so this already passes; it exists to keep it that way if
+		// stripComments is ever touched again.
+		const source =
+			'const r = a / b; // import { helper } from "./thing.fixtures.js";';
+
+		expect(stripComments(source)).toBe("const r = a / b; ");
+	});
 });
 
 describe("extractReferences", () => {
@@ -210,6 +252,30 @@ describe("checkFixturesGuard", () => {
 				fixturesFile: "src/thing.fixtures.ts",
 			},
 		]);
+	});
+
+	it("does not raise a false banned-import finding from a comment that merely follows a regex literal with an unescaped quote character, when the comment is on a later line (myusage-4xu.131)", () => {
+		// The stripComments unit tests above pin the bug at the helper level (the string comes
+		// back with the comment still in it); this pins the actual consequence a real caller
+		// hits. Without the fix, the desynced parity leaves the `//` comment below unstripped,
+		// extractReferences' FROM_SPECIFIER regex then matches the fixtures-shaped specifier
+		// sitting inside that surviving comment text, and checkFixturesGuard - which never
+		// requires a reference to resolve to a file actually present in `files` (see this
+		// export's own doc comment) - reports src/render.ts as banned-importing a fixtures file
+		// it never actually references. src/render.ts:43 has this exact
+		// `.replace(/"/g, "&quot;")` shape for real.
+		const files = [
+			{
+				path: "src/render.ts",
+				text: [
+					'const html = value.replace(/"/g, "&quot;");',
+					'// import { helper } from "./thing.fixtures.js";',
+					"const real = 1;",
+				].join("\n"),
+			},
+		];
+
+		expect(checkFixturesGuard(files)).toEqual([]);
 	});
 
 	it("does not flag a real test file importing a fixtures file that imports vitest itself", () => {

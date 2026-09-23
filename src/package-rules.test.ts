@@ -370,27 +370,22 @@ describe("importsPackage: content-based import detection for one package name", 
 		).toBe(true);
 	});
 
-	it("does not match a plain string literal that merely contains the package name as a substring", () => {
-		// A naive substring search would false-positive on this line. Nothing here is an
-		// import specifier - it's a plain string value.
-		expect(
-			importsPackage(
-				'const msg = "please run vitest to check this";',
-				"vitest",
-			),
-		).toBe(false);
-	});
-
 	it("does not match a bare quoted string literal exactly equal to the package name, with no import keyword before it (myusage-4xu.125)", () => {
 		// Every individual IMPORT_CONTEXT alternative (from/import/import() is pinned by its
 		// own positive test above, but nothing before this test discriminated the
 		// overarching anchor itself: that the specifier must actually follow one of those
-		// keywords, not just appear as a quoted string anywhere. The substring test right above
-		// this one doesn't do it either - "vitest" there sits mid-sentence, never immediately
-		// after the opening quote, so it stays false even with IMPORT_CONTEXT stripped down to
-		// an empty string. This fixture's quoted string is nothing BUT the package name, so an
-		// anchor-stripped mutant (IMPORT_CONTEXT replaced by "") would wrongly match it -
-		// verified by hand against that exact mutant before writing this test.
+		// keywords, not just appear as a quoted string anywhere. This fixture's quoted string is
+		// nothing BUT the package name, so an anchor-stripped mutant (IMPORT_CONTEXT replaced by
+		// "") would wrongly match it - verified by hand against that exact mutant before writing
+		// this test.
+		//
+		// A prior sibling test asserting the plainer substring case ('const msg = "please run
+		// vitest to check this";') was deleted as redundant (myusage-4xu.134): every mutation
+		// that flips that fixture also flips this one (verified by hand against several
+		// candidate mutants - none isolate a kill unique to the substring fixture), since
+		// matching "vitest" as an exact full quoted string is strictly easier to reach than
+		// matching it as a mid-sentence substring inside a longer quoted string with no import
+		// keyword at all.
 		expect(importsPackage('const p = "vitest";', "vitest")).toBe(false);
 	});
 
@@ -445,6 +440,43 @@ describe("importsPackage: content-based import detection for one package name", 
 				'/** Old header: this once imported defineConfig from "vitest/config". */\nexport const x = 1;',
 				"vitest",
 			),
+		).toBe(false);
+	});
+
+	it("does not false-positive on a comment following a regex literal with an unescaped quote character, when the comment is on a later line (myusage-4xu.131)", () => {
+		// PR #119's independent reviewer found: stripComments (this file's own STRING_OR_COMMENT
+		// scan) has no concept of a regex literal - it only tracks bare `"`, `'`, and backtick
+		// characters. A regex literal containing an unescaped quote (e.g. this repo's own
+		// src/render.ts:43: `.replace(/"/g, "&quot;")`) contains a bare `"` inside `/.../` that
+		// the scanner reads as OPENING a phantom string. That flips string/comment parity for
+		// the rest of the file, so a later real `//` comment is no longer recognized as a
+		// comment at all - it survives stripComments untouched, and an import-shaped mention
+		// inside it (this repo's own comment-heavy style, same as the myusage-4xu.121 tests
+		// above) then false-positives here. REPRODUCED directly against the current regex: it
+		// returns true for this exact input.
+		expect(
+			importsPackage(
+				[
+					'const escaped = value.replace(/"/g, "&quot;");',
+					'// Historical note: this file used to import defineConfig from "vitest/config".',
+				].join("\n"),
+				"vitest",
+			),
+		).toBe(false);
+	});
+
+	it("does not misread a division expression as opening a regex literal - a real comment right after it still gets stripped (regression guard)", () => {
+		// Guards against the fix the myusage-4xu.131 reviewer explicitly REJECTED: adding a
+		// regex-literal-matching alternative to STRING_OR_COMMENT (instead of the fix actually
+		// applied - forbidding a raw newline inside the `"..."`/`'...'` branches) makes the test
+		// above pass too, but introduces a NEW false negative: `a / b` would read as opening a
+		// regex literal at the first `/`, consuming everything up to the next `/` - here, the
+		// `//` that starts the real comment - so the comment (and the import-shaped text inside
+		// it) would never be recognized as a comment at all, and this would wrongly return
+		// `true`. The fix actually applied doesn't touch `/` handling at all, so this already
+		// passes; it exists to keep it that way if stripComments is ever touched again.
+		expect(
+			importsPackage('const r = a / b; // import x from "vitest";', "vitest"),
 		).toBe(false);
 	});
 

@@ -63,9 +63,40 @@ export interface SourceFile {
  * `/*`, and this does not parse expressions inside `${}`, only the outer backtick pair - no
  * specifier this file cares about (`from "..."`, `new URL("...", ...)`) is ever built from a
  * template literal anywhere in this repo, so that gap never matters for what stripComments is
- * actually used for. */
+ * actually used for.
+ *
+ * The `"..."` and `'...'` branches exclude a literal newline from their content class
+ * (`[^"\\\n]` / `[^'\\\n]`, not just `[^"\\]` / `[^'\\]`) - myusage-4xu.131: this scanner has no
+ * concept of a regex literal, so an unescaped quote inside one (this repo's own
+ * src/render.ts:43: `.replace(/"/g, "&quot;")`) reads as OPENING a phantom string. Confining the
+ * two quote branches to a single line stops that phantom string from surviving past the line's
+ * end - forcing the match to fail and fall through - rather than eating everything up to the
+ * next real quote, however far away (including a real `//` comment on a LATER line, which would
+ * then desync string/comment parity for the rest of the file: PR #119's independent reviewer
+ * reproduced exactly that against the unfixed regex).
+ *
+ * This closes the CROSS-LINE case only. It does NOT close the SAME-LINE case: if a quote
+ * character appears later on the same line as the stray quote (e.g. a second regex literal, or
+ * an ordinary quoted string), the phantom string can still find a same-line quote to close
+ * against, and quote parity can still misalign within that one line - silently absorbing a real
+ * same-line `//` comment into what reads as string content. See myusage-4xu.135 (filed as a
+ * deliberately deferred follow-up, found by the myusage-4xu.131 round-2 reviewer) for the exact
+ * reproduction and the reasoning for not patching it here.
+ *
+ * A real JS string literal can never contain a literal newline anyway (a raw newline inside
+ * `"..."`/`'...'` is always a syntax error - only `` `...` `` template literals legitimately span
+ * lines), so the newline restriction loses nothing on real string content; it just bounds how far
+ * a stray quote's corruption can spread. The backtick branch is deliberately left unrestricted
+ * (`[^`\\]`, which already includes `\n`): real template literals do legitimately span multiple
+ * lines, and stripComments must still strip a real block comment sitting between two
+ * backtick-delimited literals correctly.
+ * (A tempting alternative - matching a regex-literal token itself so its interior quotes are
+ * consumed as part of the regex rather than misread as string delimiters - was rejected: it
+ * makes a division expression followed by a real comment, e.g. `const r = a / b; // ...`,
+ * misparse as opening a regex literal at the first `/`, corrupting an unrelated comment that
+ * was never inside anything ambiguous. See this file's own tests for both cases.) */
 const STRING_OR_COMMENT =
-	/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+	/("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
 
 /** Removes `//` and `/* *‍/` comments from `source` while leaving every string and template
  * literal byte-for-byte untouched - so a comment that quotes example import syntax (this very

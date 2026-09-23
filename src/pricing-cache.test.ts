@@ -104,8 +104,9 @@ describe("price table: fetch once, then stay offline", () => {
 			},
 		};
 		const fetch = fakeFetch(repriced);
+		const warn = vi.fn();
 
-		const [row] = await price([sonnetRow()], { cacheDir, fetch });
+		const [row] = await price([sonnetRow()], { cacheDir, fetch, warn });
 
 		expect(fetch).toHaveBeenCalledTimes(1);
 		expect(row?.unpriced).toBe(false);
@@ -113,6 +114,54 @@ describe("price table: fetch once, then stay offline", () => {
 		expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({
 			"claude-sonnet-4-5": { input_cost_per_token: 0.000004 },
 		});
+		// myusage-4xu.81: a successful refresh must emit zero warnings - a mutation that
+		// spuriously warns on success was previously only caught incidentally, by four unrelated
+		// pre-existing tests in this file, not this one.
+		expect(warn).not.toHaveBeenCalled();
+	});
+
+	it("refresh: true against an already-stale cache still makes exactly one fetch, not two (myusage-4xu.81: the manual refresh flag from PR #75 meeting the new auto-refresh-on-stale from PR #76 - both collapse onto the same one-fetch path in loadPriceTable, but nothing in the suite exercised the combination directly. PR #82's own noPriceRefresh: true tests don't reach it either: that flag short-circuits `stale` to false before this combination is ever evaluated)", async () => {
+		const cacheDir = await newCacheDir();
+		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });
+		const file = await cacheFile(cacheDir);
+		await ageCacheFile(file);
+		const fetch = fakeFetch(LITELLM_FIXTURE);
+
+		const [row] = await price([sonnetRow()], {
+			cacheDir,
+			fetch,
+			refresh: true,
+		});
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(row?.unpriced).toBe(false);
+		expect(row?.notionalCost).toBeCloseTo(3, 9);
+	});
+
+	it("honors a realistic positive LoadOptions.maxCacheAgeMs against a real file mtime, beating a cache that's genuinely still within DEFAULT_MAX_CACHE_AGE_MS (myusage-4xu.80: the doc comment promises this override is honored 'for callers - and tests - that need a different bound' - existing coverage elsewhere in this repo only ever passes maxCacheAgeMs: -1, a force-stale sentinel that bypasses isCacheStale's real age comparison entirely; nothing exercised a genuine positive threshold shrinking the window below a cache's real, unforced age. Confirmed by mutation: deleting the `?? DEFAULT_MAX_CACHE_AGE_MS` fallback in loadPriceTable fails this test - and also src/pricing-table.test.ts's existing `-1`-sentinel baseline test, since both now compare against the same hardcoded default - but neither test alone would have caught a narrower bug that only mishandled a real positive override)", async () => {
+		const cacheDir = await newCacheDir();
+		await price([sonnetRow()], { cacheDir, fetch: fakeFetch(LITELLM_FIXTURE) });
+		const file = await cacheFile(cacheDir);
+		// Well within DEFAULT_MAX_CACHE_AGE_MS (24h) - the default staleness window would not
+		// consider this cache stale, so a fetch here can only happen because maxCacheAgeMs
+		// shrank the window below this cache's real age.
+		const twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000);
+		await utimes(file, twoHoursAgo, twoHoursAgo);
+		const fetch = fakeFetch(LITELLM_FIXTURE);
+
+		const [row] = await price([sonnetRow()], {
+			cacheDir,
+			fetch,
+			maxCacheAgeMs: 1000,
+		});
+
+		expect(fetch).toHaveBeenCalledTimes(1);
+		expect(row?.unpriced).toBe(false);
+		expect(row?.notionalCost).toBeCloseTo(3, 9);
+	});
+
+	it("DEFAULT_MAX_CACHE_AGE_MS is exactly 24 hours, matching its own doc comment (myusage-4xu.80: nothing pinned this upward - every age-based test in this file derives its ages FROM this constant, so widening it to, say, 7 days would leave the whole suite green while making the doc comment factually wrong)", () => {
+		expect(DEFAULT_MAX_CACHE_AGE_MS).toBe(24 * 60 * 60 * 1000);
 	});
 
 	it("attempts one refresh, then falls back to the stale cache with a single warning when it fails", async () => {

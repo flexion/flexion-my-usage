@@ -316,6 +316,29 @@ describe("devDependencyOnlyPackages: package.json packages listed only in devDep
 			"hasOwnProperty",
 		]);
 	});
+
+	it("excludes a package listed in peerDependencies, even though it's not in dependencies (myusage-4xu.123)", () => {
+		// The standard peer-dep pattern: a package a consumer is expected to supply themselves
+		// is listed in both peerDependencies and devDependencies (so contributors can still run
+		// it locally), never in dependencies. This repo has no peerDependencies today, but a
+		// package listed there must not be flagged as a build-time offender if one is ever
+		// added.
+		const pkg = {
+			devDependencies: { react: "18.0.0", vitest: "5.0.1" },
+			peerDependencies: { react: "18.0.0" },
+		};
+
+		expect(devDependencyOnlyPackages(pkg)).toEqual(["vitest"]);
+	});
+
+	it("excludes a package listed in optionalDependencies, even though it's not in dependencies", () => {
+		const pkg = {
+			devDependencies: { fsevents: "2.0.0", vitest: "5.0.1" },
+			optionalDependencies: { fsevents: "2.0.0" },
+		};
+
+		expect(devDependencyOnlyPackages(pkg)).toEqual(["vitest"]);
+	});
 });
 
 describe("importsPackage: content-based import/require detection for one package name", () => {

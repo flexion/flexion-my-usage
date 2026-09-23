@@ -70,6 +70,30 @@
 //     documented gaps, not a mere nuisance that costs a reviewer a second look. Neither shape
 //     occurs in src/index.ts or src/sources/types.ts today, confirmed by hand; a genuinely general
 //     fix needs real tokenization, not a regex.
+//   - The first of those two failure directions (a regex literal not recognized as one, e.g.
+//     `return /"/g;`) used to compound into a much bigger gap (myusage-4xu.138, the same risk
+//     family PR #122 fixed in package-rules.ts's and fixtures-guard.ts's STRING_OR_COMMENT): an
+//     unescaped quote inside that unrecognized regex literal reads as opening a phantom string,
+//     and - unlike this scan's other gaps, which are confined to the regex literal's own span -
+//     that phantom string used to run on to the NEXT real quote anywhere later in the file,
+//     however far away, blanking every real construct in between as if it were string content
+//     (a strictly worse, cross-line "fails closed" case, not just the regex literal's own
+//     content going unmasked). Fixed the same way PR #122 fixed it in the other two files:
+//     STRING_TEMPLATE_COMMENT_OR_REGEX's `"..."`/`'...'` branches now forbid a raw newline in
+//     their content class, so a phantom string can only extend to the end of the line the stray
+//     quote sits on - if no real closing quote appears before end of line, the branch fails to
+//     match at all there, and the real code past it is scanned normally. This closes the
+//     CROSS-LINE case only, the same residual gap fixtures-guard.ts's own STRING_OR_COMMENT
+//     comment documents (myusage-4xu.135, deliberately deferred there too): a second quote
+//     character later on the SAME line can still let the phantom string close against it,
+//     misaligning parity within that one line. Unlike this file's other gaps (which fail
+//     CLOSED, silently missing a real violation), this residual same-line case fails LOUD here:
+//     text trapped inside what the phantom-string pairing leaves as an unmasked "comment" span
+//     can surface as a false-positive violation, not a missed real one. Not a realistic shape for
+//     this scan's own regex literal false-negative case specifically (a bare `/foo/` regex body
+//     containing a second, unescaped, same-line quote character right after the first is an
+//     unusual literal to write), and no different in kind from the gap already accepted here and
+//     in the other two files.
 import { posix } from "node:path";
 import type { SourceFile } from "./fixtures-guard.js";
 
@@ -110,9 +134,34 @@ export function humbleObjectPaths(
  * leading negative lookbehind (excluding a word character, `$`, `)`, `]`, or a closing quote,
  * skipping any run of spaces/tabs first) is the heuristic this file's header documents - "not
  * preceded by a value-ending character, skipping any run of spaces/tabs" - the only thing this
- * regex can use to tell a regex literal apart from division without a real parser. */
+ * regex can use to tell a regex literal apart from division without a real parser.
+ *
+ * The `"..."` and `'...'` branches exclude a literal newline from their content class
+ * (`[^"\\\n]` / `[^'\\\n]`, not just `[^"\\]` / `[^'\\]`) - myusage-4xu.138, the identical gap
+ * and identical fix package-rules.ts's and fixtures-guard.ts's own STRING_OR_COMMENT applied for
+ * myusage-4xu.131 (see either file's copy of this comment for the full reasoning): when the
+ * regex-literal branch's own lookbehind heuristic fails to recognize a real regex literal (this
+ * file's header documents when - a regex right after a keyword ending in a letter, e.g. `return
+ * /foo/;`), nothing in this alternation matches at that `/` position, and an unescaped quote
+ * inside that unrecognized regex literal (e.g. `return /"/g;`) is free to read as OPENING a
+ * phantom string at the very next position instead. Confining the two quote branches to a single
+ * line stops that phantom string from surviving past the line's end - forcing the match to fail
+ * and fall through - rather than eating everything up to the next real quote, however far away,
+ * which would otherwise blank real code (including a real `if`/`switch`/`&&`/`??`/ternary this
+ * scan exists to catch) into invisibility, the same cross-line desync PR #122's independent
+ * reviewer flagged this file as sharing the risk family of. This closes the CROSS-LINE case only,
+ * the same residual gap the other two files' STRING_OR_COMMENT still carries (myusage-4xu.135,
+ * deliberately deferred there too): a second quote character later on the SAME line as the
+ * unrecognized regex literal's stray quote could still let the phantom string close against it
+ * instead, misaligning parity within that one line alone. A real JS string literal can never
+ * contain a literal newline anyway (a raw newline inside `"..."`/`'...'` is always a syntax
+ * error), so the newline restriction loses nothing on real string content; it just bounds how far
+ * a stray quote's corruption can spread. The backtick branch is deliberately left unrestricted
+ * (`[^`\\]`, which already includes `\n`): real template literals do legitimately span multiple
+ * lines, and this scan must still blank a real block comment or regex-shaped text sitting between
+ * two backtick-delimited literals correctly. */
 const STRING_TEMPLATE_COMMENT_OR_REGEX =
-	/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\/|(?<![\w$)\]"'`][ \t]*)\/(?:[^/\\\n]|\\.)+\/[a-z]*/g;
+	/"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`|\/\/[^\n]*|\/\*[\s\S]*?\*\/|(?<![\w$)\]"'`][ \t]*)\/(?:[^/\\\n]|\\.)+\/[a-z]*/g;
 
 /** Blanks every string literal, template literal, comment, and (heuristically) regex literal in
  * `source`, replacing each of their characters with a space except newlines (kept, so a line

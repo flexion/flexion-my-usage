@@ -120,6 +120,15 @@ describe("maskNonCode", () => {
 		);
 	});
 
+	it("does not desync string parity across lines when a regex literal's unescaped quote follows a keyword the lookbehind heuristic doesn't recognize (myusage-4xu.138: PR #122's independent reviewer found this scanner shares the risk family PR #122 fixed in package-rules.ts/fixtures-guard.ts's STRING_OR_COMMENT, reachable through this file's OWN documented false-negative failure direction - \"a real regex right after a keyword that ends in a letter (return /foo/;, typeof /foo/;) is not recognized as one\", see this file's header). `return /\"/g;`'s lookbehind sees \"n\" (from \"return\", skipping the space) immediately before the regex's opening `/`, a word character, so the regex-literal alternative does NOT match here - exactly like the OLD, unfixed STRING_OR_COMMENT in the other two files, nothing matches at the `/` position, so the scan advances to the bare `\"` right after it and (BEFORE this fix) the double-quote branch opened a phantom string there. Unlike those two files' STRING_OR_COMMENT (already fixed to exclude a raw newline from the quote branches' content class), this file's quote branches still allowed one, so the phantom string didn't stop at end of line - it ran on to the NEXT real quote in the file, here the opening `\"` of `\"text\"` two lines down, swallowing the real `if (real) {}` line between them as if it were string content. REPRODUCED directly against the pre-fix regex: maskNonCode blanked the entire `if (real) {}` line. Confining the quote branches to one line (this fix) bounds the corruption to the single line the stray quote sits on, matching PR #122's own mitigation: the phantom string here now fails to find a same-line closer and never matches at all, leaving `if (real) {}` untouched, and the real `\"text\"` string two lines down is masked as itself, not as some earlier match's closing delimiter.", () => {
+		const source = ['return /"/g;', "if (real) {}", 'const s = "text";'].join(
+			"\n",
+		);
+		expect(maskNonCode(source)).toBe(
+			['return /"/g;', "if (real) {}", "const s =       ;"].join("\n"),
+		);
+	});
+
 	it("does not mask an ordinary division expression following an identifier - a known, documented heuristic limitation (see this file's header) (myusage-4xu.66: the prior fixture, \"total / 2\", had only one / on the line, so it could never reach the closing-/ half of the regex-literal alternative at all, let alone the value-ending lookbehind guard it claimed to test - it passed whether or not that guard existed. This fixture has two /s, so it actually exercises the guard: also asserting checkBranchGuard sees the real && between the two divisions proves the guard, not just maskNonCode's no-op output, is doing the work)", () => {
 		const source = "export const x = (a / b) && (c / d);\n";
 		expect(maskNonCode(source)).toBe(source);
@@ -499,6 +508,19 @@ describe("checkBranchGuard", () => {
 		];
 
 		expect(checkBranchGuard(files)).toEqual([]);
+	});
+
+	it("still flags a real if statement that sits between a regex literal's unrecognized quote and a later real string literal (myusage-4xu.138: the checkBranchGuard-level consequence of the maskNonCode fix above - before it, this exact if was silently swallowed by the cross-line phantom string, a missed violation, not a false alarm)", () => {
+		const files = [
+			{
+				path: "src/index.ts",
+				text: ['return /"/g;', "if (real) {}", 'const s = "text";'].join("\n"),
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{ path: "src/index.ts", kind: "if", line: 2, snippet: "if (" },
+		]);
 	});
 
 	it("normalizes a coverage.exclude-shaped path like ./src/index.ts to src/index.ts in a violation's reported path (myusage-4xu.65: posix.normalize's own effect was previously untested)", () => {

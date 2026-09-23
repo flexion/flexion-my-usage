@@ -106,24 +106,29 @@ if (inPack.length > 0) {
 // bead myusage-4xu.119: data-driven from the real package.json, not a hardcoded package-name
 // list. Only scans files the test-or-support checks above didn't already flag - a file already
 // caught by #3 (inDist) fails for that reason regardless of what it imports.
+//
+// No `if (devOnlyPackages.length > 0)` guard around this (myusage-4xu.128, reviewer follow-up
+// on PR #117): findDevOnlyImports already returns [] for every file when devOnlyPackages is
+// empty, so the guard was genuinely equivalent to `if (true)` - it changed no output, only
+// whether the scan ran, and nothing here proved that skip was ever worth having. This file
+// sits outside vitest.config.ts's coverage.include, so an untested branch like that would never
+// be caught by the coverage gate either.
 const pkg = JSON.parse(readFileSync("package.json", "utf8"));
 const devOnlyPackages = devDependencyOnlyPackages(pkg);
 let hasDevDependencyProblem = false;
-if (devOnlyPackages.length > 0) {
-	const contentCheckFiles = distFiles.filter((path) => !inDist.includes(path));
-	const offenders = [];
-	for (const path of contentCheckFiles) {
-		const content = readFileSync(path, "utf8");
-		const found = findDevOnlyImports(content, devOnlyPackages);
-		if (found.length > 0) offenders.push(`  ${path}: ${found.join(", ")}`);
-	}
-	if (offenders.length > 0) {
-		hasDevDependencyProblem = true;
-		problems.push(
-			`devDependency-only package(s) imported in ${DIST}/ (not listed in "dependencies"):`,
-			...offenders,
-		);
-	}
+const contentCheckFiles = distFiles.filter((path) => !inDist.includes(path));
+const offenders = [];
+for (const path of contentCheckFiles) {
+	const content = readFileSync(path, "utf8");
+	const found = findDevOnlyImports(content, devOnlyPackages);
+	if (found.length > 0) offenders.push(`  ${path}: ${found.join(", ")}`);
+}
+if (offenders.length > 0) {
+	hasDevDependencyProblem = true;
+	problems.push(
+		`devDependency-only package(s) imported in ${DIST}/ (not listed in "dependencies"):`,
+		...offenders,
+	);
 }
 
 if (problems.length > 0) {

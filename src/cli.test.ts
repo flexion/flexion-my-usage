@@ -113,6 +113,22 @@ function record(overrides: Partial<CliDeps> = {}): Recorded {
 	return r;
 }
 
+describe("exit code constants", () => {
+	it("EXIT_OK, EXIT_FAILURE, EXIT_USAGE are 0, 1, 2 - not just self-comparisons (myusage-4xu.109)", () => {
+		// Every runCli() assertion below compares against these same imported constants (e.g.
+		// expect(code).toBe(EXIT_OK)), so a silent change to a constant's value (EXIT_OK slipping
+		// to 7, say) would stay invisible to the whole suite - it would just be comparing the
+		// mutated constant against itself. Pin them to their real literal values directly, the way
+		// PR #100 already pinned NO_DATA_HINT/PRE_1_3_16_NOTE to literal text (myusage-4xu.76).
+		// All three are otherwise unpinned - cli-args.test.ts anchors the USAGE help text against
+		// README, which is a different constant from EXIT_USAGE (the exit code); this test is
+		// EXIT_USAGE's only guard.
+		expect(EXIT_OK).toBe(0);
+		expect(EXIT_FAILURE).toBe(1);
+		expect(EXIT_USAGE).toBe(2);
+	});
+});
+
 describe("runCli: the happy path", () => {
 	it("scans, prices, serves the rendered page on an OS-chosen port, opens the browser, exits 0", async () => {
 		const r = record();

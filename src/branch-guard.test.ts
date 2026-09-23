@@ -299,6 +299,14 @@ describe("checkBranchGuard", () => {
 		expect(checkBranchGuard(files)).toEqual([]);
 	});
 
+	it('does not flag whileLoop( or doThing { as while/do keywords (myusage-4xu.104: the missing counterpart to the forEach(/waitfor( pair above - "meanwhile"/"todo {" above pin the LEADING \\b boundary (the keyword does not start at a word boundary), but nothing pinned the ADJACENCY requirement right after the keyword for while/do the way forEach( pins it for for. whileLoop( starts with a real "while" at a genuine word boundary, then continues with more word characters ("Loop") before reaching "(", so it must be rejected by the \\s*\\( requirement, not the \\b one; doThing { is the same shape for do\'s \\s*\\{ requirement. Confirmed by mutation: widening the pattern to \\bwhile\\w*\\s*\\( or \\bdo\\w*\\s*\\{ leaves the rest of the suite green but makes this fixture fail with a false-positive "while (" or "do {" match)', () => {
+		const files = [
+			{ path: "src/index.ts", text: "whileLoop(3);\ndoThing {\n\tx();\n}\n" },
+		];
+
+		expect(checkBranchGuard(files)).toEqual([]);
+	});
+
 	it("flags && as a violation", () => {
 		const files = [
 			{

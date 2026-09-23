@@ -92,7 +92,10 @@ describe("makeFixtureDir default registerCleanup binding", () => {
 	describe("an inner suite using the real default", () => {
 		const fixtureDirDefault = makeFixtureDir(fixtureParent);
 
-		it("creates a fixture dir via the default afterAll cleanup", async () => {
+		// Arrange step, not a behavioral assertion: it has no expect() of its own. It exists so
+		// the sibling test below has a real fixtureRoot to check for removal - the actual proof
+		// that the default afterAll cleanup ran lives in that sibling.
+		it("materializes the fixture root for the sibling assertion", async () => {
 			fixtureRoot = dirname(await fixtureDirDefault());
 		});
 	});

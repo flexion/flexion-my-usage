@@ -95,6 +95,35 @@ const V1_ONLY_DDL = `
   );
 `;
 
+// V2-only shape (no `message` table at all) - `session_message` exists and can carry real V2
+// usage, but `message` is entirely absent. Per myusage-4xu.94's own investigation, every shipped
+// opencode build keeps `message` even when V2-shaped rows land in `session_message` too (see
+// myusage-4xu.12's schema research), so this is a forward-looking shape, not one confirmed to
+// occur upstream today - it exists to prove the reader still names session_message/V2 here
+// rather than falling back to the generic "no message table" error the empty-table case already
+// moved past.
+const V2_ONLY_DDL = `
+  CREATE TABLE \`session\` (
+    \`id\` text PRIMARY KEY,
+    \`project_id\` text NOT NULL,
+    \`slug\` text NOT NULL,
+    \`directory\` text NOT NULL,
+    \`title\` text NOT NULL,
+    \`version\` text NOT NULL,
+    \`time_created\` integer NOT NULL,
+    \`time_updated\` integer NOT NULL
+  );
+  CREATE TABLE \`session_message\` (
+    \`id\` text PRIMARY KEY,
+    \`session_id\` text NOT NULL,
+    \`type\` text NOT NULL,
+    \`time_created\` integer NOT NULL,
+    \`time_updated\` integer NOT NULL,
+    \`data\` text NOT NULL,
+    CONSTRAINT \`fk_session_message_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+  );
+`;
+
 const CREATED = 1_700_000_000_000;
 
 let sandboxes: string[] = [];
@@ -1061,6 +1090,27 @@ describe("opencodeSource.read", () => {
 			const dir = await sandbox();
 			const path = join(dir, "opencode.db");
 			const db = createDb(path);
+			insertSessionMessage(db, "sm_fixture_a", "assistant", v2AssistantData());
+			db.close();
+
+			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
+				/session_message/,
+			);
+			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(/V2/);
+		});
+
+		// myusage-4xu.94: a database can lack the `message` table entirely (not just have it
+		// empty) while `session_message` still carries real V2 usage. Before this bead's fix,
+		// that case fell into the pre-existing, generic "Unsupported opencode database: no
+		// message table" error - still loud, but silent on session_message/V2 specifically,
+		// unlike the empty-table case above.
+		it("names session_message and V2 when the message table is missing entirely but session_message has real V2 usage", async () => {
+			const dir = await sandbox();
+			const path = join(dir, "opencode.db");
+			const db = new DatabaseSync(path);
+			openDbs.push(db);
+			db.exec("PRAGMA journal_mode = WAL");
+			db.exec(V2_ONLY_DDL);
 			insertSessionMessage(db, "sm_fixture_a", "assistant", v2AssistantData());
 			db.close();
 

@@ -503,6 +503,47 @@ describe("importsPackage: content-based import detection for one package name", 
 		).toBe(true);
 	});
 
+	it("still recognizes a template literal that spans multiple lines as one opaque string, not a real // comment partway through it, if the backtick branch's content class is ever restricted to a single line (myusage-4xu.143)", () => {
+		// The doc comment on STRING_OR_COMMENT above claims the backtick branch is "deliberately
+		// left unrestricted ... since real template literals do legitimately span multiple lines" -
+		// but nothing in this suite failed if that claim stopped being true. This pins it: a
+		// template literal spanning three lines, whose middle line is prefixed with "//" (so it
+		// would misparse as a REAL line comment - and get deleted - the moment the backtick branch
+		// ever stops spanning the newline that currently keeps it part of the string). With the
+		// backtick branch newline-tolerant (current code), the whole three-line span is captured as
+		// one string, byte-for-byte, so the "from \"vitest\"" text on the middle line survives into
+		// the scanned content and importsPackage finds it. If the backtick branch is ever narrowed
+		// to `[^\`\\\n]` (mirroring the quote branches' own [^"\\\n]/[^'\\\n]), the opening backtick
+		// can no longer close across that newline, the middle line is parsed fresh instead, and its
+		// "//" prefix is read as a real comment and stripped - taking the only "vitest" mention with
+		// it, so importsPackage would wrongly return false.
+		const source = [
+			"const t = `line one",
+			'// import { describe } from "vitest";',
+			"line three`;",
+		].join("\n");
+
+		expect(importsPackage(source, "vitest")).toBe(true);
+	});
+
+	it("still detects a real import between two separate block comments, even if the block-comment branch's content class is ever mutated to greedy (myusage-4xu.143)", () => {
+		// STRING_OR_COMMENT's block-comment branch is /\*[\s\S]*?\*\//: lazy (`*?`), so each /* ...
+		// */ pair matches independently. Nothing in this suite failed if that `?` were ever dropped
+		// - a greedy [\s\S]* would instead match from the FIRST "/*" all the way to the LAST "*/" in
+		// the remaining content, merging two separate block comments (and everything real between
+		// them, including this real import) into one. With the lazy form (current code), each
+		// comment is stripped on its own and the import between them survives; with a greedy content
+		// class, the whole span - both comments and the import in between - collapses into a single
+		// deleted match, so importsPackage would wrongly return false.
+		const source = [
+			"/* first comment */",
+			'import { describe } from "vitest";',
+			"/* second comment */",
+		].join("\n");
+
+		expect(importsPackage(source, "vitest")).toBe(true);
+	});
+
 	it("still matches a real import when a comment elsewhere in the same content merely mentions the same package", () => {
 		// Proves comment-stripping only removes the comment, not the real import that follows
 		// it - a fix that stripped too aggressively (e.g. from the first "//" to end of

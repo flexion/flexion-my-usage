@@ -64,7 +64,15 @@ Options:
 
 `--port` is for when you want a stable URL to bookmark; if that port is already taken, the command fails and says so rather than quietly picking another. `--no-open` is for headless or SSH sessions. `--refresh-prices` is the way to pick up rates for a newly released model without deleting the cache file by hand (see [Proxies and offline machines](#proxies-and-offline-machines) for where that file lives). `--no-price-refresh` is the opposite: it suppresses the automatic refresh a stale cache would otherwise trigger, for a permanently offline machine that hand-seeds the cache - an explicit `--refresh-prices` still works even with this set, since the two answer different questions.
 
-If no opencode database is found, you get a hint on stderr and an empty dashboard rather than an error.
+If no opencode database is found at all, you get a hint on stderr and an empty dashboard rather than an error. If a database is found but fails to read - for example, one written entirely by opencode's V2 (2.0-preview) schema, which isn't supported yet - that database is skipped with a warning on stderr (and a callout on the page) while the dashboard still renders from whatever else was found. Only when every discovered database fails to read does the command report a failure; see [Exit codes](#exit-codes) below for exactly what each of those outcomes means for the exit code.
+
+## Exit codes
+
+- `0` - ran fine. Covers no opencode database being found at all, every discovered database reading successfully, and a partial failure where some databases read fine while others were skipped with a warning.
+- `1` - failed. Either a genuine error before any database was even read (a bad `--port`, a broken `OPENCODE_DB` override, an unsupported Node version, ...), or every discovered database failed to read, leaving nothing to render.
+- `2` - called wrong: an unrecognized flag or similar command-line mistake; see `--help`.
+
+A caller scripting on the exit code (`my-usage || alert`) can treat `0` as "ran fine, whether or not there was anything to show" and `1` as "something needs a look."
 
 ## License
 

@@ -285,7 +285,8 @@ describe("runCli: failures", () => {
 		});
 		expect(await runCli([], r.deps)).toBe(EXIT_FAILURE);
 		expect(r.stderr).toBe(
-			`my-usage: couldn't read ${HANDLE_A.path} (Cannot read ${HANDLE_A.path}: boom) - skipping it, continuing with what's left.\n`,
+			`my-usage: couldn't read ${HANDLE_A.path} (Cannot read ${HANDLE_A.path}: boom) - skipping it.\n` +
+				"my-usage: every discovered database failed to read - nothing to show.\n",
 		);
 		expect(r.calls).toEqual(["discover", `read ${HANDLE_A.path}`]);
 		expect(r.served).toBeUndefined();
@@ -301,8 +302,9 @@ describe("runCli: failures", () => {
 		});
 		expect(await runCli([], r.deps)).toBe(EXIT_FAILURE);
 		expect(r.stderr).toBe(
-			`my-usage: couldn't read ${HANDLE_A.path} (Cannot read ${HANDLE_A.path}: boom) - skipping it, continuing with what's left.\n` +
-				`my-usage: couldn't read ${HANDLE_B.path} (Cannot read ${HANDLE_B.path}: boom) - skipping it, continuing with what's left.\n`,
+			`my-usage: couldn't read ${HANDLE_A.path} (Cannot read ${HANDLE_A.path}: boom) - skipping it.\n` +
+				`my-usage: couldn't read ${HANDLE_B.path} (Cannot read ${HANDLE_B.path}: boom) - skipping it.\n` +
+				"my-usage: every discovered database failed to read - nothing to show.\n",
 		);
 		expect(r.calls).toEqual([
 			"discover",

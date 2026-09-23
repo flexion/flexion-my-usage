@@ -123,19 +123,28 @@ export async function runCli(
 				}
 			}),
 		);
-		const rows = reads.flatMap((result) => {
-			if (result.ok) return result.rows;
-			deps.stderr(
-				`my-usage: couldn't read ${result.handle.path} (${errorMessage(result.error)}) - ` +
-					"skipping it, continuing with what's left.\n",
-			);
-			return [];
-		});
 		// A genuine failure, not "nothing to show": at least one database was discovered and every
 		// single one of them failed to read. Distinct from handles.length === 0 (no database
 		// configured at all), which stays EXIT_OK with NO_DATA_HINT above. A partial failure - some
 		// handles ok, some not - still falls through to render what did come back (myusage-4xu.95).
-		if (handles.length > 0 && reads.every((result) => !result.ok)) {
+		// Computed before the per-database warnings below so their wording can say the true thing:
+		// "continuing with what's left" is only accurate when something actually is left
+		// (myusage-4xu.102) - when every database failed, the run is about to exit 1, not continue.
+		const allFailed = handles.length > 0 && reads.every((result) => !result.ok);
+		const rows = reads.flatMap((result) => {
+			if (result.ok) return result.rows;
+			deps.stderr(
+				`my-usage: couldn't read ${result.handle.path} (${errorMessage(result.error)}) - ` +
+					(allFailed
+						? "skipping it.\n"
+						: "skipping it, continuing with what's left.\n"),
+			);
+			return [];
+		});
+		if (allFailed) {
+			deps.stderr(
+				"my-usage: every discovered database failed to read - nothing to show.\n",
+			);
 			return EXIT_FAILURE;
 		}
 		const priced = await deps.price(rows, {

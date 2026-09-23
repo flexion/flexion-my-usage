@@ -169,21 +169,47 @@ function escapeRegExpLiteral(value: string): string {
 // "vitest/config" specifier just because it's a literal prefix of "vitest".
 const IMPORT_CONTEXT = String.raw`(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)`;
 
+// A comment-and-string-aware regex scan (myusage-4xu.121) - the same technique
+// scripts/fixtures-guard.ts already uses for its own stripComments, mirrored here rather than
+// imported: importing it would create a circular dependency (fixtures-guard.ts already imports
+// filterTestOrSupportPaths from this file), and the two share no plumbing beyond this one
+// regex. See fixtures-guard.ts's STRING_OR_COMMENT for the technique's full reasoning and its
+// one accepted gap (a template literal's `${...}` interpolation can itself contain `//` or
+// `/*`, which this does not parse into - no specifier importsPackage cares about is ever built
+// from an interpolated template literal in this repo's own dist/ output).
+const STRING_OR_COMMENT =
+	/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+
+/** Strips `//` and `/* *‍/` comments from `content` (including JSDoc), leaving every string and
+ * template literal byte-for-byte untouched, so importsPackage's regex scan below never mistakes
+ * a comment that merely mentions a package name in import-shaped prose (e.g. this repo's own
+ * comment-heavy style: "... imported defineConfig from \"vitest/config\" ...") for a real
+ * import/require specifier (myusage-4xu.121 - tsconfig.build.json does not set removeComments,
+ * so tsc preserves comments into dist/, and a plain regex scan otherwise has no concept of
+ * "comment" at all). */
+function stripComments(content: string): string {
+	return content.replace(
+		STRING_OR_COMMENT,
+		(_whole, stringLiteral: string | undefined) => stringLiteral ?? "",
+	);
+}
+
 /** Whether `content` imports or requires `packageName` - a default import, a named import, a
  * bare side-effect import, `require(...)`, a dynamic `import(...)`, or a subpath import (e.g.
  * `"vitest/config"` counts as importing `"vitest"`, since the built file depends on the
  * `vitest` package at runtime either way). A plain mention of the package name inside a string
  * literal that isn't shaped like an import/require specifier does not count: the match is
  * anchored to a quoted specifier directly after one of the import/require keywords above, never
- * a bare substring search. This is a textual regex scan, not a parser, so it has no concept of
- * "comment" - text that happens to look like an import (e.g. `// import "vitest"` inside a
- * comment) still matches. */
+ * a bare substring search. Comments are stripped first (stripComments, myusage-4xu.121), so text
+ * that merely looks like an import inside a `//` or `/* *‍/` comment - including JSDoc - never
+ * matches either; this is still a textual regex scan, not a parser, so anything shaped like a
+ * real import/require specifier in the code itself still counts. */
 export function importsPackage(content: string, packageName: string): boolean {
 	const escaped = escapeRegExpLiteral(packageName);
 	const pattern = new RegExp(
 		`${IMPORT_CONTEXT}(['"])${escaped}(?:/[^'"]*)?\\1`,
 	);
-	return pattern.test(content);
+	return pattern.test(stripComments(content));
 }
 
 /** The subset of `devOnlyPackages` that `content` actually imports - what check-package.mjs

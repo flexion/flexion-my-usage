@@ -69,7 +69,7 @@ If no opencode database is found at all, you get a hint on stderr and an empty d
 ## Exit codes
 
 - `0` - ran fine. Covers no opencode database being found at all, every discovered database reading successfully, and a partial failure where some databases read fine while others were skipped with a warning.
-- `1` - failed. Either a genuine error before any database was even read (a bad `--port`, a broken `OPENCODE_DB` override, an unsupported Node version, ...), or every discovered database failed to read, leaving nothing to render.
+- `1` - failed, for one of three reasons: a genuine error before any database was even read (a broken `OPENCODE_DB` override, an unsupported Node version, ...); every discovered database failing to read, leaving nothing to render; or a failure late in the run, after the databases were already read and priced - most commonly the chosen `--port` already being in use.
 - `2` - called wrong: an unrecognized flag or similar command-line mistake; see `--help`.
 
 A caller scripting on the exit code (`my-usage || alert`) can treat `0` as "ran fine, whether or not there was anything to show" and `1` as "something needs a look."

@@ -236,11 +236,11 @@ const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 //
 // DECISION (myusage-4xu.135, extended by myusage-4xu.136 to cover this opposite direction too):
 // this gap is deliberately left OPEN, not silently accepted. This is an internal build-time lint
-// helper, not a security boundary, and both directions are currently LATENT: no line in this
-// repo's current dist/ output combines a regex-literal stray quote with same-line quoted content
-// this way, and even a line that did would still need a third element - a trailing same-line
-// `//` comment (135) or a trailing same-line real string plus import (136) - to actually trigger
-// the desync. A proportionate general fix requires actual regex-literal
+// helper, not a security boundary, and both directions are currently LATENT: a stray quote in a
+// regex literal does occur in the bundled dist/web output, but no line there ALSO adds the third
+// element either direction needs - a trailing same-line `//` comment (135) or a trailing
+// same-line real string plus import (136) - to actually trigger the desync. A proportionate
+// general fix requires actual regex-literal
 // tokenization, which this scanner has no concept of at all (see fixtures-guard.ts's copy of this
 // comment for the rejected regex-literal-matching alternative, itself rejected for an unrelated
 // reason - it breaks the division-expression case); myusage-4xu.131's own round-3 review already

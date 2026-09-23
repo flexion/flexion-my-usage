@@ -160,7 +160,7 @@ export interface SourceFile {
  * Neither finding changes the DECISION above - same root cause, same rejected fix (real
  * regex-literal tokenization, disproportionate to a build-time lint helper), same
  * not-a-security-boundary reasoning. The difference from myusage-4xu.135/.136 is LATENCY, not
- * risk: those two same-line quote-branch gaps are still latent (no real dist/ output combines
+ * risk: those two same-line quote-branch gaps are still latent (no real src/ file combines
  * their ingredients); these two are LIVE (this scanner's real caller processes these exact lines
  * on every `yarn lint` run today) but not currently outcome-affecting, because the corrupted span
  * never overlaps real import- or `new URL(...)`-shaped text in either file. Revisit if either

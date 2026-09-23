@@ -386,6 +386,19 @@ describe("importsPackage: content-based import/require detection for one package
 		).toBe(false);
 	});
 
+	it("does not match a bare quoted string literal exactly equal to the package name, with no import/require keyword before it (myusage-4xu.125)", () => {
+		// Every individual IMPORT_CONTEXT alternative (from/import/import(/require() is pinned
+		// by its own positive test above, but nothing before this test discriminated the
+		// overarching anchor itself: that the specifier must actually follow one of those
+		// keywords, not just appear as a quoted string anywhere. The substring test right above
+		// this one doesn't do it either - "vitest" there sits mid-sentence, never immediately
+		// after the opening quote, so it stays false even with IMPORT_CONTEXT stripped down to
+		// an empty string. This fixture's quoted string is nothing BUT the package name, so an
+		// anchor-stripped mutant (IMPORT_CONTEXT replaced by "") would wrongly match it -
+		// verified by hand against that exact mutant before writing this test.
+		expect(importsPackage('const p = "vitest";', "vitest")).toBe(false);
+	});
+
 	it("does not match a different real package whose name is a literal prefix of the imported specifier", () => {
 		// "vite" and "vitest" are both real, separately-published packages, and "vite" is a
 		// literal prefix of "vitest" - importing "vitest/config" must not be reported as

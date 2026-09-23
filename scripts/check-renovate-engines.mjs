@@ -59,7 +59,7 @@ function readJson(relPath) {
 	try {
 		return JSON.parse(raw);
 	} catch (err) {
-		const reason = err instanceof Error ? err.message : String(err);
+		const reason = err.message;
 		console.error(
 			`check-renovate-engines: ${relPath} is not valid JSON (${reason}); refusing to pass a check that scanned nothing.`,
 		);

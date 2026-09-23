@@ -254,6 +254,15 @@ const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 // The newline restriction costs nothing against real string content (a raw newline inside
 // `"..."`/`'...'` is already a syntax error in real JS), and leaves the backtick branch
 // unrestricted since real template literals do legitimately span multiple lines.
+//
+// Two concrete instances of this same root cause - a cross-line backtick-branch desync in
+// src/pricing-cache.test.ts (myusage-4xu.148) and a line-comment false-trigger off an escaped
+// slash in src/check-package.integration.test.ts (myusage-4xu.149) - are documented in full, with
+// real LATENT/LIVE evidence, in fixtures-guard.ts's copy of this comment, not duplicated here:
+// both instances are LIVE only against that file's scanner (check-fixtures-guard.mjs walks every
+// *.ts file under src/, test files included), never against this one, since this scanner's only
+// caller (check-package.mjs) reads tsc's dist/ output, and a *.test.ts file is never part of a
+// passing build's dist/ output for it to read.
 const STRING_OR_COMMENT =
 	/("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
 

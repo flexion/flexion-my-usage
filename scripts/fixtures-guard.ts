@@ -119,7 +119,51 @@ export interface SourceFile {
  * consumed as part of the regex rather than misread as string delimiters - was rejected: it
  * makes a division expression followed by a real comment, e.g. `const r = a / b; // ...`,
  * misparse as opening a regex literal at the first `/`, corrupting an unrelated comment that
- * was never inside anything ambiguous. See this file's own tests for both cases.) */
+ * was never inside anything ambiguous. See this file's own tests for both cases.)
+ *
+ * Two concrete instances of the same "no concept of a regex literal" root cause, found while
+ * investigating it (myusage-4xu.148, myusage-4xu.149) - both confirmed LIVE against this
+ * scanner's real caller, unlike myusage-4xu.135/.136 above, and both confirmed harmless today by
+ * running this file's real stripComments and extractReferences against the real files, not
+ * assumed:
+ *
+ *   - Backtick branch, cross-line (myusage-4xu.148): src/pricing-cache.test.ts's own local TOKEN
+ *     regex holds a `` `(?:[^`\\]|\\.)*` `` branch whose raw source line contains three literal
+ *     backtick characters - the middle one is the negated character class's own backtick, an odd
+ *     count overall. The first two pair off with each other; the third opens a phantom template
+ *     literal that reads forward, across a blank line, into the real doc comment two lines below,
+ *     closing at that comment's own first backtick. A second phantom pairing immediately follows
+ *     (the doc comment quotes `` `//` `` as an example of what this tokenizer recognizes), and
+ *     right after THAT pairing closes, the bare `//` its closing backtick used to fence safely now
+ *     reads as a real line comment - deleting the rest of that line, including the doc comment's
+ *     own `` `/* *‍/` `` example, from what this scanner sees. Confirmed LIVE:
+ *     check-fixtures-guard.mjs walks the whole src/ tree, every *.ts file including test files -
+ *     not just dist/ output the way package-rules.ts's own copy of this scanner is limited to - so
+ *     it feeds this exact file to extractReferences on every real `yarn lint` run. Confirmed
+ *     harmless today: the corruption starts and ends inside this one comment, and
+ *     extractReferences' real output for this file still lists every real import and the one real
+ *     `new URL(...)` call, byte for byte correct, because neither shape sits inside the corrupted
+ *     span.
+ *
+ *   - Line-comment branch via an escaped slash (myusage-4xu.149):
+ *     src/check-package.integration.test.ts's `toMatch(/test or support files in dist\//)` (four
+ *     call sites) ends its regex literal with an escaped slash immediately followed by the
+ *     literal's own closing slash - two adjacent `/` characters as raw source text, same as any
+ *     real `//`. This scanner has no concept of a regex literal's escaping rules either, so it
+ *     reads that pair as opening a line comment and strips the rest of the line (just the trailing
+ *     `);`). Also confirmed LIVE the same way (check-fixtures-guard.mjs scans this file too), and
+ *     also confirmed harmless: the line-comment branch never crosses a newline (`\/\/[^\n]*`), so
+ *     nothing beyond each affected line is at risk, and extractReferences' output for this file is
+ *     complete and correct.
+ *
+ * Neither finding changes the DECISION above - same root cause, same rejected fix (real
+ * regex-literal tokenization, disproportionate to a build-time lint helper), same
+ * not-a-security-boundary reasoning. The difference from myusage-4xu.135/.136 is LATENCY, not
+ * risk: those two same-line quote-branch gaps are still latent (no real src/ file combines
+ * their ingredients); these two are LIVE (this scanner's real caller processes these exact lines
+ * on every `yarn lint` run today) but not currently outcome-affecting, because the corrupted span
+ * never overlaps real import- or `new URL(...)`-shaped text in either file. Revisit if either
+ * file's content ever changes so that it does. */
 const STRING_OR_COMMENT =
 	/("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
 

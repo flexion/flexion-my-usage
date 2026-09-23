@@ -95,9 +95,12 @@ export interface SourceFile {
  *
  * DECISION (myusage-4xu.135, extended by myusage-4xu.136 to cover this opposite direction too):
  * this gap is deliberately left OPEN, not silently accepted. This is an internal build-time lint
- * helper, not a security boundary, and both directions are currently LATENT - no line in this
- * repo's real tsc dist/ output combines a regex-literal stray quote with same-line quoted content
- * this way. A proportionate general fix requires actual regex-literal tokenization, which this
+ * helper, not a security boundary, and both directions are currently LATENT: this repo's own
+ * src/render.ts:43 does combine a regex-literal stray quote with same-line quoted content
+ * (`.replace(/"/g, "&quot;")`), but no real line ALSO adds the third element either direction
+ * needs - a trailing same-line `//` comment (135) or a trailing same-line real string plus import
+ * (136) - to actually trigger the desync. A proportionate general fix requires actual regex-literal
+ * tokenization, which this
  * scanner has no concept of at all (see the rejected regex-literal-matching alternative below,
  * itself rejected for an unrelated reason - it breaks the division-expression case); myusage-
  * 4xu.131's own round-3 review already judged a tokenizer rewrite disproportionate to this

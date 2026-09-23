@@ -63,9 +63,30 @@ export interface SourceFile {
  * `/*`, and this does not parse expressions inside `${}`, only the outer backtick pair - no
  * specifier this file cares about (`from "..."`, `new URL("...", ...)`) is ever built from a
  * template literal anywhere in this repo, so that gap never matters for what stripComments is
- * actually used for. */
+ * actually used for.
+ *
+ * The `"..."` and `'...'` branches exclude a literal newline from their content class
+ * (`[^"\\\n]` / `[^'\\\n]`, not just `[^"\\]` / `[^'\\]`) - myusage-4xu.131: this scanner has no
+ * concept of a regex literal, so an unescaped quote inside one (this repo's own
+ * src/render.ts:43: `.replace(/"/g, "&quot;")`) reads as OPENING a phantom string. Confining the
+ * two quote branches to a single line means that phantom string can only ever fail to close
+ * before the line ends - forcing the match to fail and fall through rather than eating
+ * everything up to the next real quote, however far away (including a real `//` comment, which
+ * would then desync string/comment parity for the rest of the file: PR #119's independent
+ * reviewer reproduced exactly that against the unfixed regex). A real JS string literal can
+ * never contain a literal newline anyway (a raw newline inside `"..."`/`'...'` is always a
+ * syntax error - only `` `...` `` template literals legitimately span lines), so this loses
+ * nothing on real string content; it just stops a stray quote from swallowing the rest of the
+ * file. The backtick branch is deliberately left unrestricted (`[^`\\]`, which already includes
+ * `\n`): real template literals do legitimately span multiple lines, and stripComments must
+ * still strip a real block comment sitting between two backtick-delimited literals correctly.
+ * (A tempting alternative - matching a regex-literal token itself so its interior quotes are
+ * consumed as part of the regex rather than misread as string delimiters - was rejected: it
+ * makes a division expression followed by a real comment, e.g. `const r = a / b; // ...`,
+ * misparse as opening a regex literal at the first `/`, corrupting an unrelated comment that
+ * was never inside anything ambiguous. See this file's own tests for both cases.) */
 const STRING_OR_COMMENT =
-	/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+	/("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
 
 /** Removes `//` and `/* *‍/` comments from `source` while leaving every string and template
  * literal byte-for-byte untouched - so a comment that quotes example import syntax (this very

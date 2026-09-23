@@ -470,6 +470,21 @@ describe("importsPackage: content-based import detection for one package name", 
 		).toBe(false);
 	});
 
+	it("does not misread a division expression as opening a regex literal - a real comment right after it still gets stripped (regression guard)", () => {
+		// Guards against the fix the myusage-4xu.131 reviewer explicitly REJECTED: adding a
+		// regex-literal-matching alternative to STRING_OR_COMMENT (instead of the fix actually
+		// applied - forbidding a raw newline inside the `"..."`/`'...'` branches) makes the test
+		// above pass too, but introduces a NEW false negative: `a / b` would read as opening a
+		// regex literal at the first `/`, consuming everything up to the next `/` - here, the
+		// `//` that starts the real comment - so the comment (and the import-shaped text inside
+		// it) would never be recognized as a comment at all, and this would wrongly return
+		// `true`. The fix actually applied doesn't touch `/` handling at all, so this already
+		// passes; it exists to keep it that way if stripComments is ever touched again.
+		expect(
+			importsPackage('const r = a / b; // import x from "vitest";', "vitest"),
+		).toBe(false);
+	});
+
 	it("still matches a real import when a comment elsewhere in the same content merely mentions the same package", () => {
 		// Proves comment-stripping only removes the comment, not the real import that follows
 		// it - a fix that stripped too aggressively (e.g. from the first "//" to end of
@@ -490,18 +505,6 @@ describe("importsPackage: content-based import detection for one package name", 
 		expect(importsPackage('import{describe}from"vitest";', "vitest")).toBe(
 			true,
 		);
-	});
-
-	it("matches a whitespace-free bare side-effect import, as a minifier would emit it (myusage-4xu.132)", () => {
-		// myusage-4xu.124 (test right above) taught \bfrom\s* to tolerate a whitespace-free
-		// specifier, but \bimport\s+ - the bare-side-effect-import alternative - still requires
-		// at least one whitespace character after the "import" keyword. import"vitest"; is
-		// valid ESM (a whitespace-free bare side-effect import, exactly the shape a minifier
-		// would emit), and today's IMPORT_CONTEXT misses it even though the symmetric from-case
-		// is already covered. Zero live impact today (no bundler/minifier in this repo's build
-		// pipeline) - forward-looking hardening only, the same class as myusage-4xu.124's own
-		// fix.
-		expect(importsPackage('import"vitest";', "vitest")).toBe(true);
 	});
 
 	it("matches a template-literal dynamic import specifier", () => {

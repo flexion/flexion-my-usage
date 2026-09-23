@@ -84,9 +84,10 @@ describe("parseCliArgs: each flag", () => {
 
 	// Also covers --refresh-prices and --no-price-refresh combining without either canceling
 	// the other (they answer different questions): both come out true below, alongside the
-	// other two flags, so a dedicated two-flag-only version of this case was trimmed as a
-	// mutation-equivalent duplicate - hand-verified by reintroducing a cancellation bug and
-	// confirming this test alone still caught it.
+	// other two flags. Hand-verified by reintroducing a cancellation bug (either price flag
+	// flipping the other) and confirming this test alone still caught it - but only for that
+	// cancellation shape. This test also passes --no-open and --port, so it can't see the two
+	// price flags disturbing an unrelated default; the next test covers that gap.
 	it("flags combine, in any order", () => {
 		expect(
 			parseCliArgs([
@@ -105,6 +106,16 @@ describe("parseCliArgs: each flag", () => {
 				open: false,
 				port: 9000,
 			},
+		});
+	});
+
+	// Narrower than the test above: both price flags set together, with open and port left at
+	// their defaults, so a mutation coupling the price flags to an unrelated field isn't masked
+	// by --no-open/--port also being on the command line.
+	it("--refresh-prices and --no-price-refresh combine without disturbing the other defaults", () => {
+		expect(parseCliArgs(["--refresh-prices", "--no-price-refresh"])).toEqual({
+			ok: true,
+			options: { ...DEFAULTS, refreshPrices: true, noPriceRefresh: true },
 		});
 	});
 });

@@ -210,10 +210,9 @@ const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 // The `"..."` and `'...'` branches exclude a literal newline from their content class
 // (myusage-4xu.131, the identical gap and identical fix fixtures-guard.ts's own
 // STRING_OR_COMMENT applies - see that file's copy of this comment for the full reasoning): an
-// unescaped quote inside a regex literal (e.g. this repo's own src/render.ts:43:
-// `.replace(/"/g, "&quot;")`) otherwise reads as opening a phantom string that would otherwise
-// swallow everything up to the next real quote, however far away, desyncing string/comment
-// parity for the rest of the file.
+// unescaped quote inside a regex literal (e.g. a regex literal like `/"/g`) otherwise reads as
+// opening a phantom string that would otherwise swallow everything up to the next real quote,
+// however far away, desyncing string/comment parity for the rest of the file.
 //
 // Confining the quote branches to one line bounds that corruption to the CROSS-LINE case only.
 // It does NOT close the SAME-LINE case, in either direction:

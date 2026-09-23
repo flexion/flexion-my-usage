@@ -370,27 +370,22 @@ describe("importsPackage: content-based import detection for one package name", 
 		).toBe(true);
 	});
 
-	it("does not match a plain string literal that merely contains the package name as a substring", () => {
-		// A naive substring search would false-positive on this line. Nothing here is an
-		// import specifier - it's a plain string value.
-		expect(
-			importsPackage(
-				'const msg = "please run vitest to check this";',
-				"vitest",
-			),
-		).toBe(false);
-	});
-
 	it("does not match a bare quoted string literal exactly equal to the package name, with no import keyword before it (myusage-4xu.125)", () => {
 		// Every individual IMPORT_CONTEXT alternative (from/import/import() is pinned by its
 		// own positive test above, but nothing before this test discriminated the
 		// overarching anchor itself: that the specifier must actually follow one of those
-		// keywords, not just appear as a quoted string anywhere. The substring test right above
-		// this one doesn't do it either - "vitest" there sits mid-sentence, never immediately
-		// after the opening quote, so it stays false even with IMPORT_CONTEXT stripped down to
-		// an empty string. This fixture's quoted string is nothing BUT the package name, so an
-		// anchor-stripped mutant (IMPORT_CONTEXT replaced by "") would wrongly match it -
-		// verified by hand against that exact mutant before writing this test.
+		// keywords, not just appear as a quoted string anywhere. This fixture's quoted string is
+		// nothing BUT the package name, so an anchor-stripped mutant (IMPORT_CONTEXT replaced by
+		// "") would wrongly match it - verified by hand against that exact mutant before writing
+		// this test.
+		//
+		// A prior sibling test asserting the plainer substring case ('const msg = "please run
+		// vitest to check this";') was deleted as redundant (myusage-4xu.134): every mutation
+		// that flips that fixture also flips this one (verified by hand against several
+		// candidate mutants - none isolate a kill unique to the substring fixture), since
+		// matching "vitest" as an exact full quoted string is strictly easier to reach than
+		// matching it as a mid-sentence substring inside a longer quoted string with no import
+		// keyword at all.
 		expect(importsPackage('const p = "vitest";', "vitest")).toBe(false);
 	});
 

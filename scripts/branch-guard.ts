@@ -86,10 +86,14 @@
 //     CROSS-LINE case only, the same residual gap fixtures-guard.ts's own STRING_OR_COMMENT
 //     comment documents (myusage-4xu.135, deliberately deferred there too): a second quote
 //     character later on the SAME line can still let the phantom string close against it,
-//     misaligning parity within that one line. Not a realistic shape for this scan's own regex
-//     literal false-negative case specifically (a bare `/foo/` regex body containing a second,
-//     unescaped, same-line quote character right after the first is an unusual literal to write),
-//     and no different in kind from the gap already accepted here and in the other two files.
+//     misaligning parity within that one line. Unlike this file's other gaps (which fail
+//     CLOSED, silently missing a real violation), this residual same-line case fails LOUD here:
+//     text trapped inside what the phantom-string pairing leaves as an unmasked "comment" span
+//     can surface as a false-positive violation, not a missed real one. Not a realistic shape for
+//     this scan's own regex literal false-negative case specifically (a bare `/foo/` regex body
+//     containing a second, unescaped, same-line quote character right after the first is an
+//     unusual literal to write), and no different in kind from the gap already accepted here and
+//     in the other two files.
 import { posix } from "node:path";
 import type { SourceFile } from "./fixtures-guard.js";
 

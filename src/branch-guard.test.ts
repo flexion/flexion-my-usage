@@ -125,7 +125,7 @@ describe("maskNonCode", () => {
 			"\n",
 		);
 		expect(maskNonCode(source)).toBe(
-			['return /"/g;', "if (real) {}", 'const s =       ;'].join("\n"),
+			['return /"/g;', "if (real) {}", "const s =       ;"].join("\n"),
 		);
 	});
 
@@ -514,9 +514,7 @@ describe("checkBranchGuard", () => {
 		const files = [
 			{
 				path: "src/index.ts",
-				text: ['return /"/g;', "if (real) {}", 'const s = "text";'].join(
-					"\n",
-				),
+				text: ['return /"/g;', "if (real) {}", 'const s = "text";'].join("\n"),
 			},
 		];
 

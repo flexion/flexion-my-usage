@@ -414,8 +414,16 @@ describe("formatViolation", () => {
 			expectedCeiling: "22.16.0",
 		});
 
-		expect(message).toMatch(/22\.15\.0/);
+		expect(message).toMatch(/floor \(">=22\.15\.0"\)/);
 		expect(message).toMatch(/<22\.14\.0/);
-		expect(message).toMatch(/<22\.16\.0/);
+		// myusage-4xu.91: expectedCeiling is interpolated TWICE in the real message - once in the
+		// "expected ..." clause, once in the remedy sentence. Asserting `/<22\.16\.0/` alone left
+		// this green even if either interpolation were deleted, since the other occurrence still
+		// matched. Pinning both phrases specifically, not just presence of the raw value anywhere
+		// in the string, is what catches either mutation.
+		expect(message).toMatch(/expected "<22\.16\.0"/);
+		expect(message).toMatch(
+			/Update renovate\.json's allowedVersions to "<22\.16\.0"/,
+		);
 	});
 });

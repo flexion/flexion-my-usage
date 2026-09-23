@@ -199,6 +199,52 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		expect(result.stderr).toMatch(/test or support files in dist\//);
 	});
 
+	it("does NOT yet catch a devDependency import shipped in dist/ under a name/location that dodges the name-based filters (myusage-4xu.119 - pins the gap this bead closes)", async () => {
+		// TEST_OR_SUPPORT (".test."/".fixtures." in the basename) and TEST_OR_SUPPORT_DIR
+		// (__tests__/__mocks__/fixtures directory segments) are both purely name/location
+		// based - neither looks at a file's actual content. dist/config.js below has neither
+		// shape (no ".test."/".fixtures." in its basename, no test-support directory
+		// segment), so both existing filters wave it through clean even though its content
+		// imports "vitest/config" - a real subpath of a package this fixture's own
+		// package.json lists only in devDependencies, never in dependencies. This is the
+		// exact real-world shape that surfaced this bead (myusage-4xu.116:
+		// src/test-fixture-root.ts, before it was renamed/relocated to dodge these same two
+		// filters, imported from "vitest" and would have shipped undetected).
+		//
+		// This asserts the DESIRED post-fix behavior (a devDependency-import failure), so it
+		// is expected to fail against today's unmodified check-package.mjs, which has no
+		// content-based check at all and exits 0 on this fixture - reproduced directly below
+		// via the actual assertion failure.
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(
+			`${dir}/dist/config.js`,
+			'import { defineConfig } from "vitest/config";\nexport const config = defineConfig({});\n',
+		);
+		await writeFile(
+			`${dir}/package.json`,
+			JSON.stringify(
+				{
+					name: "check-package-fixture",
+					version: "0.0.0",
+					private: true,
+					bin: "./dist/index.js",
+					files: ["dist"],
+					dependencies: {},
+					devDependencies: { vitest: "5.0.1" },
+				},
+				null,
+				2,
+			),
+		);
+
+		const result = runCheckPackage(dir);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/devDependency/i);
+	});
+
 	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {
 		// npm never packs .DS_Store - it is on npm's own always-ignored list, regardless of
 		// `files`. Reproduced directly against the pre-fix script: with a correct

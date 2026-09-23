@@ -376,6 +376,42 @@ describe("importsPackage: content-based import/require detection for one package
 		// defensively for content this repo doesn't itself produce.
 		expect(importsPackage("import x from 'vitest';", "vitest")).toBe(true);
 	});
+
+	it("does not match an import-shaped mention inside a // line comment (myusage-4xu.121)", () => {
+		// tsconfig.build.json does not set removeComments, so tsc preserves comments into
+		// dist/ - PR #117's independent reviewer found that a src/ comment merely mentioning a
+		// devDependency's name in import-shaped prose (this repo's own comment style is
+		// comment-heavy) false-positived, since a plain regex scan has no concept of "comment"
+		// on its own. Reproduced directly against the pre-fix regex: it matched `from
+		// "vitest/config"` here even though the whole line is a comment, not code.
+		expect(
+			importsPackage(
+				'// Historical note: this file used to import defineConfig from "vitest/config".',
+				"vitest",
+			),
+		).toBe(false);
+	});
+
+	it("does not match an import-shaped mention inside a /* block */ comment, including a JSDoc-style one", () => {
+		expect(
+			importsPackage(
+				'/** Old header: this once imported defineConfig from "vitest/config". */\nexport const x = 1;',
+				"vitest",
+			),
+		).toBe(false);
+	});
+
+	it("still matches a real import when a comment elsewhere in the same content merely mentions the same package", () => {
+		// Proves comment-stripping only removes the comment, not the real import that follows
+		// it - a fix that stripped too aggressively (e.g. from the first "//" to end of
+		// content) would wrongly hide this.
+		expect(
+			importsPackage(
+				'// mentions vitest in prose, not as an import\nimport { describe } from "vitest";',
+				"vitest",
+			),
+		).toBe(true);
+	});
 });
 
 describe("findDevOnlyImports: the subset of candidate packages a file's content actually imports", () => {

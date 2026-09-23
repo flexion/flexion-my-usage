@@ -161,7 +161,13 @@ interface ConstructMatcher {
 //   `.trim()` precedent below in checkBranchGuard), or `do {` - the closing `while (...)` of a
 //   do/while loop also matches the `while (` half of this pattern independently, so a single
 //   do-while loop is reported as two violations (its `do {` and its `while (...)`), both true
-//   statements about the file.
+//   statements about the file. `do`'s own trailing `\b` (myusage-4xu.70) was dead code by the
+//   identical argument: whatever character follows "do" in any successful match is already
+//   whitespace or `{`, both non-word characters, so the trailing `\b` never excluded anything
+//   the `\s*\{` requirement didn't already exclude on its own - confirmed by a differential run
+//   of both regex forms across ~15k generated inputs (every char immediately after "do",
+//   including a BMP sample, under several identifier-shaped prefixes), zero behavioral
+//   difference; removed as dead code, matching `for`'s own precedent immediately above.
 //   `for...of` and `for...in` loops need no dedicated pattern of their own: `for (` matches
 //   before this scan ever looks inside the parens, so both shapes are already caught by the same
 //   classic-`for` alternative - src/branch-guard.test.ts (myusage-4xu.63) now pins that with its
@@ -238,7 +244,7 @@ const CONSTRUCT_PATTERNS: readonly ConstructMatcher[] = [
 	{ kind: "switch", pattern: /\bswitch\s*\(/g },
 	{
 		kind: "loop",
-		pattern: /\bfor(?:\s+await)?\s*\(|\bwhile\s*\(|\bdo\b\s*\{/g,
+		pattern: /\bfor(?:\s+await)?\s*\(|\bwhile\s*\(|\bdo\s*\{/g,
 	},
 	{ kind: "&&", pattern: /&&/g },
 	{ kind: "??", pattern: /\?\?/g },

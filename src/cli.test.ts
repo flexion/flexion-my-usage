@@ -10,8 +10,6 @@ import {
 	EXIT_OK,
 	EXIT_USAGE,
 	errorMessage,
-	NO_DATA_HINT,
-	PRE_1_3_16_NOTE,
 	runCli,
 } from "./cli.js";
 import { USAGE } from "./cli-args.js";
@@ -133,8 +131,13 @@ describe("runCli: the happy path", () => {
 		// Not a bare "skip-note" check: the page's STYLE block always defines that CSS class.
 		expect(r.served?.html).not.toContain('<p class="skip-note">');
 		expect(r.opened).toBe(SERVER_URL);
+		// Hardcoded, not built from the imported PRE_1_3_16_NOTE constant (myusage-4xu.76): a
+		// self-comparison against the same constant would still pass if its wording were gutted.
 		expect(r.stdout).toBe(
-			`my-usage: 3 responses in the last 30 days (3 scanned in total)\n${PRE_1_3_16_NOTE}` +
+			"my-usage: 3 responses in the last 30 days (3 scanned in total)\n" +
+				"Note: usage from before opencode v1.3.16 may be over-billed on reasoning-heavy models " +
+				"(OpenAI, Gemini) - an old bug double-counted reasoning tokens, and there's no way to spot " +
+				"or correct affected rows after the fact.\n" +
 				`Serving at ${SERVER_URL} - press Ctrl+C to stop.\n`,
 		);
 		expect(r.stderr).toBe("");
@@ -245,7 +248,13 @@ describe("runCli: no data", () => {
 	it("no database found -> a hint on stderr, an empty page still served, exit 0", async () => {
 		const r = record({ discover: async () => [] });
 		expect(await runCli([], r.deps)).toBe(EXIT_OK);
-		expect(r.stderr).toBe(NO_DATA_HINT);
+		// Hardcoded, not built from the imported NO_DATA_HINT constant (myusage-4xu.76): a
+		// self-comparison against the same constant would still pass if its wording were gutted.
+		expect(r.stderr).toBe(
+			"my-usage: no opencode database found - looked under $XDG_DATA_HOME/opencode (or " +
+				"~/.local/share/opencode when XDG_DATA_HOME is unset). If opencode keeps its data " +
+				"somewhere else, point OPENCODE_DB at the file.\n",
+		);
 		expect(r.calls).toEqual(["price 0", "serve 0", `open ${SERVER_URL}`]);
 		expect(r.stdout).toContain(
 			"my-usage: 0 responses in the last 30 days (0 scanned in total)",

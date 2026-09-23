@@ -443,7 +443,7 @@ describe("importsPackage: content-based import detection for one package name", 
 		).toBe(false);
 	});
 
-	it("does not false-positive on a comment following a regex literal with an unescaped quote character (myusage-4xu.131)", () => {
+	it("does not false-positive on a comment following a regex literal with an unescaped quote character, when the comment is on a later line (myusage-4xu.131)", () => {
 		// PR #119's independent reviewer found: stripComments (this file's own STRING_OR_COMMENT
 		// scan) has no concept of a regex literal - it only tracks bare `"`, `'`, and backtick
 		// characters. A regex literal containing an unescaped quote (e.g. this repo's own

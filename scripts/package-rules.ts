@@ -211,12 +211,20 @@ const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 // (myusage-4xu.131, the identical gap and identical fix fixtures-guard.ts's own
 // STRING_OR_COMMENT applies - see that file's copy of this comment for the full reasoning): an
 // unescaped quote inside a regex literal (e.g. this repo's own src/render.ts:43:
-// `.replace(/"/g, "&quot;")`) otherwise reads as opening a phantom string that swallows
-// everything up to the next real quote - including a real `//` comment arbitrarily far away,
-// desyncing string/comment parity for the rest of the file. Confining the quote branches to one
-// line costs nothing against real string content (a raw newline inside `"..."`/`'...'` is
-// already a syntax error in real JS), and leaves the backtick branch unrestricted since real
-// template literals do legitimately span multiple lines.
+// `.replace(/"/g, "&quot;")`) otherwise reads as opening a phantom string that would otherwise
+// swallow everything up to the next real quote, however far away, desyncing string/comment
+// parity for the rest of the file.
+//
+// Confining the quote branches to one line bounds that corruption to the CROSS-LINE case only -
+// it does NOT close the SAME-LINE case, where a later quote on the same line lets the phantom
+// string close there instead, still misaligning parity within that one line and potentially
+// hiding a real same-line `//` comment from being recognized as a comment. See myusage-4xu.135
+// (filed as a deliberately deferred follow-up) and fixtures-guard.ts's copy of this comment for
+// the full reasoning and reproduction.
+//
+// The newline restriction costs nothing against real string content (a raw newline inside
+// `"..."`/`'...'` is already a syntax error in real JS), and leaves the backtick branch
+// unrestricted since real template literals do legitimately span multiple lines.
 const STRING_OR_COMMENT =
 	/("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
 

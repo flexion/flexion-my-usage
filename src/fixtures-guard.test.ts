@@ -59,7 +59,7 @@ describe("stripComments", () => {
 		expect(stripComments(source)).toBe(source);
 	});
 
-	it("still strips a real // comment that follows a regex literal with an unescaped quote character (myusage-4xu.131)", () => {
+	it("still strips a real // comment that follows a regex literal with an unescaped quote character, when the comment is on a later line (myusage-4xu.131)", () => {
 		// package-rules.ts's identical STRING_OR_COMMENT technique has the same gap (see that
 		// file's test of the same name, in src/package-rules.test.ts) - this is the twin fix PR
 		// #119's independent reviewer asked for in both places. This scanner has no concept of a
@@ -254,7 +254,7 @@ describe("checkFixturesGuard", () => {
 		]);
 	});
 
-	it("does not raise a false banned-import finding from a comment that merely follows a regex literal with an unescaped quote character (myusage-4xu.131)", () => {
+	it("does not raise a false banned-import finding from a comment that merely follows a regex literal with an unescaped quote character, when the comment is on a later line (myusage-4xu.131)", () => {
 		// The stripComments unit tests above pin the bug at the helper level (the string comes
 		// back with the comment still in it); this pins the actual consequence a real caller
 		// hits. Without the fix, the desynced parity leaves the `//` comment below unstripped,

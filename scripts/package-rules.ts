@@ -184,7 +184,12 @@ function escapeRegExpLiteral(value: string): string {
 // following `from`, a bare `import`, `import(`, or `require(`, where the specifier is exactly the
 // package name or the package name plus a `/subpath` - anchored so "vite" never matches a
 // "vitest/config" specifier just because it's a literal prefix of "vitest".
-const IMPORT_CONTEXT = String.raw`(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)`;
+//
+// `from\s*`, not `from\s+` (myusage-4xu.124): today's build never minifies, but a whitespace-free
+// specifier (e.g. `from"vitest"`, as a minifier would emit it) must still match if a bundler or
+// minifier is ever introduced into the publish pipeline. `\b` alone already keeps this from
+// matching mid-identifier (e.g. "xfrom") regardless of how much whitespace follows.
+const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)`;
 
 // A comment-and-string-aware regex scan (myusage-4xu.121) - the same technique
 // scripts/fixtures-guard.ts already uses for its own stripComments, mirrored here rather than
@@ -220,11 +225,13 @@ function stripComments(content: string): string {
  * a bare substring search. Comments are stripped first (stripComments, myusage-4xu.121), so text
  * that merely looks like an import inside a `//` or `/* *‍/` comment - including JSDoc - never
  * matches either; this is still a textual regex scan, not a parser, so anything shaped like a
- * real import/require specifier in the code itself still counts. */
+ * real import/require specifier in the code itself still counts. The specifier-quote group
+ * accepts a backtick alongside `'`/`"` (myusage-4xu.124), so a template-literal dynamic import
+ * with no interpolation (e.g. `` import(`vitest`) ``) matches too. */
 export function importsPackage(content: string, packageName: string): boolean {
 	const escaped = escapeRegExpLiteral(packageName);
 	const pattern = new RegExp(
-		`${IMPORT_CONTEXT}(['"])${escaped}(?:/[^'"]*)?\\1`,
+		`${IMPORT_CONTEXT}(['"\`])${escaped}(?:/[^'"\`]*)?\\1`,
 	);
 	return pattern.test(stripComments(content));
 }

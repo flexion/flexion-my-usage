@@ -145,6 +145,14 @@ describe("maskNonCode", () => {
 			{ path: "src/index.ts", kind: "&&", line: 1, snippet: "&&" },
 		]);
 	});
+
+	it("blanks an entire /* */ comment even when it contains text that would be misparsed as a regex literal if the regex-literal alternative matched before the comment alternatives (myusage-4xu.152: STRING_TEMPLATE_COMMENT_OR_REGEX's own header documents the regex-literal branch as deliberately LAST, after the two comment branches, so a real `//` or `/* */` still wins at a position where both could in principle apply - no test pinned that ordering. Reproduction: `/* ratio a / b, if (x) {} */` sits right after a newline, so if the regex-literal alternative were tried first, its lookbehind - which only rejects a value-ending character (a word character, `$`, `)`, `]`, or a quote) before the `/`, skipping any run of spaces or tabs, and a newline isn't one - passes at the comment's own leading `/`, opening a spurious regex-literal match there; the very next unescaped `/`, the one between \"a\" and \"b\", closes it twelve characters in, at `/* ratio a /`, leaving the rest of the comment - `if (x) {}` included - unmasked. Mutation-verified directly: reordering the regex-literal alternative ahead of the two comment alternatives leaves the rest of this suite green, but makes checkBranchGuard report a false-positive `if (` violation on the `if (x) {}` text trapped in that unmasked tail - reproduced against the mutant before this test was written, matching the bead's own report)", () => {
+		const source = "const n = 1;\n/* ratio a / b, if (x) {} */\nconst m = 2;\n";
+
+		expect(maskNonCode(source)).toBe(
+			"const n = 1;\n                            \nconst m = 2;\n",
+		);
+	});
 });
 
 describe("checkBranchGuard", () => {

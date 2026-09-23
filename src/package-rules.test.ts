@@ -480,6 +480,29 @@ describe("importsPackage: content-based import detection for one package name", 
 		).toBe(false);
 	});
 
+	it("still detects a real import that follows a genuine string literal, when that string sits on the line after a regex literal with an unescaped quote character (myusage-4xu.137)", () => {
+		// stripComments isn't exported here (unlike fixtures-guard.ts's copy - see that file's
+		// test of the same name for the direct, byte-for-byte version of this pin); importsPackage
+		// is the only exposed surface, so this pins the same PR #122 fix indirectly: a real import
+		// must survive being on the same line as a genuine string literal that immediately follows
+		// a regex literal containing an unescaped quote, on the line before. REPRODUCED directly
+		// against the pre-fix regex (`[^"\\]` with no `\n` exclusion): the phantom string opened by
+		// the regex literal's stray quote paired against the URL string's own opening quote, which
+		// left the URL's unprotected remainder - and the real import statement that followed it on
+		// the same line - inside what then misread as a `//` line comment stretching to end of
+		// line, deleting both. importsPackage returned false there; PR #122's newline-confinement
+		// fix (this is that pin) makes it correctly return true.
+		expect(
+			importsPackage(
+				[
+					'const r = /"/;',
+					'const url = "http://example.com"; import x from "vitest";',
+				].join("\n"),
+				"vitest",
+			),
+		).toBe(true);
+	});
+
 	it("still matches a real import when a comment elsewhere in the same content merely mentions the same package", () => {
 		// Proves comment-stripping only removes the comment, not the real import that follows
 		// it - a fix that stripped too aggressively (e.g. from the first "//" to end of

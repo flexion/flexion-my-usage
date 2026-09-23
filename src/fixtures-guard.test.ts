@@ -70,6 +70,20 @@ describe("stripComments", () => {
 		// file, so the real `//` comment on the next line is no longer recognized as a comment
 		// at all and survives untouched. REPRODUCED directly against the current regex: the
 		// comment line below is not removed from the output.
+		//
+		// myusage-4xu.139: this file used to also carry a checkFixturesGuard-level test of the
+		// same name/shape (the "actual consequence a real caller hits" version). Deleted as fully
+		// subsumed - no mutation kills it without also killing either this test or the
+		// extractReferences-level "ignores a comment that quotes fake import syntax" test below:
+		// any mutant that breaks STRING_OR_COMMENT's handling of this exact regex-literal/quote
+		// shape already fails right here; any mutant that breaks extractReferences' "strip
+		// comments before matching FROM_SPECIFIER" step already fails the extractReferences-level
+		// test regardless of comment shape; and checkFixturesGuard's own "no violation when
+		// nothing real resolves to a fixtures file" wiring is already exercised by several other
+		// checkFixturesGuard tests with different (non-regex-literal) content. Not verified via
+		// mutation tooling - this repo has none configured (no stryker or equivalent in
+		// package.json) - reasoned by hand instead, consistent with myusage-4xu.134's precedent
+		// for this same file family.
 		const source = [
 			'const html = value.replace(/"/g, "&quot;");',
 			'// import { helper } from "./thing.fixtures.js";',
@@ -99,6 +113,24 @@ describe("stripComments", () => {
 			'const r = a / b; // import { helper } from "./thing.fixtures.js";';
 
 		expect(stripComments(source)).toBe("const r = a / b; ");
+	});
+
+	it("preserves a genuine string literal on the line after a regex literal with an unescaped quote character, byte-for-byte (myusage-4xu.137)", () => {
+		// PR #122's independent correctness reviewer found: PRE-fix (before the [^"\n]/[^'\n]
+		// newline restriction landed), stripComments on a regex literal followed by a genuine
+		// string literal on the NEXT line corrupted real string CONTENT, not just a comment's
+		// survival - the phantom string opened by the regex literal's stray quote paired against
+		// the real string's own opening quote, then the real string's now-unprotected remainder
+		// (containing "//") was misread as a `//` line comment and deleted. REPRODUCED directly
+		// against the pre-fix regex (`[^"\\]` with no `\n` exclusion): it truncated the second
+		// line to `const url = "http:` here, silently destroying `//example.com";`. PR #122 fixed
+		// this (the newline-confinement stops the phantom string from ever reaching the real
+		// string's opening quote as a false partner), but nothing pinned it - this is that pin.
+		const source = ['const r = /"/;', 'const url = "http://example.com";'].join(
+			"\n",
+		);
+
+		expect(stripComments(source)).toBe(source);
 	});
 });
 
@@ -252,30 +284,6 @@ describe("checkFixturesGuard", () => {
 				fixturesFile: "src/thing.fixtures.ts",
 			},
 		]);
-	});
-
-	it("does not raise a false banned-import finding from a comment that merely follows a regex literal with an unescaped quote character, when the comment is on a later line (myusage-4xu.131)", () => {
-		// The stripComments unit tests above pin the bug at the helper level (the string comes
-		// back with the comment still in it); this pins the actual consequence a real caller
-		// hits. Without the fix, the desynced parity leaves the `//` comment below unstripped,
-		// extractReferences' FROM_SPECIFIER regex then matches the fixtures-shaped specifier
-		// sitting inside that surviving comment text, and checkFixturesGuard - which never
-		// requires a reference to resolve to a file actually present in `files` (see this
-		// export's own doc comment) - reports src/render.ts as banned-importing a fixtures file
-		// it never actually references. src/render.ts:43 has this exact
-		// `.replace(/"/g, "&quot;")` shape for real.
-		const files = [
-			{
-				path: "src/render.ts",
-				text: [
-					'const html = value.replace(/"/g, "&quot;");',
-					'// import { helper } from "./thing.fixtures.js";',
-					"const real = 1;",
-				].join("\n"),
-			},
-		];
-
-		expect(checkFixturesGuard(files)).toEqual([]);
 	});
 
 	it("does not flag a real test file importing a fixtures file that imports vitest itself", () => {

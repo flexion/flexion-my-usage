@@ -8,7 +8,7 @@
 | --- | --- |
 | `yarn test` | The gate. All tests plus coverage. CI runs this. |
 | `yarn vitest run <path>` | Fast loop on one file. No coverage, so it doesn't gate. |
-| `yarn lint` | Biome, the inline coverage-pragma guard, and the fixtures-import guard. |
+| `yarn lint` | Biome, the inline coverage-pragma guard, and the fixtures-import guard. Biome's React rules are scoped to `src/web/` in `biome.json` - left repo-wide, they read the Node tests' vitest helpers (`useTempCacheDirs`) as React hooks. |
 
 `yarn test <path>` fails on purpose: every file you didn't run counts as uncovered. Use `yarn vitest run <path>` to iterate.
 
@@ -46,6 +46,7 @@ A file may be excluded only if **all** of these hold:
 | --- | --- |
 | `src/index.ts` | Composition root. Hands the real `process`, reader, price table, server and browser launcher to `runCli` (`src/cli.ts`, covered), and does nothing else. |
 | `src/sources/types.ts` | Type-only. Compiles to no runtime code. |
+| `src/web/main.tsx` | Browser composition root. Mounts `App` (covered) into `#root` with the real `fetch`, and does nothing else. |
 
 Not humble, so covered: anything that parses, maps, normalizes, prices, aggregates, formats or decides. That includes turning a raw DB row into a `NormalizedUsageRow`.
 
@@ -53,7 +54,8 @@ The opencode reader (`src/sources/opencode.ts`) and the price table (`src/pricin
 
 ### Keeping vendors out of application logic
 
-- Application logic (pricing math, aggregation, rendering) doesn't import vendors. Adapters do, and stay thin.
+- Application logic (pricing math, aggregation, chart data shaping) doesn't import vendors. Adapters do, and stay thin.
+- The React page (`src/web/`) follows the same split: `lib/modelStacks.ts`, `lib/formatters.ts` and `lib/chartMeasure.ts` are plain data in, plain data out, with no React or recharts import. The components draw what those return. Component tests render them for real in jsdom (`// @vitest-environment jsdom` at the top of the file) and drive them with real DOM events - recharts is never mocked.
 - If an adapter needs a decision or a data transform, move it out. The adapter fetches raw data and calls a pure function (raw shape in, domain shape out). Test that function with plain objects.
 - If logic needs I/O (for example, cache-then-fetch with an offline fallback), take the dependency as an option we own (the price table takes `fetch`, `cacheDir`, `env`). Tests pass a fake or a temp directory.
 - A humble file stays excluded only while it stays logic-free. If it grows a branch or a transform, split it or remove it from `coverage.exclude` and cover it.

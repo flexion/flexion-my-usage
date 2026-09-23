@@ -1,8 +1,9 @@
 // Specifies runCli end to end with plain fakes behind CliDeps: what gets called, in what order,
 // with what, and what lands on stdout/stderr and in the exit code. The pure stages in the middle
-// (aggregateDaily, renderHtml) run for real - they're deterministic and already specified by
-// their own tests - so the html handed to `serve` is the real page. No process.argv, no
-// process.exit, no real server, no real browser, no real opencode database.
+// (aggregateDaily, usagePayloadJson) run for real - they're deterministic and already specified
+// by their own tests - so the data handed to `serve` is the real payload the page fetches. No
+// process.argv, no process.exit, no real server, no real browser, no real opencode database, no
+// real frontend build.
 import { describe, expect, it } from "vitest";
 import {
 	type CliDeps,
@@ -15,8 +16,9 @@ import {
 import { USAGE } from "./cli-args.js";
 import { NODE_FLOOR } from "./node-version.js";
 import type { PricedRow } from "./pricing.js";
-import type { RunningServer } from "./server.js";
+import type { RunningServer, Site, StaticFile } from "./server.js";
 import type { NormalizedUsageRow, SourceHandle } from "./sources/types.js";
+import type { UsagePayload } from "./usage-payload.js";
 
 const HANDLE_A: SourceHandle = {
 	source: "opencode",
@@ -48,12 +50,32 @@ interface Recorded {
 	calls: string[];
 	stdout: string;
 	stderr: string;
-	served: { html: string; port: number } | undefined;
+	served: { site: Site; port: number } | undefined;
 	priceOptions: { refresh: boolean; noPriceRefresh: boolean } | undefined;
 	opened: string | undefined;
 }
 
 const SERVER_URL = "http://127.0.0.1:43210/";
+
+// Stands in for the frontend build; runCli only passes it through to serve(), untouched.
+const FILES: ReadonlyMap<string, StaticFile> = new Map([
+	[
+		"/index.html",
+		{ contentType: "text/html; charset=utf-8", body: Buffer.from("<html>") },
+	],
+]);
+
+/** The data route's body as served, parsed back into the wire shape. */
+function servedPayload(r: Recorded): UsagePayload {
+	return JSON.parse(r.served?.site.data ?? "null") as UsagePayload;
+}
+
+/** Every model id with any usage anywhere in the served payload's window. */
+function servedModels(r: Recorded): string[] {
+	return servedPayload(r).days.flatMap((day) =>
+		Object.values(day.byModel).map((totals) => totals.model),
+	);
+}
 
 function fakeServer(): RunningServer {
 	return {
@@ -75,6 +97,10 @@ function record(overrides: Partial<CliDeps> = {}): Recorded {
 		opened: undefined,
 		deps: {
 			nodeVersion: NODE_FLOOR.join("."),
+			loadAssets: async () => {
+				r.calls.push("loadAssets");
+				return FILES;
+			},
 			discover: async () => {
 				r.calls.push("discover");
 				return [HANDLE_A, HANDLE_B];
@@ -92,9 +118,9 @@ function record(overrides: Partial<CliDeps> = {}): Recorded {
 					(x): PricedRow => ({ ...x, notionalCost: 0.5, unpriced: false }),
 				);
 			},
-			serve: async (html, port) => {
+			serve: async (site, port) => {
 				r.calls.push(`serve ${port}`);
-				r.served = { html, port };
+				r.served = { site, port };
 				return fakeServer();
 			},
 			openBrowser: async (url) => {
@@ -130,12 +156,13 @@ describe("exit code constants", () => {
 });
 
 describe("runCli: the happy path", () => {
-	it("scans, prices, serves the rendered page on an OS-chosen port, opens the browser, exits 0", async () => {
+	it("loads the page, scans, prices, serves page + data on an OS-chosen port, opens the browser, exits 0", async () => {
 		const r = record();
 		const code = await runCli([], r.deps);
 
 		expect(code).toBe(EXIT_OK);
 		expect(r.calls).toEqual([
+			"loadAssets",
 			"discover",
 			`read ${HANDLE_A.path}`,
 			`read ${HANDLE_B.path}`,
@@ -145,11 +172,16 @@ describe("runCli: the happy path", () => {
 		]);
 		expect(r.priceOptions).toEqual({ refresh: false, noPriceRefresh: false });
 		expect(r.served?.port).toBe(0);
-		expect(r.served?.html.startsWith("<!doctype html>")).toBe(true);
-		expect(r.served?.html).toContain("<title>my-usage</title>");
-		// No skipped-database callout when every discovered database read fine (myusage-4xu.98).
-		// Not a bare "skip-note" check: the page's STYLE block always defines that CSS class.
-		expect(r.served?.html).not.toContain('<p class="skip-note">');
+		expect(r.served?.site.files).toBe(FILES);
+		const payload = servedPayload(r);
+		expect(payload.days).toHaveLength(30);
+		expect(payload.days.at(-1)).toMatchObject({
+			responses: 3,
+			tokens: 60,
+			notionalCost: 1.5,
+		});
+		// Nothing skipped when every discovered database read fine (myusage-4xu.98).
+		expect(payload.skipped).toEqual({ skipped: 0, total: 2 });
 		expect(r.opened).toBe(SERVER_URL);
 		// Hardcoded, not built from the imported PRE_1_3_16_NOTE constant (myusage-4xu.76): a
 		// self-comparison against the same constant would still pass if its wording were gutted.
@@ -275,11 +307,19 @@ describe("runCli: no data", () => {
 				"~/.local/share/opencode when XDG_DATA_HOME is unset). If opencode keeps its data " +
 				"somewhere else, point OPENCODE_DB at the file.\n",
 		);
-		expect(r.calls).toEqual(["price 0", "serve 0", `open ${SERVER_URL}`]);
+		expect(r.calls).toEqual([
+			"loadAssets",
+			"price 0",
+			"serve 0",
+			`open ${SERVER_URL}`,
+		]);
 		expect(r.stdout).toContain(
 			"my-usage: 0 responses in the last 30 days (0 scanned in total)",
 		);
-		expect(r.served?.html).toContain("No usage recorded in this window.");
+		// Still a full, zero-filled window: the page draws an empty chart, not an error.
+		expect(servedPayload(r).days).toHaveLength(30);
+		expect(servedModels(r)).toEqual([]);
+		expect(servedPayload(r).skipped).toEqual({ skipped: 0, total: 0 });
 	});
 });
 
@@ -317,7 +357,11 @@ describe("runCli: failures", () => {
 			`my-usage: couldn't read ${HANDLE_A.path} (Cannot read ${HANDLE_A.path}: boom) - skipping it.\n` +
 				"my-usage: every discovered database failed to read - nothing to show.\n",
 		);
-		expect(r.calls).toEqual(["discover", `read ${HANDLE_A.path}`]);
+		expect(r.calls).toEqual([
+			"loadAssets",
+			"discover",
+			`read ${HANDLE_A.path}`,
+		]);
 		expect(r.served).toBeUndefined();
 		expect(r.stdout).toBe("");
 	});
@@ -336,6 +380,7 @@ describe("runCli: failures", () => {
 				"my-usage: every discovered database failed to read - nothing to show.\n",
 		);
 		expect(r.calls).toEqual([
+			"loadAssets",
 			"discover",
 			`read ${HANDLE_A.path}`,
 			`read ${HANDLE_B.path}`,
@@ -370,12 +415,10 @@ describe("runCli: failures", () => {
 			"my-usage: 2 responses in the last 30 days (2 scanned in total)",
 		);
 		// myusage-4xu.96: the call log and stdout count alone don't prove the surviving rows ever
-		// reached renderHtml - a mutation that served an empty page while still counting 2 scanned
-		// rows would pass the assertions above untouched. Assert on the actually-served HTML too:
-		// HANDLE_A's surviving rows are both "claude-sonnet-4-5", unambiguous (only one provider),
-		// so that's the model's exact legend label - a page that never got the rows wouldn't show it.
-		expect(r.served?.html).toContain("claude-sonnet-4-5");
-		expect(r.served?.html).not.toContain("No usage recorded in this window.");
+		// reached the page - a mutation that served empty data while still counting 2 scanned rows
+		// would pass the assertions above untouched. Assert on the actually-served payload too.
+		expect(servedModels(r)).toEqual(["claude-sonnet-4-5"]);
+		expect(servedPayload(r).days.at(-1)?.responses).toBe(2);
 	});
 
 	it("names the skipped count on the served page itself, not just on stderr, when one of several databases fails to read (myusage-4xu.98)", async () => {
@@ -398,9 +441,7 @@ describe("runCli: failures", () => {
 			},
 		});
 		expect(await runCli([], r.deps)).toBe(EXIT_OK);
-		expect(r.served?.html).toContain(
-			'<p class="skip-note">1 of 3 databases could not be read - see terminal for details.</p>',
-		);
+		expect(servedPayload(r).skipped).toEqual({ skipped: 1, total: 3 });
 	});
 
 	it("a port already in use -> the server's remedy message, exit 1, no browser", async () => {
@@ -416,6 +457,19 @@ describe("runCli: failures", () => {
 		);
 		expect(r.opened).toBeUndefined();
 		expect(r.stdout).toBe("");
+	});
+
+	it("a missing frontend build -> its message on stderr, exit 1, before any scanning", async () => {
+		const r = record({
+			loadAssets: () =>
+				Promise.reject(new Error("the dashboard's frontend build is missing")),
+		});
+		expect(await runCli([], r.deps)).toBe(EXIT_FAILURE);
+		expect(r.stderr).toBe(
+			"my-usage: the dashboard's frontend build is missing\n",
+		);
+		expect(r.calls).toEqual([]);
+		expect(r.served).toBeUndefined();
 	});
 
 	it("a non-Error rejection is still reported as text", async () => {

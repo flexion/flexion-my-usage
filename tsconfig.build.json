@@ -23,6 +23,9 @@
 		"src/**/*.test.*",
 		"src/**/*.fixtures.*",
 		"src/**/__tests__/**",
-		"src/**/__mocks__/**"
+		"src/**/__mocks__/**",
+		// Built by vite, not tsc (myusage-4xu.118) - see src/web/tsconfig.json and
+		// vite.web.config.ts. Repeated from tsconfig.json because `exclude` doesn't merge.
+		"src/web"
 	]
 }

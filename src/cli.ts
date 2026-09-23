@@ -1,5 +1,7 @@
 // The CLI's whole run, as one covered function (myusage-4xu.7): parse the arguments, preflight
-// the Node version, scan -> price -> aggregate -> render, start the server, open the browser,
+// the Node version, load the frontend build, scan -> price -> aggregate, start the server with the
+// build and the aggregated data (myusage-4xu.118: the page is a React app that fetches the data
+// from the server, not a document rendered here), open the browser,
 // and turn every outcome into an exit code and some text. Every side effect - reading local
 // data, fetching prices, listening on a port, spawning a browser, writing to the terminal -
 // arrives through `CliDeps`, so cli.test.ts drives this with plain fakes and asserts on what was
@@ -10,9 +12,9 @@ import { aggregateDaily } from "./aggregate.js";
 import { parseCliArgs, USAGE } from "./cli-args.js";
 import { NODE_FLOOR, nodeUpgradeMessage } from "./node-version.js";
 import type { PricedRow } from "./pricing.js";
-import { renderHtml } from "./render.js";
-import type { RunningServer } from "./server.js";
+import type { RunningServer, Site, StaticFile } from "./server.js";
 import type { NormalizedUsageRow, SourceHandle } from "./sources/types.js";
+import { usagePayloadJson } from "./usage-payload.js";
 
 export interface CliDeps {
 	/** `process.versions.node` for real; any "X.Y.Z" string in tests. */
@@ -23,8 +25,10 @@ export interface CliDeps {
 		rows: NormalizedUsageRow[],
 		options: { refresh: boolean; noPriceRefresh: boolean },
 	): Promise<PricedRow[]>;
-	/** Starts serving `html` on `port` (0 = any free port) and resolves once it's listening. */
-	serve(html: string, port: number): Promise<RunningServer>;
+	/** The frontend build, keyed by URL path (see web-assets.ts); rejects when it's missing. */
+	loadAssets(): Promise<ReadonlyMap<string, StaticFile>>;
+	/** Starts serving `site` on `port` (0 = any free port) and resolves once it's listening. */
+	serve(site: Site, port: number): Promise<RunningServer>;
 	openBrowser(url: string): Promise<void>;
 	stdout(text: string): void;
 	stderr(text: string): void;
@@ -106,6 +110,10 @@ export async function runCli(
 	}
 
 	try {
+		// First, before any scanning: without the page there is nothing to show the data in, and a
+		// missing build (a source checkout that skipped `yarn build`) should fail in milliseconds,
+		// not after a full scan and price-table fetch.
+		const files = await deps.loadAssets();
 		const handles = await deps.discover();
 		if (handles.length === 0) deps.stderr(NO_DATA_HINT);
 		// Each handle's read is caught right here, not left to reject out of this Promise.all: a
@@ -159,12 +167,12 @@ export async function runCli(
 		// denominator: it's every database this run discovered, the same population `reads` -
 		// and its failures - was built from.
 		const skippedCount = reads.filter((result) => !result.ok).length;
-		const html = renderHtml(days, {
-			skipped: skippedCount,
-			total: handles.length,
+		const data = usagePayloadJson({
+			days,
+			skipped: { skipped: skippedCount, total: handles.length },
 		});
 
-		const server = await deps.serve(html, options.port);
+		const server = await deps.serve({ files, data }, options.port);
 		// Report what the page shows (the window's responses), and separately how many rows were
 		// scanned: aggregateDaily always returns one bucket per window day and drops rows outside
 		// it, so `rows.length` alone would overcount and `days.length` alone is just the window.

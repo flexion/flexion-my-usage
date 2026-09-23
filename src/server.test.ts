@@ -3,8 +3,8 @@
 // driven by real clients (global fetch, and node:http's own client where a test needs to forge
 // or omit the Host header, which fetch won't let it do). Nothing mocks createServer.
 import { EventEmitter } from "node:events";
-import { Agent, request as httpRequest } from "node:http";
-import { connect as netConnect } from "node:net";
+import { request as httpRequest } from "node:http";
+import { connect as netConnect, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	isLoopbackHost,
@@ -170,6 +170,7 @@ function rawRequest(
 
 describe("startServer", () => {
 	const running: RunningServer[] = [];
+	const rawSockets: Socket[] = [];
 
 	async function start(
 		port = 0,
@@ -185,6 +186,15 @@ describe("startServer", () => {
 	}
 
 	afterEach(async () => {
+		// Raw sockets first: any test below that opens one over `netConnect` registers it here
+		// rather than relying on its own try/finally, because a test that times out mid-request
+		// (see "close() drops an active (half-sent-request) connection") leaves both a socket
+		// the server is still waiting on and a `RunningServer.close()` waiting on that same
+		// socket - and a plain try/finally never gets a turn to run in that case (the timeout
+		// abandons the suspended async function instead of unwinding it). This hook runs
+		// regardless, so dropping the socket here unblocks that close() instead of this hook
+		// also hanging out to its own timeout.
+		for (const socket of rawSockets.splice(0)) socket.destroy();
 		await Promise.all(running.splice(0).map((s) => s.close()));
 	});
 
@@ -252,10 +262,11 @@ describe("startServer", () => {
 		// runs, so the only way a real request reaches `reply` with host undefined is HTTP/1.0,
 		// where the header is optional - sent here as raw bytes over a plain socket.
 		const server = await start();
+		const socket = netConnect(server.port, LOOPBACK_HOST, () => {
+			socket.write("GET / HTTP/1.0\r\n\r\n");
+		});
+		rawSockets.push(socket);
 		const raw = await new Promise<string>((resolve, reject) => {
-			const socket = netConnect(server.port, LOOPBACK_HOST, () => {
-				socket.write("GET / HTTP/1.0\r\n\r\n");
-			});
 			let data = "";
 			socket.setEncoding("utf8");
 			socket.on("data", (chunk: string) => {
@@ -319,26 +330,41 @@ describe("startServer", () => {
 		await server.close();
 	});
 
-	it("close() drops an idle keep-alive connection instead of waiting on it", async () => {
+	it("close() drops an active (half-sent-request) connection instead of waiting on it", async () => {
 		const server = await start();
-		const agent = new Agent({ keepAlive: true });
-		try {
-			const res = await new Promise<number>((resolve, reject) => {
-				httpRequest({ host: LOOPBACK_HOST, port: server.port, agent }, (r) => {
-					r.resume();
-					r.on("end", () => resolve(r.statusCode as number));
-				})
-					.once("error", reject)
-					.end();
-			});
-			expect(res).toBe(200);
-			// Without closeAllConnections, server.close() would wait out the socket's
-			// keep-alive idle timeout (5s by default) - well past this test's own limit.
-			await server.close();
-		} finally {
-			agent.destroy();
-		}
-	}, 3000);
+		const socket = netConnect(server.port, LOOPBACK_HOST);
+		// Registered with the shared afterEach above instead of a try/finally: if
+		// closeAllConnections regresses and close() hangs, this test times out with the socket
+		// still open mid-request, and a finally block never gets a turn to run (the timeout
+		// abandons the suspended async function - it doesn't unwind it). The afterEach hook
+		// still runs on a timeout, so the raw socket - and the server's own pending close() that
+		// depends on it - still get torn down instead of also hanging the afterEach itself.
+		rawSockets.push(socket);
+		await new Promise<void>((resolve, reject) => {
+			socket.once("connect", () => resolve());
+			socket.once("error", reject);
+		});
+		// Deliberately missing the blank line that ends the headers, so the server has
+		// accepted the connection but is still mid-request. The 10ms tick lets the server
+		// actually read and start parsing those bytes before close() runs - without it, close()
+		// races the parser and sees the same still-blank socket an idle one would look like,
+		// which defeats the point of this test (measured: 2ms already suffices on every
+		// supported Node version, but on the 26 line a 0-1ms tick is unreliable - close() can
+		// still beat the parser and drop the socket as untouched - so 10ms is a margin, not the
+		// floor). Once the server has genuinely started a request, the connection is active, not
+		// idle: an idle keep-alive connection (a finished request/response) already closes on
+		// its own in 0-3ms; only an in-flight one like this depends on closeAllConnections -
+		// without it, close() waits on a request that never finishes instead of dropping the
+		// socket.
+		socket.write(`GET / HTTP/1.1\r\nHost: ${LOOPBACK_HOST}:${server.port}\r\n`);
+		await new Promise<void>((resolve) => setTimeout(resolve, 10));
+		const started = Date.now();
+		await server.close();
+		// Measured close() here is ~1ms; 300ms is two orders of magnitude of headroom, not a
+		// tight bound. The real failure mode without closeAllConnections is a hang well past
+		// this test's own 2000ms timeout below, not a slow-but-finished close.
+		expect(Date.now() - started).toBeLessThan(300);
+	}, 2000);
 
 	it("stops on SIGINT from the injected signal source and unregisters its listeners", async () => {
 		const signals = new EventEmitter();

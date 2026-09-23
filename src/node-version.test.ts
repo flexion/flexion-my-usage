@@ -76,8 +76,13 @@ describe("nodeUpgradeMessage", () => {
 		expect(message).toContain("upgrade Node");
 	});
 
-	it("fails open (no message) when the running version cannot be parsed", () => {
-		expect(nodeUpgradeMessage("custom-build", FLOOR)).toBeUndefined();
+	// No real process.versions.node value fails this - see the "fail-open check is a real
+	// branch" comment on nodeUpgradeMessage. "custom-build" is deliberately not used here:
+	// node-version.ts's own parseVersion docstring already uses "custom build" for a
+	// suffixed-but-parseable version ("22.13.0-nightly..."), which is the opposite of what this
+	// test needs - a string with no version prefix at all.
+	it("fails open (no message) when the running-version string has no parseable version prefix", () => {
+		expect(nodeUpgradeMessage("not-a-version", FLOOR)).toBeUndefined();
 	});
 
 	it("is undefined for the real NODE_FLOOR against the Node running this test", () => {

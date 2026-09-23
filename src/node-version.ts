@@ -44,6 +44,15 @@ export function isOlder(a: Version, b: Version): boolean {
  * courtesy that improves the message for the common case (a stock, older Node), not a gate -
  * an unrecognizable version string is not that case, and the real import still fails with
  * Node's own error if the build genuinely lacks node:sqlite.
+ *
+ * That fail-open check is a real branch, not a fabricated one like the "floor didn't parse"
+ * branch this function used to have: floor's type was tightened to an already-parsed `Version`
+ * instead, since it's a literal this file owns and so can never fail to parse. `running` can't
+ * be narrowed the same way - it's `process.versions.node` in production, a live string from the
+ * host runtime that TypeScript can't verify at compile time (see the typecheck failure this
+ * produces if the check below is deleted: `have` stays `Version | undefined`, and `isOlder`
+ * won't accept it). Every real Node build satisfies parseVersion's regex, but nothing about
+ * `running`'s type guarantees that; something has to decide what happens on the day it doesn't.
  */
 export function nodeUpgradeMessage(
 	running: string,

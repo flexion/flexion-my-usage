@@ -26,6 +26,10 @@ const HANDLE_B: SourceHandle = {
 	source: "opencode",
 	path: "/data/opencode-beta.db",
 };
+const HANDLE_C: SourceHandle = {
+	source: "opencode",
+	path: "/data/opencode-channel.db",
+};
 
 function row(messageId: string, input: number): NormalizedUsageRow {
 	return {
@@ -359,18 +363,27 @@ describe("runCli: failures", () => {
 	});
 
 	it("names the skipped count on the served page itself, not just on stderr, when one of several databases fails to read (myusage-4xu.98)", async () => {
+		// Deliberately asymmetric shape (myusage-4xu.103): 3 handles, 1 failed, 4 rows total, so
+		// handles.length (3) can't be confused with rows.length (4) or the ok-count (2) - a wrong
+		// denominator, or an inverted ok/failed filter, changes the number this test checks.
 		const r = record({
+			discover: async () => {
+				r.calls.push("discover");
+				return [HANDLE_A, HANDLE_B, HANDLE_C];
+			},
 			read: async (handle) => {
 				r.calls.push(`read ${handle.path}`);
 				if (handle === HANDLE_B) {
 					return Promise.reject(new Error(`Cannot read ${handle.path}: boom`));
 				}
-				return [row("a1", 10), row("a2", 20)];
+				return handle === HANDLE_A
+					? [row("a1", 10), row("a2", 20)]
+					: [row("c1", 10), row("c2", 20)];
 			},
 		});
 		expect(await runCli([], r.deps)).toBe(EXIT_OK);
 		expect(r.served?.html).toContain(
-			'<p class="skip-note">1 of 2 databases could not be read - see terminal for details.</p>',
+			'<p class="skip-note">1 of 3 databases could not be read - see terminal for details.</p>',
 		);
 	});
 

@@ -75,13 +75,36 @@ export interface SourceFile {
  * then desync string/comment parity for the rest of the file: PR #119's independent reviewer
  * reproduced exactly that against the unfixed regex).
  *
- * This closes the CROSS-LINE case only. It does NOT close the SAME-LINE case: if a quote
- * character appears later on the same line as the stray quote (e.g. a second regex literal, or
- * an ordinary quoted string), the phantom string can still find a same-line quote to close
- * against, and quote parity can still misalign within that one line - silently absorbing a real
- * same-line `//` comment into what reads as string content. See myusage-4xu.135 (filed as a
- * deliberately deferred follow-up, found by the myusage-4xu.131 round-2 reviewer) for the exact
- * reproduction and the reasoning for not patching it here.
+ * This closes the CROSS-LINE case only. It does NOT close the SAME-LINE case, in either
+ * direction:
+ *
+ *   - False positive (myusage-4xu.135): a quote character appearing later on the same line as
+ *     the stray quote (e.g. a second regex literal, or an ordinary quoted string) lets the
+ *     phantom string find a same-line quote to close against instead, still misaligning parity
+ *     within that one line - silently absorbing a real same-line `//` comment into what reads as
+ *     string content, so it survives stripComments untouched and can false-positive importsPackage.
+ *   - False negative (myusage-4xu.136): the same same-line desync can also swallow REAL code, not
+ *     just fail to recognize a comment. A stray quote in a regex literal, followed by a genuine
+ *     string literal, followed by a real import - all on one line - can pair the phantom string
+ *     against the genuine string's own opening quote, exposing the genuine string's unprotected
+ *     remainder (and the real import after it) to being misread as a `//` line comment and
+ *     deleted outright, so importsPackage misses a real import that is actually present.
+ *     (myusage-4xu.131's own safety analysis had claimed this class of bug could only ever cause
+ *     text to survive that should have been stripped, never a silent false negative - PR #122's
+ *     independent reviewer disproved that claim with this exact reproduction.)
+ *
+ * DECISION (myusage-4xu.135, extended by myusage-4xu.136 to cover this opposite direction too):
+ * this gap is deliberately left OPEN, not silently accepted. This is an internal build-time lint
+ * helper, not a security boundary, and both directions are currently LATENT - no line in this
+ * repo's real tsc dist/ output combines a regex-literal stray quote with same-line quoted content
+ * this way. A proportionate general fix requires actual regex-literal tokenization, which this
+ * scanner has no concept of at all (see the rejected regex-literal-matching alternative below,
+ * itself rejected for an unrelated reason - it breaks the division-expression case); myusage-
+ * 4xu.131's own round-3 review already judged a tokenizer rewrite disproportionate to this
+ * script's risk profile, and a narrower same-line-only patch covering both directions above was
+ * weighed here and rejected on the same proportionality grounds, not overlooked. Revisit if this
+ * scanner ever gains a caller whose real input can produce this shape, or if its risk profile
+ * changes (e.g. it starts gating something security-sensitive rather than a build-time lint).
  *
  * A real JS string literal can never contain a literal newline anyway (a raw newline inside
  * `"..."`/`'...'` is always a syntax error - only `` `...` `` template literals legitimately span

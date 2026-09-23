@@ -215,12 +215,38 @@ const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 // swallow everything up to the next real quote, however far away, desyncing string/comment
 // parity for the rest of the file.
 //
-// Confining the quote branches to one line bounds that corruption to the CROSS-LINE case only -
-// it does NOT close the SAME-LINE case, where a later quote on the same line lets the phantom
-// string close there instead, still misaligning parity within that one line and potentially
-// hiding a real same-line `//` comment from being recognized as a comment. See myusage-4xu.135
-// (filed as a deliberately deferred follow-up) and fixtures-guard.ts's copy of this comment for
-// the full reasoning and reproduction.
+// Confining the quote branches to one line bounds that corruption to the CROSS-LINE case only.
+// It does NOT close the SAME-LINE case, in either direction:
+//
+//   - False positive (myusage-4xu.135): a later quote on the same line lets the phantom string
+//     close there instead, still misaligning parity within that one line and potentially hiding
+//     a real same-line `//` comment from being recognized as a comment at all - e.g. a regex
+//     literal with a stray quote, a quoted replacement string, and a real `//` comment, all on
+//     one line: the comment survives stripComments untouched, and an import-shaped mention
+//     inside it then false-positives importsPackage.
+//   - False negative (myusage-4xu.136): the same same-line desync can also swallow REAL code,
+//     not just fail to recognize a comment. A stray quote in a regex literal, followed by a
+//     genuine string literal, followed by a real import - all on one line - can pair the phantom
+//     string against the genuine string's own opening quote, exposing the genuine string's
+//     unprotected remainder (and the real import after it) to being misread as a `//` line
+//     comment and deleted outright, so importsPackage misses a real import that is actually
+//     present. (myusage-4xu.131's own safety analysis had claimed this class of bug could only
+//     ever cause text to survive that should have been stripped, never a silent false negative -
+//     PR #122's independent reviewer disproved that claim with this exact reproduction.)
+//
+// DECISION (myusage-4xu.135, extended by myusage-4xu.136 to cover this opposite direction too):
+// this gap is deliberately left OPEN, not silently accepted. This is an internal build-time lint
+// helper, not a security boundary, and both directions are currently LATENT - no line in this
+// repo's real tsc dist/ output combines a regex-literal stray quote with same-line quoted content
+// this way. A proportionate general fix requires actual regex-literal tokenization, which this
+// scanner has no concept of at all (see fixtures-guard.ts's copy of this comment for the rejected
+// regex-literal-matching alternative, itself rejected for an unrelated reason - it breaks the
+// division-expression case); myusage-4xu.131's own round-3 review already judged a tokenizer
+// rewrite disproportionate to this script's risk profile, and a narrower same-line-only patch
+// covering both directions above was weighed here and rejected on the same proportionality
+// grounds, not overlooked. Revisit if this scanner ever gains a caller whose real input can
+// produce this shape, or if its risk profile changes (e.g. it starts gating something
+// security-sensitive rather than a build-time lint).
 //
 // The newline restriction costs nothing against real string content (a raw newline inside
 // `"..."`/`'...'` is already a syntax error in real JS), and leaves the backtick branch

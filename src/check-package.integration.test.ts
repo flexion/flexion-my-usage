@@ -199,6 +199,124 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		expect(result.stderr).toMatch(/test or support files in dist\//);
 	});
 
+	it("catches a devDependency import shipped in dist/ under a name/location that dodges the name-based filters (myusage-4xu.119)", async () => {
+		// TEST_OR_SUPPORT (".test."/".fixtures." in the basename) and TEST_OR_SUPPORT_DIR
+		// (__tests__/__mocks__/fixtures directory segments) are both purely name/location
+		// based - neither looks at a file's actual content. dist/config.js below has neither
+		// shape (no ".test."/".fixtures." in its basename, no test-support directory
+		// segment), so both existing filters wave it through clean even though its content
+		// imports "vitest/config" - a real subpath of a package this fixture's own
+		// package.json lists only in devDependencies, never in dependencies. This is the
+		// exact real-world shape that surfaced this bead (myusage-4xu.116:
+		// src/test-fixture-root.ts, before it was renamed/relocated to dodge these same two
+		// filters, imported from "vitest" and would have shipped undetected).
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(
+			`${dir}/dist/config.js`,
+			'import { defineConfig } from "vitest/config";\nexport const config = defineConfig({});\n',
+		);
+		await writeFile(
+			`${dir}/package.json`,
+			JSON.stringify(
+				{
+					name: "check-package-fixture",
+					version: "0.0.0",
+					private: true,
+					bin: "./dist/index.js",
+					files: ["dist"],
+					dependencies: {},
+					devDependencies: { vitest: "5.0.1" },
+				},
+				null,
+				2,
+			),
+		);
+
+		const result = runCheckPackage(dir);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/devDependency/i);
+		expect(result.stderr).toMatch(/move that package to "dependencies"/);
+	});
+
+	it("does not flag a real dependency import - the guard is data-driven from package.json, not a hardcoded package-name list", async () => {
+		// Closes a gap the test above alone leaves open: it proves the guard catches a bad
+		// import, but not that it's genuinely reading package.json's own dependencies/
+		// devDependencies rather than, say, flagging any bare (non-relative, non-`node:`)
+		// specifier regardless of what package.json says. dist/client.js here imports
+		// "undici" - this repo's own real runtime dependency - while the fixture's
+		// package.json also lists an unrelated devDependency (vitest), so a naive
+		// "flag any bare import" implementation would wrongly fail this fixture too.
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(
+			`${dir}/dist/client.js`,
+			'import { request } from "undici";\nexport const client = request;\n',
+		);
+		await writeFile(
+			`${dir}/package.json`,
+			JSON.stringify(
+				{
+					name: "check-package-fixture",
+					version: "0.0.0",
+					private: true,
+					bin: "./dist/index.js",
+					files: ["dist"],
+					dependencies: { undici: "8.10.2" },
+					devDependencies: { vitest: "5.0.1" },
+				},
+				null,
+				2,
+			),
+		);
+
+		const result = runCheckPackage(dir);
+
+		expect(result.status).toBe(0);
+	});
+
+	it('flags a devDependency-only import even when the flagged package is not "vitest" - proves the guard reads package.json, not a fixed package-name list', async () => {
+		// A hardcoded `const devOnlyPackages = ["vitest"]` in check-package.mjs would pass
+		// every fixture above without ever reading package.json: each fixture above that
+		// expects exit 1 happens to import "vitest", and the one negative-control fixture
+		// above (the "does not flag a real dependency import" test) imports "undici" - a name
+		// that hardcoded list was never going to flag either way, so it can't tell a real
+		// package.json-driven implementation apart from a hardcoded one. This fixture closes
+		// that gap: package.json's only devDependency is "undici" (no "vitest" anywhere, and
+		// no "dependencies" key at all), and dist/ imports "undici" - so only an
+		// implementation that actually reads package.json's own devDependencies can flag it.
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(
+			`${dir}/dist/client.js`,
+			'import { request } from "undici";\nexport const client = request;\n',
+		);
+		await writeFile(
+			`${dir}/package.json`,
+			JSON.stringify(
+				{
+					name: "check-package-fixture",
+					version: "0.0.0",
+					private: true,
+					bin: "./dist/index.js",
+					files: ["dist"],
+					devDependencies: { undici: "1.0.0" },
+				},
+				null,
+				2,
+			),
+		);
+
+		const result = runCheckPackage(dir);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/devDependency/i);
+	});
+
 	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {
 		// npm never packs .DS_Store - it is on npm's own always-ignored list, regardless of
 		// `files`. Reproduced directly against the pre-fix script: with a correct

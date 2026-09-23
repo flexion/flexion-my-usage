@@ -119,3 +119,79 @@ export function packListCoversDist(
 		expectedDistCount,
 	};
 }
+
+// --- devDependency-only content scan (bead myusage-4xu.119) ---------------------------------
+//
+// filterTestOrSupportPaths and its helpers above are purely name/location based: a basename
+// pattern or a directory segment, never a file's actual content. That leaves a gap a
+// differently-named file placed directly under src/ walks straight through. myusage-4xu.116
+// found this for real: src/test-fixture-root.ts (before it was renamed/relocated to dodge these
+// same filters) imported from "vitest" - a real devDependency, never listed in this package's
+// own `dependencies` - and would have shipped that import into dist/ with check:package still
+// exiting 0, simply because its name held neither ".test." nor ".fixtures." and it didn't sit
+// under a __tests__/__mocks__/fixtures directory. The three functions below close that gap by
+// looking at what a file actually imports, compared against what package.json's own
+// `dependencies` say the published package may depend on at runtime - data-driven from the real
+// package.json, not a hardcoded package-name list.
+
+/** The subset of package.json this module reads: just enough to tell a devDependency-only
+ * package apart from one the published package also lists as a real runtime dependency. Both
+ * keys are optional, matching real package.json shapes that omit either or both - most of this
+ * repo's own integration fixtures write neither key at all. */
+export type PackageJsonDeps = {
+	dependencies?: Record<string, string>;
+	devDependencies?: Record<string, string>;
+};
+
+/** Package names listed in `devDependencies` but not also in `dependencies` - the packages a
+ * built file must never depend on, since nothing in `dependencies` promises they'll be
+ * installed for a consumer of the published package. A missing `dependencies` and/or
+ * `devDependencies` key is treated as empty, not an error - most of this repo's own dist/
+ * fixtures (and plenty of real package.json files) omit one or both keys entirely, so `pkg.x ??
+ * {}` must not throw on either being absent. Order matches `Object.keys(devDependencies)`'s own
+ * insertion order, not sorted or otherwise reshaped. */
+export function devDependencyOnlyPackages(pkg: PackageJsonDeps): string[] {
+	const dependencies = pkg.dependencies ?? {};
+	const devDependencies = pkg.devDependencies ?? {};
+	return Object.keys(devDependencies).filter((name) => !(name in dependencies));
+}
+
+function escapeRegExpLiteral(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// One anchored regex per package name - not a tokenizer or a JS parser. This repo already has a
+// tokenizing-scan precedent (myusage-4xu.115's pricing-cache doc-comment scan) for input where a
+// single regex genuinely cannot express the match; that precedent does not apply here, since a
+// single anchored regex is sufficient for this shape of input: a quoted specifier immediately
+// following `from`, a bare `import`, `import(`, or `require(`, where the specifier is exactly the
+// package name or the package name plus a `/subpath` - anchored so "vite" never matches a
+// "vitest/config" specifier just because it's a literal prefix of "vitest".
+const IMPORT_CONTEXT = String.raw`(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)`;
+
+/** Whether `content` imports or requires `packageName` - a default import, a named import, a
+ * bare side-effect import, `require(...)`, a dynamic `import(...)`, or a subpath import (e.g.
+ * `"vitest/config"` counts as importing `"vitest"`, since the built file depends on the
+ * `vitest` package at runtime either way). A plain mention of the package name inside a string
+ * literal that isn't shaped like an import/require specifier does not count: the match is
+ * anchored to a quoted specifier directly after one of the import/require keywords above, never
+ * a bare substring search. This is a textual regex scan, not a parser, so it has no concept of
+ * "comment" - text that happens to look like an import (e.g. `// import "vitest"` inside a
+ * comment) still matches. */
+export function importsPackage(content: string, packageName: string): boolean {
+	const escaped = escapeRegExpLiteral(packageName);
+	const pattern = new RegExp(
+		`${IMPORT_CONTEXT}(['"])${escaped}(?:/[^'"]*)?\\1`,
+	);
+	return pattern.test(content);
+}
+
+/** The subset of `devOnlyPackages` that `content` actually imports - what check-package.mjs
+ * reports as offenders for one file, instead of every devDependency-only package in
+ * package.json regardless of whether this particular file references it. */
+export function findDevOnlyImports(
+	content: string,
+	devOnlyPackages: string[],
+): string[] {
+	return devOnlyPackages.filter((name) => importsPackage(content, name));
+}

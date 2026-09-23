@@ -12,7 +12,10 @@
 // real `npm pack --dry-run`.
 import { describe, expect, it } from "vitest";
 import {
+	devDependencyOnlyPackages,
 	filterTestOrSupportPaths,
+	findDevOnlyImports,
+	importsPackage,
 	isUnderDir,
 	packListCoversDist,
 } from "../scripts/package-rules.js";
@@ -238,5 +241,154 @@ describe("packListCoversDist: the pack list must be able to fail the vacuity che
 		// packListCoversDist needs no special-cased branch for an empty dist/ - the plain
 		// count comparison already returns true for 0 >= 0, at zero implementation cost.
 		expect(packListCoversDist([], []).covered).toBe(true);
+	});
+});
+
+// bead myusage-4xu.119: TEST_OR_SUPPORT and TEST_OR_SUPPORT_DIR above are purely name/location
+// based. A differently-named file placed directly under src/ that imports a devDependency (e.g.
+// vitest) ships that import into dist/ undetected - neither filter above ever looks at a file's
+// CONTENT. This was surfaced for real during myusage-4xu.116: src/test-fixture-root.ts (before
+// it was renamed/relocated to dodge the name-based filters) imported from "vitest" and would
+// have shipped that devDependency import into dist/ with check:package still exiting 0.
+//
+// devDependencyOnlyPackages, importsPackage and findDevOnlyImports below are the content-based
+// detector that closes that gap: package.json's real dependencies/devDependencies decide which
+// package names are devDependency-only, and a single anchored regex per candidate name (see
+// package-rules.ts) decides whether a given file's content actually imports one of them.
+describe("devDependencyOnlyPackages: package.json packages listed only in devDependencies, not also in dependencies", () => {
+	it("returns a package present in devDependencies but absent from dependencies", () => {
+		const pkg = {
+			dependencies: { undici: "8.10.2" },
+			devDependencies: { vitest: "5.0.1", tsx: "4.23.15" },
+		};
+
+		expect(devDependencyOnlyPackages(pkg)).toEqual(["vitest", "tsx"]);
+	});
+
+	it("excludes a package listed in both dependencies and devDependencies", () => {
+		// A package the published package's own runtime code also needs is not
+		// devDependency-ONLY - importing it into dist/ is not evidence of a missing real
+		// dependency, since `dependencies` already covers it.
+		const pkg = {
+			dependencies: { shared: "1.0.0" },
+			devDependencies: { shared: "1.0.0", vitest: "5.0.1" },
+		};
+
+		expect(devDependencyOnlyPackages(pkg)).toEqual(["vitest"]);
+	});
+
+	it("returns an empty array when package.json has no devDependencies", () => {
+		expect(
+			devDependencyOnlyPackages({ dependencies: { undici: "8.10.2" } }),
+		).toEqual([]);
+	});
+
+	it("returns a devDependencies-only package when package.json has no dependencies key at all", () => {
+		// Realistic, not a corner case: most of src/check-package.integration.test.ts's fixture
+		// package.json files (writeFixturePackageJson) write neither `dependencies` nor
+		// `devDependencies` at all, and a real package.json commonly omits `dependencies` when
+		// it has none. `pkg.dependencies ?? {}` must not throw when `dependencies` is absent - a
+		// careless `name in undefined` would.
+		expect(
+			devDependencyOnlyPackages({ devDependencies: { vitest: "5.0.1" } }),
+		).toEqual(["vitest"]);
+	});
+});
+
+describe("importsPackage: content-based import/require detection for one package name", () => {
+	it("matches a default import", () => {
+		expect(importsPackage('import x from "vitest";', "vitest")).toBe(true);
+	});
+
+	it("matches a named import", () => {
+		expect(importsPackage('import { describe } from "vitest";', "vitest")).toBe(
+			true,
+		);
+	});
+
+	it("matches a bare side-effect import", () => {
+		expect(importsPackage('import "vitest";', "vitest")).toBe(true);
+	});
+
+	it("matches a require() call", () => {
+		expect(importsPackage('const v = require("vitest");', "vitest")).toBe(true);
+	});
+
+	it("matches a dynamic import()", () => {
+		expect(importsPackage('const v = await import("vitest");', "vitest")).toBe(
+			true,
+		);
+	});
+
+	it("matches a subpath import as importing the base package", () => {
+		// vitest/config is a real subpath of the vitest package (this repo's own
+		// vitest.config.ts imports it) - importing the subpath still means the built file
+		// depends on vitest at runtime, so it must count as importing "vitest".
+		expect(
+			importsPackage('import { defineConfig } from "vitest/config";', "vitest"),
+		).toBe(true);
+	});
+
+	it("does not match a plain string literal that merely contains the package name as a substring", () => {
+		// A naive substring search would false-positive on this line. Nothing here is an
+		// import or require specifier - it's a plain string value.
+		expect(
+			importsPackage(
+				'const msg = "please run vitest to check this";',
+				"vitest",
+			),
+		).toBe(false);
+	});
+
+	it("does not match a different real package whose name is a literal prefix of the imported specifier", () => {
+		// "vite" and "vitest" are both real, separately-published packages, and "vite" is a
+		// literal prefix of "vitest" - importing "vitest/config" must not be reported as
+		// importing "vite". Pins the anchored (not prefix-substring) matching this needs.
+		expect(
+			importsPackage('import { defineConfig } from "vitest/config";', "vite"),
+		).toBe(false);
+	});
+
+	it("does not match when the package is not referenced at all", () => {
+		expect(importsPackage('import { z } from "zod";', "vitest")).toBe(false);
+	});
+
+	it("treats a regex metacharacter in the package name literally, not as a wildcard", () => {
+		// "socket.io" contains a literal dot. Without escaping it first, that dot compiles
+		// into a regex wildcard matching any character, so a specifier like "socketXio" would
+		// wrongly match too. Every other importsPackage test in this file uses a package name
+		// with no regex metacharacters, so this is the only one that would fail if the
+		// escaping helper were deleted outright.
+		expect(importsPackage('import x from "socketXio";', "socket.io")).toBe(
+			false,
+		);
+	});
+
+	it("still matches the real package name once its metacharacter is escaped correctly", () => {
+		expect(importsPackage('import x from "socket.io";', "socket.io")).toBe(
+			true,
+		);
+	});
+
+	it("matches a single-quoted specifier, not just double-quoted", () => {
+		// tsc/Biome always emit double-quoted specifiers in this repo's own dist/ output, so
+		// every other fixture here uses double quotes; single-quote support is carried
+		// defensively for content this repo doesn't itself produce.
+		expect(importsPackage("import x from 'vitest';", "vitest")).toBe(true);
+	});
+});
+
+describe("findDevOnlyImports: the subset of candidate packages a file's content actually imports", () => {
+	it("returns only the packages the content actually imports, dropping the rest", () => {
+		const content =
+			'import { defineConfig } from "vitest/config";\nimport "undici";\n';
+
+		expect(findDevOnlyImports(content, ["vitest", "tsx"])).toEqual(["vitest"]);
+	});
+
+	it("returns an empty array when none of the candidate packages are imported", () => {
+		const content = 'import "undici";\n';
+
+		expect(findDevOnlyImports(content, ["vitest", "tsx"])).toEqual([]);
 	});
 });

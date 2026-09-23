@@ -24,13 +24,19 @@
 //      pass just because npm always packs the `bin` target regardless of `files`.
 //   3. No test or support file exists anywhere under dist/.
 //   4. No test or support file appears in the `npm pack --dry-run` file list.
+//   5. No dist/ file that isn't already caught by #3 imports a package.json `devDependencies`-
+//      only package (bead myusage-4xu.119) - a name/location-based filter alone misses a
+//      differently-named file under src/ that imports a devDependency, the exact real-world gap
+//      myusage-4xu.116 found (see package-rules.ts's own header comment on this).
 
 import { execSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	DIST,
+	devDependencyOnlyPackages,
 	filterTestOrSupportPaths,
+	findDevOnlyImports,
 	packListCoversDist,
 } from "./package-rules.ts";
 
@@ -97,6 +103,29 @@ if (inPack.length > 0) {
 	);
 }
 
+// bead myusage-4xu.119: data-driven from the real package.json, not a hardcoded package-name
+// list. Only scans files the test-or-support checks above didn't already flag - a file already
+// caught by #3 (inDist) fails for that reason regardless of what it imports.
+const pkg = JSON.parse(readFileSync("package.json", "utf8"));
+const devOnlyPackages = devDependencyOnlyPackages(pkg);
+let hasDevDependencyProblem = false;
+if (devOnlyPackages.length > 0) {
+	const contentCheckFiles = distFiles.filter((path) => !inDist.includes(path));
+	const offenders = [];
+	for (const path of contentCheckFiles) {
+		const content = readFileSync(path, "utf8");
+		const found = findDevOnlyImports(content, devOnlyPackages);
+		if (found.length > 0) offenders.push(`  ${path}: ${found.join(", ")}`);
+	}
+	if (offenders.length > 0) {
+		hasDevDependencyProblem = true;
+		problems.push(
+			`devDependency-only package(s) imported in ${DIST}/ (not listed in "dependencies"):`,
+			...offenders,
+		);
+	}
+}
+
 if (problems.length > 0) {
 	console.error("check-package: FAILED");
 	for (const line of problems) console.error(line);
@@ -107,9 +136,14 @@ if (problems.length > 0) {
 			"If dist/ is stale from an older build, delete it and rebuild.",
 		].join(" "),
 	);
+	if (hasDevDependencyProblem) {
+		console.error(
+			'A devDependency import in dist/ means either move that package to "dependencies" (it is a real runtime dependency) or stop importing it from that file.',
+		);
+	}
 	process.exit(1);
 }
 
 console.log(
-	`check-package: OK - ${distFiles.length} files in ${DIST}/, ${packed.length} in the npm package, none are test or support files`,
+	`check-package: OK - ${distFiles.length} files in ${DIST}/, ${packed.length} in the npm package, none are test or support files or import a devDependency-only package`,
 );

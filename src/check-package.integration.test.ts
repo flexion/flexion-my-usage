@@ -317,6 +317,55 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		expect(result.stderr).toMatch(/devDependency/i);
 	});
 
+	it("does not re-flag a devDependency import in a file already caught by the test-or-support name check (myusage-4xu.129)", async () => {
+		// distFiles.filter((path) => !inDist.includes(path)) (the comment right above it in
+		// check-package.mjs: "Only scans files the test-or-support checks above didn't already
+		// flag") is a deliberate dedup: a file check #3 (filterTestOrSupportPaths) already
+		// flagged must not also be re-flagged by check #5's devDependency content scan, or the
+		// same file would be reported twice for two different reasons. dist/x.test.js below is
+		// built to trip both checks at once - its basename matches TEST_OR_SUPPORT (".test."),
+		// so check #3 flags it, AND its content imports "vitest/config", a real subpath of this
+		// fixture's only devDependency-only package, so check #5 would flag it too if it weren't
+		// excluded from that scan's candidate list. Reproduced by hand against this exact
+		// fixture with the dedup filter replaced by plain `distFiles`: dist/x.test.js then
+		// appeared a second time, under "devDependency-only package(s) imported in dist/" as
+		// well as "test or support files in dist/".
+		//
+		// This fixture's `files: ["dist"]` also puts dist/x.test.js in the npm pack list, so it
+		// separately appears once more under "test or support files in the npm package:" - that
+		// is check #4 (a different, legitimate check on a different input list), not the check
+		// #3/#5 dedup this test pins, so it is not asserted against here.
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(
+			`${dir}/dist/x.test.js`,
+			'import { defineConfig } from "vitest/config";\nexport const x = defineConfig({});\n',
+		);
+		await writeFile(
+			`${dir}/package.json`,
+			JSON.stringify(
+				{
+					name: "check-package-fixture",
+					version: "0.0.0",
+					private: true,
+					bin: "./dist/index.js",
+					files: ["dist"],
+					dependencies: {},
+					devDependencies: { vitest: "5.0.1" },
+				},
+				null,
+				2,
+			),
+		);
+
+		const result = runCheckPackage(dir);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/test or support files in dist\//);
+		expect(result.stderr).not.toMatch(/devDependency-only package\(s\)/);
+	});
+
 	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {
 		// npm never packs .DS_Store - it is on npm's own always-ignored list, regardless of
 		// `files`. Reproduced directly against the pre-fix script: with a correct

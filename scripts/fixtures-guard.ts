@@ -69,11 +69,10 @@ export interface SourceFile {
  * (`[^"\\\n]` / `[^'\\\n]`, not just `[^"\\]` / `[^'\\]`) - myusage-4xu.131: this scanner has no
  * concept of a regex literal, so an unescaped quote inside one (e.g. a regex literal like `/"/g`)
  * reads as OPENING a phantom string. Confining the two quote branches to a single line stops
- * that phantom string from surviving past the line's
- * end - forcing the match to fail and fall through - rather than eating everything up to the
- * next real quote, however far away (including a real `//` comment on a LATER line, which would
- * then desync string/comment parity for the rest of the file: PR #119's independent reviewer
- * reproduced exactly that against the unfixed regex).
+ * that phantom string from surviving past the line's end - forcing the match to fail and fall
+ * through - rather than eating everything up to the next real quote, however far away (including
+ * a real `//` comment on a LATER line, which would then desync string/comment parity for the rest
+ * of the file: PR #119's independent reviewer reproduced exactly that against the unfixed regex).
  *
  * This closes the CROSS-LINE case only. It does NOT close the SAME-LINE case, in either
  * direction:

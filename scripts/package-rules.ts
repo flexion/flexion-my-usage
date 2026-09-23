@@ -194,7 +194,8 @@ function escapeRegExpLiteral(value: string): string {
 // reviewer flagged that this scanner's only production caller, scripts/check-package.mjs, only
 // ever scans dist/, which is tsc ESM output ("module": "NodeNext") - `require(...)` cannot occur
 // there, so the alternative and its dedicated test were dead code, a test existing only to cover
-// it. Re-add it, with a test, if this scanner ever gains a caller that reads CommonJS output.
+// it. Re-add it, with a test, if this scanner ever gains a caller that reads CommonJS output, or
+// if any src/ file ever uses `createRequire` to call `require()` from within ESM.
 const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 
 // A comment-and-string-aware regex scan (myusage-4xu.121) - the same technique
@@ -235,7 +236,10 @@ function stripComments(content: string): string {
  * a template-literal dynamic import with no interpolation (e.g. `` import(`vitest`) ``) matches
  * too - not `'` (myusage-4xu.126 dropped single-quote support: tsc/Biome always emit
  * double-quoted specifiers in this repo's own dist/ output, the only real input this scanner
- * ever sees, so a single-quoted specifier cannot occur there either). */
+ * ever sees, so a single-quoted specifier cannot occur there either). This is asymmetric with
+ * `from\s*` above (myusage-4xu.124) on purpose: minifier resilience is kept as forward-looking
+ * robustness in case a bundler/minifier is ever introduced, whereas single-quote support was
+ * dropped because no comparable future trigger exists for it. */
 export function importsPackage(content: string, packageName: string): boolean {
 	const escaped = escapeRegExpLiteral(packageName);
 	const pattern = new RegExp(

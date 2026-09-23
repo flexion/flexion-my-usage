@@ -132,6 +132,46 @@ describe("stripComments", () => {
 
 		expect(stripComments(source)).toBe(source);
 	});
+
+	it("does not treat a // -shaped line inside a multi-line template literal as a real comment, if the backtick branch's content class is ever restricted to a single line (myusage-4xu.143)", () => {
+		// STRING_OR_COMMENT's own doc comment above says the backtick branch is deliberately left
+		// unrestricted (`[^\`\\]`, which already includes `\n`) "since real template literals do
+		// legitimately span multiple lines" - but nothing in this suite failed if that stopped
+		// being true. This pins it directly against stripComments: a template literal spanning
+		// three lines, whose middle line is prefixed with "//" so it reads as a REAL line comment
+		// (and gets deleted) the moment the opening backtick can no longer close across the
+		// newline that currently keeps it part of the string. With the backtick branch
+		// newline-tolerant (current code), the whole three-line span is captured as one string and
+		// returned byte-for-byte unchanged. If the branch is ever narrowed to `[^\`\\\n]`
+		// (mirroring the quote branches' own `[^"\\\n]`/`[^'\\\n]`), the backtick fails to close on
+		// line one, the middle line is parsed fresh instead, and its "//" prefix strips it as a
+		// real comment.
+		const source = [
+			"const t = `line one",
+			'// import { helper } from "./thing.fixtures.js";',
+			"line three`;",
+		].join("\n");
+
+		expect(stripComments(source)).toBe(source);
+	});
+
+	it("does not merge two separate block comments into one, swallowing the real code between them, if the block-comment branch's content class is ever mutated to greedy (myusage-4xu.143)", () => {
+		// STRING_OR_COMMENT's block-comment branch is /\*[\s\S]*?\*\//: lazy (`*?`), so each
+		// /* ... */ pair matches independently. Nothing in this suite failed if that `?` were ever
+		// dropped - a greedy [\s\S]* would instead match from the FIRST "/*" all the way to the
+		// LAST "*/" in the remaining content, merging two separate block comments (and everything
+		// real between them) into a single deleted match. With the lazy form (current code), each
+		// comment is stripped on its own and the real code between them survives untouched.
+		const source = [
+			"/* first comment */",
+			'const real = "keep me";',
+			"/* second comment */",
+		].join("\n");
+
+		expect(stripComments(source)).toBe(
+			["", 'const real = "keep me";', ""].join("\n"),
+		);
+	});
 });
 
 describe("extractReferences", () => {

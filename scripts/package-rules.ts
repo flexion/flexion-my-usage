@@ -161,20 +161,23 @@ function escapeRegExpLiteral(value: string): string {
 }
 
 // One anchored regex per package name - not a tokenizer or a JS parser. This repo already has a
-// tokenizing-scan precedent (myusage-4xu.115's pricing-cache doc-comment scan), and the RED-stage
-// reviewer for this bead named it as a cautionary example here, not a pattern to repeat: a single
-// regex is sufficient for this shape of input. Matches a quoted specifier immediately following
-// `from`, a bare `import`, `import(`, or `require(`, where the specifier is exactly the package
-// name or the package name plus a `/subpath` - anchored so "vite" never matches a "vitest/config"
-// specifier just because it's a literal prefix of "vitest".
+// tokenizing-scan precedent (myusage-4xu.115's pricing-cache doc-comment scan) for input where a
+// single regex genuinely cannot express the match; that precedent does not apply here, since a
+// single anchored regex is sufficient for this shape of input: a quoted specifier immediately
+// following `from`, a bare `import`, `import(`, or `require(`, where the specifier is exactly the
+// package name or the package name plus a `/subpath` - anchored so "vite" never matches a
+// "vitest/config" specifier just because it's a literal prefix of "vitest".
 const IMPORT_CONTEXT = String.raw`(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)`;
 
 /** Whether `content` imports or requires `packageName` - a default import, a named import, a
  * bare side-effect import, `require(...)`, a dynamic `import(...)`, or a subpath import (e.g.
  * `"vitest/config"` counts as importing `"vitest"`, since the built file depends on the
- * `vitest` package at runtime either way). A plain mention of the package name inside an
- * unrelated string or comment does not count: the match is anchored to a quoted specifier
- * directly after one of the import/require keywords above, never a bare substring search. */
+ * `vitest` package at runtime either way). A plain mention of the package name inside a string
+ * literal that isn't shaped like an import/require specifier does not count: the match is
+ * anchored to a quoted specifier directly after one of the import/require keywords above, never
+ * a bare substring search. This is a textual regex scan, not a parser, so it has no concept of
+ * "comment" - text that happens to look like an import (e.g. `// import "vitest"` inside a
+ * comment) still matches. */
 export function importsPackage(content: string, packageName: string): boolean {
 	const escaped = escapeRegExpLiteral(packageName);
 	const pattern = new RegExp(

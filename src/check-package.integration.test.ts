@@ -238,6 +238,7 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/devDependency/i);
+		expect(result.stderr).toMatch(/move that package to "dependencies"/);
 	});
 
 	it("does not flag a real dependency import - the guard is data-driven from package.json, not a hardcoded package-name list", async () => {
@@ -275,6 +276,45 @@ describe("scripts/check-package.mjs against a real dist/ and a real npm pack", (
 		const result = runCheckPackage(dir);
 
 		expect(result.status).toBe(0);
+	});
+
+	it('flags a devDependency-only import even when the flagged package is not "vitest" - proves the guard reads package.json, not a fixed package-name list', async () => {
+		// A hardcoded `const devOnlyPackages = ["vitest"]` in check-package.mjs would pass
+		// every fixture above without ever reading package.json: each fixture above that
+		// expects exit 1 happens to import "vitest", and the one negative-control fixture
+		// above (the "does not flag a real dependency import" test) imports "undici" - a name
+		// that hardcoded list was never going to flag either way, so it can't tell a real
+		// package.json-driven implementation apart from a hardcoded one. This fixture closes
+		// that gap: package.json's only devDependency is "undici" (no "vitest" anywhere, and
+		// no "dependencies" key at all), and dist/ imports "undici" - so only an
+		// implementation that actually reads package.json's own devDependencies can flag it.
+		const dir = await fixtureDir();
+		await mkdir(`${dir}/dist`, { recursive: true });
+		await writeFile(`${dir}/dist/index.js`, "console.log(1);\n");
+		await writeFile(
+			`${dir}/dist/client.js`,
+			'import { request } from "undici";\nexport const client = request;\n',
+		);
+		await writeFile(
+			`${dir}/package.json`,
+			JSON.stringify(
+				{
+					name: "check-package-fixture",
+					version: "0.0.0",
+					private: true,
+					bin: "./dist/index.js",
+					files: ["dist"],
+					devDependencies: { undici: "1.0.0" },
+				},
+				null,
+				2,
+			),
+		);
+
+		const result = runCheckPackage(dir);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/devDependency/i);
 	});
 
 	it("does not false-accuse `files` of excluding dist/ over a stray dist/.DS_Store", async () => {

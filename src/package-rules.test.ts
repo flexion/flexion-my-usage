@@ -352,6 +352,30 @@ describe("importsPackage: content-based import/require detection for one package
 	it("does not match when the package is not referenced at all", () => {
 		expect(importsPackage('import { z } from "zod";', "vitest")).toBe(false);
 	});
+
+	it("treats a regex metacharacter in the package name literally, not as a wildcard", () => {
+		// "socket.io" contains a literal dot. Without escaping it first, that dot compiles
+		// into a regex wildcard matching any character, so a specifier like "socketXio" would
+		// wrongly match too. Every other importsPackage test in this file uses a package name
+		// with no regex metacharacters, so this is the only one that would fail if the
+		// escaping helper were deleted outright.
+		expect(importsPackage('import x from "socketXio";', "socket.io")).toBe(
+			false,
+		);
+	});
+
+	it("still matches the real package name once its metacharacter is escaped correctly", () => {
+		expect(importsPackage('import x from "socket.io";', "socket.io")).toBe(
+			true,
+		);
+	});
+
+	it("matches a single-quoted specifier, not just double-quoted", () => {
+		// tsc/Biome always emit double-quoted specifiers in this repo's own dist/ output, so
+		// every other fixture here uses double quotes; single-quote support is carried
+		// defensively for content this repo doesn't itself produce.
+		expect(importsPackage("import x from 'vitest';", "vitest")).toBe(true);
+	});
 });
 
 describe("findDevOnlyImports: the subset of candidate packages a file's content actually imports", () => {

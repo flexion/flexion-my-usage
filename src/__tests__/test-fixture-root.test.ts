@@ -5,7 +5,7 @@
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { makeFixtureDir } from "./test-fixture-root.js";
 
 /** A real scratch directory under the OS temp dir, removed after each test. */
@@ -64,5 +64,40 @@ describe("makeFixtureDir", () => {
 		});
 
 		await expect(cleanup()).resolves.toBeUndefined();
+	});
+});
+
+describe("makeFixtureDir default registerCleanup binding", () => {
+	// All 6 real call sites call makeFixtureDir(fixtureParent) with no second argument, at
+	// module/describe-body scope (during vitest's collection phase) - not from inside an it().
+	// That's what makes registerCleanup's default resolve to a real, running afterAll hook
+	// scoped to that suite, rather than a no-op registered too late to matter. The suite above
+	// only ever exercises the default's *type* (registerCleanup gets called); it never proves
+	// the hook actually fires. This suite calls makeFixtureDir the same way the real call sites
+	// do - inside the inner describe's body, not inside its it() - so vitest runs the inner
+	// describe's afterAll (registered by makeFixtureDir itself) to completion before moving on
+	// to the outer describe's next sibling test. If the default silently stopped being afterAll
+	// (or stopped running at all), the fixture root would still exist by the time the assertion
+	// below runs, and this test would fail.
+	const fixtureParent = join(
+		tmpdir(),
+		`my-usage-test-fixture-root-default-${process.pid}/`,
+	);
+	let fixtureRoot: string;
+
+	afterAll(async () => {
+		await rm(fixtureParent, { recursive: true, force: true });
+	});
+
+	describe("an inner suite using the real default", () => {
+		const fixtureDirDefault = makeFixtureDir(fixtureParent);
+
+		it("creates a fixture dir via the default afterAll cleanup", async () => {
+			fixtureRoot = dirname(await fixtureDirDefault());
+		});
+	});
+
+	it("has already removed the inner suite's fixture root by the time this runs", async () => {
+		await expect(stat(fixtureRoot)).rejects.toMatchObject({ code: "ENOENT" });
 	});
 });

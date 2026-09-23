@@ -100,6 +100,25 @@ describe("stripComments", () => {
 
 		expect(stripComments(source)).toBe("const r = a / b; ");
 	});
+
+	it("preserves a genuine string literal on the line after a regex literal with an unescaped quote character, byte-for-byte (myusage-4xu.137)", () => {
+		// PR #122's independent correctness reviewer found: PRE-fix (before the [^"\n]/[^'\n]
+		// newline restriction landed), stripComments on a regex literal followed by a genuine
+		// string literal on the NEXT line corrupted real string CONTENT, not just a comment's
+		// survival - the phantom string opened by the regex literal's stray quote paired against
+		// the real string's own opening quote, then the real string's now-unprotected remainder
+		// (containing "//") was misread as a `//` line comment and deleted. REPRODUCED directly
+		// against the pre-fix regex (`[^"\\]` with no `\n` exclusion): it truncated the second
+		// line to `const url = "http:` here, silently destroying `//example.com";`. PR #122 fixed
+		// this (the newline-confinement stops the phantom string from ever reaching the real
+		// string's opening quote as a false partner), but nothing pinned it - this is that pin.
+		const source = [
+			'const r = /"/;',
+			'const url = "http://example.com";',
+		].join("\n");
+
+		expect(stripComments(source)).toBe(source);
+	});
 });
 
 describe("extractReferences", () => {

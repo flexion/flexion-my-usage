@@ -458,6 +458,25 @@ describe("importsPackage: content-based import/require detection for one package
 			),
 		).toBe(true);
 	});
+
+	it("matches a whitespace-free 'from\"pkg\"' specifier, as a minifier would emit it (myusage-4xu.124)", () => {
+		// IMPORT_CONTEXT required \bfrom\s+ (at least one whitespace char), so a minified
+		// specifier with no space between "from" and the quote slipped through undetected.
+		// Irrelevant to today's tsc-only, unminified build, but would matter if a bundler or
+		// minifier is ever introduced into the publish pipeline.
+		expect(importsPackage('import{describe}from"vitest";', "vitest")).toBe(
+			true,
+		);
+	});
+
+	it("matches a template-literal dynamic import specifier", () => {
+		// import(`vitest`) - a dynamic import whose specifier is a template literal with no
+		// interpolation - was missed entirely, since the specifier-quote capture group only
+		// recognized ' and ", never a backtick.
+		expect(
+			importsPackage("const v = await import(`vitest`);", "vitest"),
+		).toBe(true);
+	});
 });
 
 describe("findDevOnlyImports: the subset of candidate packages a file's content actually imports", () => {

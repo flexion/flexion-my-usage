@@ -16,43 +16,23 @@
 // own behavior, which is orthogonal to whether the clean step ran) - see
 // scripts/package-rules.ts's tests for the same call on the build-vs-guard split.
 //
-// The fixture root is allocated per-run via `mkdtemp` (bead myusage-5vf), mirroring the fix for
-// the identical race in src/check-package.integration.test.ts (bead myusage-4xu.114 - see that
-// file's header comment for the full writeup, including why `mkdtemp` beats a process.pid
-// namespace). A single fixed FIXTURE_BASE, shared by every process that runs this file against
-// the same checkout, let one process's afterAll `rm` of that shared directory delete another
-// concurrent process's still-in-flight fixtures mid-test - reproduced directly under concurrent
-// `yarn vitest run` load before this fix.
+// The fixture root is allocated per-run via `mkdtemp` (bead myusage-5vf) - see
+// src/__tests__/test-fixture-root.ts for the canonical writeup of the cross-process race this avoids.
 import { spawnSync } from "node:child_process";
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { makeFixtureDir } from "./__tests__/test-fixture-root.js";
 
 const SCRIPT = fileURLToPath(
 	new URL("../scripts/clean-dist.mjs", import.meta.url),
 );
 
-// Fixed parent directory, shared by every process that runs this file against this checkout.
-// Never removed directly - only the per-run directory allocated inside it (see fixtureDir
-// below) is ever passed to `rm`.
 const FIXTURE_PARENT = fileURLToPath(
 	new URL("../node_modules/.cache/my-usage-tests/clean-dist/", import.meta.url),
 );
 
-let fixtureRoot: string | undefined;
-
-afterAll(async () => {
-	if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
-});
-
-/** A fresh, isolated fixture directory under node_modules/.cache/, removed after the run. */
-async function fixtureDir(): Promise<string> {
-	if (!fixtureRoot) {
-		await mkdir(FIXTURE_PARENT, { recursive: true });
-		fixtureRoot = await mkdtemp(`${FIXTURE_PARENT}run-`);
-	}
-	return mkdtemp(`${fixtureRoot}/t-`);
-}
+const fixtureDir = makeFixtureDir(FIXTURE_PARENT);
 
 function runCleanDist(cwd: string) {
 	return spawnSync(process.execPath, [SCRIPT], { cwd, encoding: "utf8" });

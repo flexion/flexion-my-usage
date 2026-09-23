@@ -14,17 +14,13 @@
 // Fixtures live under node_modules/.cache/ (never the real home or the system temp dir) and are
 // removed afterward, the same convention every other integration test in this repo uses.
 //
-// The fixture root is allocated per-run via `mkdtemp` (bead myusage-5vf), mirroring the fix for
-// the identical race in src/check-package.integration.test.ts (bead myusage-4xu.114 - see that
-// file's header comment for the full writeup, including why `mkdtemp` beats a process.pid
-// namespace). A single fixed FIXTURE_BASE, shared by every process that runs this file against
-// the same checkout, let one process's afterAll `rm` of that shared directory delete another
-// concurrent process's still-in-flight fixtures mid-test - reproduced directly under concurrent
-// `yarn vitest run` load before this fix.
+// The fixture root is allocated per-run via `mkdtemp` (bead myusage-5vf) - see
+// src/__tests__/test-fixture-root.ts for the canonical writeup of the cross-process race this avoids.
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { afterAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { makeFixtureDir } from "./__tests__/test-fixture-root.js";
 
 const SCRIPT = fileURLToPath(
 	new URL("../scripts/check-fixtures-guard.mjs", import.meta.url),
@@ -32,9 +28,6 @@ const SCRIPT = fileURLToPath(
 
 const TSX = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 
-// Fixed parent directory, shared by every process that runs this file against this checkout.
-// Never removed directly - only the per-run directory allocated inside it (see fixtureDir
-// below) is ever passed to `rm`.
 const FIXTURE_PARENT = fileURLToPath(
 	new URL(
 		"../node_modules/.cache/my-usage-tests/check-fixtures-guard/",
@@ -42,20 +35,7 @@ const FIXTURE_PARENT = fileURLToPath(
 	),
 );
 
-let fixtureRoot: string | undefined;
-
-afterAll(async () => {
-	if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
-});
-
-/** A fresh, isolated fixture directory under node_modules/.cache/, removed after the run. */
-async function fixtureDir(): Promise<string> {
-	if (!fixtureRoot) {
-		await mkdir(FIXTURE_PARENT, { recursive: true });
-		fixtureRoot = await mkdtemp(`${FIXTURE_PARENT}run-`);
-	}
-	return mkdtemp(`${fixtureRoot}/t-`);
-}
+const fixtureDir = makeFixtureDir(FIXTURE_PARENT);
 
 function runCheckFixturesGuard(cwd: string) {
 	return spawnSync(TSX, [SCRIPT], { cwd, encoding: "utf8" });

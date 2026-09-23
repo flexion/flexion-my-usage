@@ -5,12 +5,12 @@
 // model-id fallback tests were copied at b652aaad4a8100e8e0e8b27ce4c9e6bf4aa51465, where the
 // older entries carry the same rates). Only the fields the pricing code reads are kept; keys
 // and rates are unmodified. Tests that need a doctored entry spread a real one and say so.
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { connect as netConnect } from "node:net";
 import { fileURLToPath } from "node:url";
-import { afterAll, vi } from "vitest";
+import { vi } from "vitest";
+import { makeFixtureDir } from "./__tests__/test-fixture-root.js";
 import type { NormalizedUsageRow } from "./sources/types.js";
 
 export const LITELLM_URL =
@@ -644,22 +644,11 @@ const CACHE_BASE = fileURLToPath(
 
 /**
  * Registers cleanup and returns a factory for fresh, isolated cache directories.
- * Each caller gets its own root, so test files running in parallel never share a directory.
- * Call once at describe/module scope.
+ * Each caller gets its own root (see src/__tests__/test-fixture-root.ts), so test files running in
+ * parallel never share a directory - including the other test files (the opencode reader
+ * tests) that call this same function against this same shared CACHE_BASE. Call once at
+ * describe/module scope.
  */
 export function useTempCacheDirs(): () => Promise<string> {
-	let root: string | undefined;
-	afterAll(async () => {
-		if (root) await rm(root, { recursive: true, force: true });
-		// The shared parent is left in place, empty. Other test files (the opencode reader
-		// tests use the same directory) may still be creating sandboxes under it, and
-		// removing it from here races with them.
-	});
-	return async () => {
-		if (!root) {
-			await mkdir(CACHE_BASE, { recursive: true });
-			root = await mkdtemp(`${CACHE_BASE}run-`);
-		}
-		return mkdtemp(`${root}/t-`);
-	};
+	return makeFixtureDir(CACHE_BASE);
 }

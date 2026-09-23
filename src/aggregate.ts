@@ -1,22 +1,9 @@
 import type { PricedRow } from "./pricing.js";
+import type { DayBucket } from "./usage-payload.js";
 
-export interface ModelTotals {
-	provider: string;
-	model: string;
-	notionalCost: number;
-	tokens: number;
-	/** Tokens billed at cost 0 because no published rate covered them. */
-	unpricedTokens: number;
-}
-
-export interface DayBucket {
-	/** Local calendar day, YYYY-MM-DD. */
-	day: string;
-	byModel: Record<string, ModelTotals>;
-	notionalCost: number;
-	tokens: number;
-	responses: number;
-}
+// The bucket shapes live in usage-payload.ts, the data route's wire contract, so the page and
+// this aggregation share one definition. Re-exported so existing importers keep one entry point.
+export type { DayBucket, ModelTotals } from "./usage-payload.js";
 
 export interface UnpricedModel {
 	provider: string;

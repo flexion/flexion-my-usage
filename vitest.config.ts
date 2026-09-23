@@ -240,6 +240,9 @@ const config = {
 			// `yarn lint`).
 			include: requireCoveragePattern([
 				"src/**/*.ts",
+				// The React page's components (myusage-4xu.118). Same gate, same 100%: src/web/
+				// is application code like the rest of src/, just built by vite instead of tsc.
+				"src/**/*.tsx",
 				"scripts/package-rules.ts",
 				"scripts/critical-persisted.ts",
 				"scripts/fixtures-guard.ts",
@@ -302,6 +305,7 @@ const config = {
 				// data transform, move that logic into a covered pure module instead.
 				"src/index.ts", // composition root: wires real deps into runCli (src/cli.ts), touches process
 				"src/sources/types.ts", // type-only: compiles to no runtime code
+				"src/web/main.tsx", // browser composition root: mounts App with the real fetch, touches document
 			]),
 
 			// The "text" entry is a [name, options] tuple, not the bare string, to pin

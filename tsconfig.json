@@ -20,5 +20,7 @@
 		"outDir": "dist",
 		"types": ["node"]
 	},
-	"include": ["src"]
+	"include": ["src"],
+	// The browser half has its own config (DOM + JSX, no Node types) - see src/web/tsconfig.json.
+	"exclude": ["src/web"]
 }

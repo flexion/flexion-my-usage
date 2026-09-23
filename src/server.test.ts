@@ -1,5 +1,5 @@
 // Proves the dashboard server two ways: `reply` and `isLoopbackHost` as pure routing decisions
-// over plain strings, and `startServer` as a real node:http server on a real ephemeral port,
+// over plain values, and `startServer` as a real node:http server on a real ephemeral port,
 // driven by real clients (global fetch, and node:http's own client where a test needs to forge
 // or omit the Host header, which fetch won't let it do). Nothing mocks createServer.
 import { EventEmitter } from "node:events";
@@ -7,11 +7,15 @@ import { request as httpRequest } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	CONTENT_SECURITY_POLICY,
+	DATA_PATH,
+	INDEX_PATH,
 	isLoopbackHost,
 	LOOPBACK_HOST,
 	portInUseMessage,
 	type RunningServer,
 	reply,
+	type Site,
 	startServer,
 } from "./server.js";
 
@@ -19,7 +23,30 @@ import {
 const HTML =
 	"<!doctype html><html><body><h1>my-usage</h1><p>café</p></body></html>";
 const HTML_BYTES = String(Buffer.byteLength(HTML));
+const SCRIPT = "console.log('é');";
+const DATA = '{"days":[],"skipped":{"skipped":0,"total":0}}';
+const SITE: Site = {
+	files: new Map([
+		[
+			INDEX_PATH,
+			{ contentType: "text/html; charset=utf-8", body: Buffer.from(HTML) },
+		],
+		[
+			"/assets/index-abc123.js",
+			{
+				contentType: "text/javascript; charset=utf-8",
+				body: Buffer.from(SCRIPT),
+			},
+		],
+	]),
+	data: DATA,
+};
 const OK_HOST = "127.0.0.1:1";
+
+/** A reply's body as text, for readable assertions. */
+function text(r: { body: Buffer }): string {
+	return r.body.toString("utf8");
+}
 
 describe("isLoopbackHost", () => {
 	it.each([
@@ -46,34 +73,83 @@ describe("isLoopbackHost", () => {
 });
 
 describe("reply", () => {
-	it("GET / from a loopback Host -> 200, the html, with no-store and nosniff", () => {
-		expect(reply("GET", "/", OK_HOST, HTML)).toEqual({
-			status: 200,
-			headers: {
-				"content-type": "text/html; charset=utf-8",
-				"content-length": HTML_BYTES,
-				"cache-control": "no-store",
-				"x-content-type-options": "nosniff",
-			},
-			body: HTML,
+	it("GET / from a loopback Host -> 200, index.html, no-store, nosniff and the CSP", () => {
+		const r = reply("GET", "/", OK_HOST, SITE);
+		expect(r.status).toBe(200);
+		expect(r.headers).toEqual({
+			"content-type": "text/html; charset=utf-8",
+			"content-length": HTML_BYTES,
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+			"content-security-policy": CONTENT_SECURITY_POLICY,
 		});
+		expect(text(r)).toBe(HTML);
 	});
 
-	it("HEAD / -> the GET's headers (full content-length) and an empty body", () => {
-		const head = reply("HEAD", "/", OK_HOST, HTML);
-		expect(head.status).toBe(200);
-		expect(head.headers).toEqual(reply("GET", "/", OK_HOST, HTML).headers);
-		expect(head.body).toBe("");
+	it("the CSP only allows this origin, and never allows inline or remote script", () => {
+		expect(CONTENT_SECURITY_POLICY).toContain("default-src 'self'");
+		expect(CONTENT_SECURITY_POLICY).not.toMatch(/script-src/);
+		expect(CONTENT_SECURITY_POLICY).not.toMatch(/https?:|\*/);
 	});
 
-	it("a query string on / is ignored", () => {
-		expect(reply("GET", "/?measure=tokens", OK_HOST, HTML).status).toBe(200);
+	it("GET /index.html is the same file as /", () => {
+		expect(reply("GET", INDEX_PATH, OK_HOST, SITE)).toEqual(
+			reply("GET", "/", OK_HOST, SITE),
+		);
+	});
+
+	it("a built asset -> 200 with its own content type, byte length, and no CSP", () => {
+		const r = reply("GET", "/assets/index-abc123.js", OK_HOST, SITE);
+		expect(r.status).toBe(200);
+		expect(r.headers).toEqual({
+			"content-type": "text/javascript; charset=utf-8",
+			"content-length": String(Buffer.byteLength(SCRIPT)),
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+		});
+		expect(text(r)).toBe(SCRIPT);
+	});
+
+	it("the data route -> 200 JSON, the payload verbatim", () => {
+		const r = reply("GET", DATA_PATH, OK_HOST, SITE);
+		expect(DATA_PATH).toBe("/api/usage.json");
+		expect(r.status).toBe(200);
+		expect(r.headers["content-type"]).toBe("application/json; charset=utf-8");
+		expect(r.headers["content-length"]).toBe(String(Buffer.byteLength(DATA)));
+		expect(r.headers["cache-control"]).toBe("no-store");
+		expect(r.headers["content-security-policy"]).toBeUndefined();
+		expect(text(r)).toBe(DATA);
+	});
+
+	it("HEAD -> the GET's headers (full content-length) and an empty body, on every route", () => {
+		for (const path of ["/", "/assets/index-abc123.js", DATA_PATH]) {
+			const head = reply("HEAD", path, OK_HOST, SITE);
+			expect(head.status, path).toBe(200);
+			expect(head.headers, path).toEqual(
+				reply("GET", path, OK_HOST, SITE).headers,
+			);
+			expect(head.body.length, path).toBe(0);
+		}
+	});
+
+	it("a query string is ignored on every route", () => {
+		expect(text(reply("GET", "/?measure=tokens", OK_HOST, SITE))).toBe(HTML);
+		expect(text(reply("GET", `${DATA_PATH}?t=1`, OK_HOST, SITE))).toBe(DATA);
+		expect(
+			reply("GET", "/assets/index-abc123.js?v=2", OK_HOST, SITE).status,
+		).toBe(200);
 	});
 
 	it.each([
-		"/index.html",
 		"/favicon.ico",
 		"/x",
+		"/assets/",
+		"/assets/missing.js",
+		"/assets/../index.html",
+		"/assets/index-abc123.js/",
+		"/api/usage",
+		"/api/usage.json/",
+		"/INDEX.HTML",
 		"//",
 		"///",
 		"//:",
@@ -86,38 +162,43 @@ describe("reply", () => {
 		"/x/../",
 		"",
 	])("GET %s -> 404 text, never a throw", (url) => {
-		expect(reply("GET", url, OK_HOST, HTML)).toEqual({
+		const notFound = Buffer.from("Not found\n");
+		expect(reply("GET", url, OK_HOST, SITE)).toEqual({
 			status: 404,
 			headers: {
 				"content-type": "text/plain; charset=utf-8",
-				"content-length": String(Buffer.byteLength("Not found\n")),
+				"content-length": String(notFound.length),
 				"cache-control": "no-store",
 			},
-			body: "Not found\n",
+			body: notFound,
 		});
 	});
 
 	it.each(["POST", "PUT", "DELETE", "OPTIONS", "PATCH"])(
 		"%s / -> 405 with the allowed methods named",
 		(method) => {
-			const r = reply(method, "/", OK_HOST, HTML);
+			const r = reply(method, "/", OK_HOST, SITE);
 			expect(r.status).toBe(405);
 			expect(r.headers.allow).toBe("GET, HEAD");
 			expect(r.headers["content-type"]).toBe("text/plain; charset=utf-8");
-			expect(r.body).toBe("Method not allowed\n");
+			expect(text(r)).toBe("Method not allowed\n");
 		},
 	);
 
 	it("an off-origin Host -> 403, before the method or path is even looked at", () => {
-		const r = reply("POST", "/nowhere", "evil.example:54321", HTML);
+		const r = reply("POST", "/nowhere", "evil.example:54321", SITE);
 		expect(r.status).toBe(403);
 		expect(r.headers["content-type"]).toBe("text/plain; charset=utf-8");
 		expect(r.headers.allow).toBeUndefined();
-		expect(r.body).toContain("localhost");
+		expect(text(r)).toContain("localhost");
+	});
+
+	it("an off-origin Host can't read the data route either", () => {
+		expect(reply("GET", DATA_PATH, "evil.example", SITE).status).toBe(403);
 	});
 
 	it("a missing Host -> 403", () => {
-		expect(reply("GET", "/", undefined, HTML).status).toBe(403);
+		expect(reply("GET", "/", undefined, SITE).status).toBe(403);
 	});
 });
 
@@ -176,7 +257,7 @@ describe("startServer", () => {
 		port = 0,
 		signals: EventEmitter = new EventEmitter(),
 	): Promise<RunningServer> {
-		const server = await startServer(HTML, {
+		const server = await startServer(SITE, {
 			host: LOOPBACK_HOST,
 			port,
 			signals,
@@ -204,7 +285,7 @@ describe("startServer", () => {
 		expect(server.url).toBe(`http://127.0.0.1:${server.port}/`);
 	});
 
-	it("serves the html to a real fetch of the reported URL", async () => {
+	it("serves the page, an asset and the data to a real fetch of the reported URL", async () => {
 		const server = await start();
 		const res = await fetch(server.url);
 		expect(res.status).toBe(200);
@@ -212,7 +293,17 @@ describe("startServer", () => {
 		expect(res.headers.get("content-length")).toBe(HTML_BYTES);
 		expect(res.headers.get("cache-control")).toBe("no-store");
 		expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+		expect(res.headers.get("content-security-policy")).toBe(
+			CONTENT_SECURITY_POLICY,
+		);
 		expect(await res.text()).toBe(HTML);
+		const asset = await fetch(new URL("/assets/index-abc123.js", server.url));
+		expect(asset.headers.get("content-type")).toBe(
+			"text/javascript; charset=utf-8",
+		);
+		expect(await asset.text()).toBe(SCRIPT);
+		const data = await fetch(new URL(DATA_PATH, server.url));
+		expect(await data.json()).toEqual(JSON.parse(DATA));
 	});
 
 	it("answers HEAD with the headers and no body", async () => {
@@ -310,7 +401,7 @@ describe("startServer", () => {
 	it("surfaces any other listen failure unchanged", async () => {
 		// 192.0.2.1 is RFC 5737 documentation space - never assigned to a local interface.
 		await expect(
-			startServer(HTML, {
+			startServer(SITE, {
 				host: "192.0.2.1",
 				port: 0,
 				signals: new EventEmitter(),

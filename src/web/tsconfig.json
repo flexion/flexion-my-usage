@@ -1,0 +1,25 @@
+{
+	// The browser half (myusage-4xu.118): the React page vite builds into dist/web/. Its own
+	// config because it needs what the Node half must not have - DOM types and JSX - and must not
+	// have what the Node half needs (Node's types, NodeNext resolution). tsconfig.json and
+	// tsconfig.build.json both exclude this directory for the same reason, so the Node build never
+	// emits a .tsx file into dist/. `yarn typecheck` runs this config alongside the other two.
+	//
+	// The one file outside this directory the page imports is src/usage-payload.ts, the data
+	// route's wire contract - deliberately import-free so pulling it in drags nothing Node-only
+	// into this program.
+	"extends": "../../tsconfig.json",
+	"compilerOptions": {
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
+		"jsx": "react-jsx",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"types": ["vite/client"],
+		"noEmit": true,
+		// src/, not this directory: the page imports ../usage-payload.ts, and tsc rejects any
+		// program file outside rootDir even under noEmit.
+		"rootDir": ".."
+	},
+	"include": ["."],
+	"exclude": []
+}

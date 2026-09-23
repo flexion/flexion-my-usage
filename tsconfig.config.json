@@ -25,6 +25,9 @@
 	// decision logic scripts/check-renovate-engines.mjs wires to real fs I/O (package.json's
 	// engines.node and renovate.json's @types/node packageRules entry), listed here so a type
 	// error in it fails `yarn typecheck` instead of only surfacing at `yarn lint` runtime.
+	//
+	// vite.web.config.ts (bead myusage-4xu.118) builds the React page; listed for the same reason
+	// vitest.config.ts is.
 	"extends": "./tsconfig.json",
 	"compilerOptions": {
 		"rootDir": ".",
@@ -32,6 +35,7 @@
 	},
 	"include": [
 		"vitest.config.ts",
+		"vite.web.config.ts",
 		"scripts/package-rules.ts",
 		"scripts/critical-persisted.ts",
 		"scripts/fixtures-guard.ts",

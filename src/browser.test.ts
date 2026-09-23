@@ -76,15 +76,22 @@ describe("spawnDetached", () => {
 			marker,
 		]);
 		// spawnDetached resolves on the spawn event, before the child has done anything; the
-		// detached, unref'd child then finishes on its own. Poll for its side effect.
-		const deadline = Date.now() + 10_000;
+		// detached, unref'd child then finishes on its own. Poll for its side effect. The
+		// deadline is generous (30s) because this resolves as soon as the marker file
+		// appears - it doesn't normally wait anywhere near that long - but under several
+		// concurrent `yarn test` suites competing for the scheduler, a tight budget can miss
+		// (myusage-4xu.117). The explicit 35s test timeout below (vitest's own default is
+		// 5s) matters just as much as the deadline itself: without raising it, vitest kills
+		// the test at 5s regardless of how generous this loop's own deadline is, so the two
+		// numbers have to move together.
+		const deadline = Date.now() + 30_000;
 		let content: string | undefined;
 		while (content === undefined && Date.now() < deadline) {
 			content = await readFile(marker, "utf8").catch(() => undefined);
 			if (content === undefined) await new Promise((r) => setTimeout(r, 20));
 		}
 		expect(content).toBe("spawned");
-	});
+	}, 35_000);
 
 	it("rejects with ENOENT when the command does not exist, instead of crashing the process", async () => {
 		const missing = `my-usage-no-such-opener-${randomBytes(6).toString("hex")}`;

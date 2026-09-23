@@ -1104,6 +1104,11 @@ describe("opencodeSource.read", () => {
 		// that case fell into the pre-existing, generic "Unsupported opencode database: no
 		// message table" error - still loud, but silent on session_message/V2 specifically,
 		// unlike the empty-table case above.
+		//
+		// Three distinct rows, same reasoning as the 4xu.92 count test below: a single-row
+		// fixture can't tell a real count from a mutation that clamps or hardcodes it to 1, so
+		// this pins the exact count for this path too (readRows's missing-table branch), not
+		// just the read() empty-table branch the 4xu.92 test covers.
 		it("names session_message and V2 when the message table is missing entirely but session_message has real V2 usage", async () => {
 			const dir = await sandbox();
 			const path = join(dir, "opencode.db");
@@ -1112,12 +1117,25 @@ describe("opencodeSource.read", () => {
 			db.exec("PRAGMA journal_mode = WAL");
 			db.exec(V2_ONLY_DDL);
 			insertSessionMessage(db, "sm_fixture_a", "assistant", v2AssistantData());
+			insertSessionMessage(db, "sm_fixture_b", "assistant", v2AssistantData());
+			insertSessionMessage(db, "sm_fixture_c", "assistant", v2AssistantData());
 			db.close();
 
-			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(
-				/session_message/,
-			);
-			await expect(opencodeSource.read(handleFor(path))).rejects.toThrow(/V2/);
+			let caught: unknown;
+			try {
+				await opencodeSource.read(handleFor(path));
+			} catch (error) {
+				caught = error;
+			}
+
+			expect(caught).toBeInstanceOf(Error);
+			const message = (caught as Error).message;
+			// Pins readRows's missing-table branch specifically (distinct from the 4xu.92
+			// empty-table test below, which pins read()'s branch) as well as the exact count.
+			expect(message).toMatch(/no "message" table/);
+			expect(message).toMatch(/session_message/);
+			expect(message).toMatch(/found 3 assistant usage row\(s\)/);
+			expect(message).toMatch(/V2/);
 		});
 
 		// myusage-4xu.92: every other fixture in this file uses exactly one V2 row, so a mutation
@@ -1435,6 +1453,16 @@ describe("opencodeSource.read", () => {
 		const message = (caught as Error).message;
 		expect(message).toMatch(/Unsupported opencode database/);
 		expect(message).toContain(path);
+		// This fixture has neither "message" nor "session_message" - readRows's
+		// v2AssistantUsageCount is genuinely 0, so the generic error above must be the one
+		// that fires. Without this, a guard mutated from `> 0` to `>= 0` would route this same
+		// fixture into the V2-specific "found 0 assistant usage row(s) in session_message"
+		// message instead - which still matches /Unsupported opencode database/ and contains
+		// path, so the assertions above alone can't tell the two error shapes apart. Asserting
+		// on "assistant usage row" (rather than "session_message") pins the V2-specific
+		// branch itself without forbidding a future generic error from ever mentioning the
+		// table name.
+		expect(message).not.toMatch(/assistant usage row/);
 	});
 
 	describe("WAL and read-only safety", () => {

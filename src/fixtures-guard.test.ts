@@ -64,12 +64,12 @@ describe("stripComments", () => {
 		// file's test of the same name, in src/package-rules.test.ts) - this is the twin fix PR
 		// #119's independent reviewer asked for in both places. This scanner has no concept of a
 		// regex literal - it only tracks bare `"`, `'`, and backtick characters - so a regex
-		// literal containing an unescaped quote (this repo's own src/render.ts:43:
-		// `.replace(/"/g, "&quot;")`) contains a bare `"` inside `/.../` that the scanner reads
-		// as OPENING a phantom string. That flips string/comment parity for the rest of the
-		// file, so the real `//` comment on the next line is no longer recognized as a comment
-		// at all and survives untouched. REPRODUCED directly against the current regex: the
-		// comment line below is not removed from the output.
+		// literal containing an unescaped quote (e.g. `/"/g`, as used below) contains a bare `"`
+		// inside `/.../` that the scanner reads as OPENING a phantom string. That flips
+		// string/comment parity for the rest of the file, so the real `//` comment on the next
+		// line is no longer recognized as a comment at all and survives untouched. REPRODUCED
+		// directly against the current regex: the comment line below is not removed from the
+		// output.
 		//
 		// myusage-4xu.139: this file used to also carry a checkFixturesGuard-level test of the
 		// same name/shape (the "actual consequence a real caller hits" version). Deleted as fully

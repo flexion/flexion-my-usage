@@ -210,10 +210,9 @@ const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 // The `"..."` and `'...'` branches exclude a literal newline from their content class
 // (myusage-4xu.131, the identical gap and identical fix fixtures-guard.ts's own
 // STRING_OR_COMMENT applies - see that file's copy of this comment for the full reasoning): an
-// unescaped quote inside a regex literal (e.g. this repo's own src/render.ts:43:
-// `.replace(/"/g, "&quot;")`) otherwise reads as opening a phantom string that would otherwise
-// swallow everything up to the next real quote, however far away, desyncing string/comment
-// parity for the rest of the file.
+// unescaped quote inside a regex literal (e.g. a regex literal like `/"/g`) otherwise reads as
+// opening a phantom string that would otherwise swallow everything up to the next real quote,
+// however far away, desyncing string/comment parity for the rest of the file.
 //
 // Confining the quote branches to one line bounds that corruption to the CROSS-LINE case only.
 // It does NOT close the SAME-LINE case, in either direction:
@@ -237,10 +236,12 @@ const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 // DECISION (myusage-4xu.135, extended by myusage-4xu.136 to cover this opposite direction too):
 // this gap is deliberately left OPEN, not silently accepted. This is an internal build-time lint
 // helper, not a security boundary, and both directions are currently LATENT: a stray quote in a
-// regex literal does occur in the bundled dist/web output, but no line there ALSO adds the third
-// element either direction needs - a trailing same-line `//` comment (135) or a trailing
-// same-line real string plus import (136) - to actually trigger the desync. A proportionate
-// general fix requires actual regex-literal
+// regex literal does occur in the bundled dist/web output (Vite's minified React bundle), but the
+// tsc-emitted dist/*.js files this scanner also reads (dist/*.js and dist/sources/*.js) contain no
+// regex literal with an embedded quote character at all - confirmed by grepping a real `yarn
+// build`'s output, not assumed. Neither dist output adds the third element either direction needs
+// - a trailing same-line `//` comment (135) or a trailing same-line real string plus import (136)
+// - to actually trigger the desync. A proportionate general fix requires actual regex-literal
 // tokenization, which this scanner has no concept of at all (see fixtures-guard.ts's copy of this
 // comment for the rejected regex-literal-matching alternative, itself rejected for an unrelated
 // reason - it breaks the division-expression case); myusage-4xu.131's own round-3 review already

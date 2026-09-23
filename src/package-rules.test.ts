@@ -446,14 +446,13 @@ describe("importsPackage: content-based import detection for one package name", 
 	it("does not false-positive on a comment following a regex literal with an unescaped quote character, when the comment is on a later line (myusage-4xu.131)", () => {
 		// PR #119's independent reviewer found: stripComments (this file's own STRING_OR_COMMENT
 		// scan) has no concept of a regex literal - it only tracks bare `"`, `'`, and backtick
-		// characters. A regex literal containing an unescaped quote (e.g. this repo's own
-		// src/render.ts:43: `.replace(/"/g, "&quot;")`) contains a bare `"` inside `/.../` that
-		// the scanner reads as OPENING a phantom string. That flips string/comment parity for
-		// the rest of the file, so a later real `//` comment is no longer recognized as a
-		// comment at all - it survives stripComments untouched, and an import-shaped mention
-		// inside it (this repo's own comment-heavy style, same as the myusage-4xu.121 tests
-		// above) then false-positives here. REPRODUCED directly against the current regex: it
-		// returns true for this exact input.
+		// characters. A regex literal containing an unescaped quote (e.g. `/"/g`, as used below)
+		// contains a bare `"` inside `/.../` that the scanner reads as OPENING a phantom string.
+		// That flips string/comment parity for the rest of the file, so a later real `//` comment
+		// is no longer recognized as a comment at all - it survives stripComments untouched, and
+		// an import-shaped mention inside it (this repo's own comment-heavy style, same as the
+		// myusage-4xu.121 tests above) then false-positives here. REPRODUCED directly against the
+		// current regex: it returns true for this exact input.
 		expect(
 			importsPackage(
 				[

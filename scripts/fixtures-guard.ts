@@ -67,9 +67,9 @@ export interface SourceFile {
  *
  * The `"..."` and `'...'` branches exclude a literal newline from their content class
  * (`[^"\\\n]` / `[^'\\\n]`, not just `[^"\\]` / `[^'\\]`) - myusage-4xu.131: this scanner has no
- * concept of a regex literal, so an unescaped quote inside one (this repo's own
- * src/render.ts:43: `.replace(/"/g, "&quot;")`) reads as OPENING a phantom string. Confining the
- * two quote branches to a single line stops that phantom string from surviving past the line's
+ * concept of a regex literal, so an unescaped quote inside one (e.g. a regex literal like `/"/g`)
+ * reads as OPENING a phantom string. Confining the two quote branches to a single line stops
+ * that phantom string from surviving past the line's
  * end - forcing the match to fail and fall through - rather than eating everything up to the
  * next real quote, however far away (including a real `//` comment on a LATER line, which would
  * then desync string/comment parity for the rest of the file: PR #119's independent reviewer
@@ -95,12 +95,12 @@ export interface SourceFile {
  *
  * DECISION (myusage-4xu.135, extended by myusage-4xu.136 to cover this opposite direction too):
  * this gap is deliberately left OPEN, not silently accepted. This is an internal build-time lint
- * helper, not a security boundary, and both directions are currently LATENT: this repo's own
- * src/render.ts:43 does combine a regex-literal stray quote with same-line quoted content
- * (`.replace(/"/g, "&quot;")`), but no real line ALSO adds the third element either direction
- * needs - a trailing same-line `//` comment (135) or a trailing same-line real string plus import
- * (136) - to actually trigger the desync. A proportionate general fix requires actual regex-literal
- * tokenization, which this
+ * helper, not a security boundary, and both directions are currently LATENT: no line in this
+ * scanner's real input (the src/ tree check-fixtures-guard.mjs walks) currently combines a
+ * regex-literal stray quote with same-line quoted content the way `.replace(/"/g, "&quot;")`
+ * would - and even a line that did would still need a trailing same-line `//` comment (135) or a
+ * trailing same-line real string plus import (136) to actually trigger the desync. A
+ * proportionate general fix requires actual regex-literal tokenization, which this
  * scanner has no concept of at all (see the rejected regex-literal-matching alternative below,
  * itself rejected for an unrelated reason - it breaks the division-expression case); myusage-
  * 4xu.131's own round-3 review already judged a tokenizer rewrite disproportionate to this

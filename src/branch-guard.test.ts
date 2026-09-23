@@ -129,6 +129,15 @@ describe("maskNonCode", () => {
 		);
 	});
 
+	it("does not desync string parity across lines when a regex literal's unescaped quote follows a keyword the lookbehind heuristic doesn't recognize, single-quote variant (myusage-4xu.141: PR #124's independent test-quality reviewer found that the myusage-4xu.138 fix above changed TWO character classes on the same STRING_TEMPLATE_COMMENT_OR_REGEX line - the double-quote branch's content class (`[^\"\\\\]` to `[^\"\\\\\\n]`, pinned by the test above) AND the single-quote branch's content class (`[^'\\\\]` to `[^'\\\\\\n]`) - but only the double-quote half had a fixture; reverting ONLY the single-quote branch back to `[^'\\\\]` left the whole suite green, since regex alternation branches are invisible to v8's branch coverage. Mirrors the test above exactly, substituting `'` for `\"` throughout: `return /'/g;`'s lookbehind sees \"n\" (from \"return\", skipping the space) immediately before the regex's opening `/`, a word character, so the regex-literal alternative does NOT match here, and the scan advances to the bare `'` right after it - which the (un-reverted) single-quote branch's own newline exclusion stops from opening a phantom string that would otherwise run on to the next real `'` two lines down, swallowing the real `if (real) {}` line in between, exactly as the double-quote case above documents)", () => {
+		const source = ["return /'/g;", "if (real) {}", "const s = 'text';"].join(
+			"\n",
+		);
+		expect(maskNonCode(source)).toBe(
+			["return /'/g;", "if (real) {}", "const s =       ;"].join("\n"),
+		);
+	});
+
 	it("does not mask an ordinary division expression following an identifier - a known, documented heuristic limitation (see this file's header) (myusage-4xu.66: the prior fixture, \"total / 2\", had only one / on the line, so it could never reach the closing-/ half of the regex-literal alternative at all, let alone the value-ending lookbehind guard it claimed to test - it passed whether or not that guard existed. This fixture has two /s, so it actually exercises the guard: also asserting checkBranchGuard sees the real && between the two divisions proves the guard, not just maskNonCode's no-op output, is doing the work)", () => {
 		const source = "export const x = (a / b) && (c / d);\n";
 		expect(maskNonCode(source)).toBe(source);

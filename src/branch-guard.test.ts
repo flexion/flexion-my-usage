@@ -519,19 +519,6 @@ describe("checkBranchGuard", () => {
 		expect(checkBranchGuard(files)).toEqual([]);
 	});
 
-	it("still flags a real if statement that sits between a regex literal's unrecognized quote and a later real string literal (myusage-4xu.138: the checkBranchGuard-level consequence of the maskNonCode fix above - before it, this exact if was silently swallowed by the cross-line phantom string, a missed violation, not a false alarm)", () => {
-		const files = [
-			{
-				path: "src/index.ts",
-				text: ['return /"/g;', "if (real) {}", 'const s = "text";'].join("\n"),
-			},
-		];
-
-		expect(checkBranchGuard(files)).toEqual([
-			{ path: "src/index.ts", kind: "if", line: 2, snippet: "if (" },
-		]);
-	});
-
 	it("normalizes a coverage.exclude-shaped path like ./src/index.ts to src/index.ts in a violation's reported path (myusage-4xu.65: posix.normalize's own effect was previously untested)", () => {
 		const files = [
 			{

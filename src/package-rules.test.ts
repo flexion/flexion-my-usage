@@ -293,6 +293,29 @@ describe("devDependencyOnlyPackages: package.json packages listed only in devDep
 			devDependencyOnlyPackages({ devDependencies: { vitest: "5.0.1" } }),
 		).toEqual(["vitest"]);
 	});
+
+	it("flags a devDependencies-only package literally named 'constructor', 'toString', or 'hasOwnProperty' (myusage-4xu.122)", () => {
+		// `name in dependencies` on a plain JSON.parse'd object returns true for these three
+		// names even when `dependencies` is empty and never actually declares them - they exist
+		// on every plain object via Object.prototype. Reproduced against the pre-fix `in`
+		// check: all three were silently treated as "already a real dependency" and dropped
+		// from the result, even though "constructor" is a real, valid, published npm package
+		// name that could genuinely be devDependencies-only.
+		const pkg = {
+			dependencies: {},
+			devDependencies: {
+				constructor: "1.0.0",
+				toString: "2.0.0",
+				hasOwnProperty: "3.0.0",
+			},
+		};
+
+		expect(devDependencyOnlyPackages(pkg)).toEqual([
+			"constructor",
+			"toString",
+			"hasOwnProperty",
+		]);
+	});
 });
 
 describe("importsPackage: content-based import/require detection for one package name", () => {

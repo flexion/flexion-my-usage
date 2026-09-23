@@ -311,6 +311,21 @@ function readRows(
 			)
 			.get();
 		if (!hasMessageTable) {
+			// The `message` table can be missing entirely, not just empty (myusage-4xu.94) -
+			// countV2AssistantUsageRows only reads sqlite_master and session_message, so it's
+			// safe to call here even though message doesn't exist. When session_message
+			// carries real V2 usage, name it explicitly instead of falling back to the
+			// generic "no message table" error below, matching the empty-table case's error
+			// (the v2AssistantUsageCount > 0 && rows.length === 0 branch in read()).
+			const v2AssistantUsageCount = countV2AssistantUsageRows(db);
+			if (v2AssistantUsageCount > 0) {
+				throw new Error(
+					`Unsupported opencode database: no "message" table in ${path}, but found ` +
+						`${v2AssistantUsageCount} assistant usage row(s) in "session_message" - ` +
+						"this database looks like it was written by opencode's V2 (2.0-preview) " +
+						"schema, which this reader does not read yet.",
+				);
+			}
 			throw new Error(
 				`Unsupported opencode database: no "message" table in ${path}`,
 			);

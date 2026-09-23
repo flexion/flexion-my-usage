@@ -251,10 +251,10 @@ describe("packListCoversDist: the pack list must be able to fail the vacuity che
 // it was renamed/relocated to dodge the name-based filters) imported from "vitest" and would
 // have shipped that devDependency import into dist/ with check:package still exiting 0.
 //
-// devDependencyOnlyPackages, importsPackage and findDevOnlyImports below do not exist yet in
-// scripts/package-rules.ts - the import at the top of this file is expected to fail until
-// they're added. That failure is this bead's RED state: it proves the content-based detector
-// does not exist, the same way a missing name-pattern match would prove TEST_OR_SUPPORT's gap.
+// devDependencyOnlyPackages, importsPackage and findDevOnlyImports below are the content-based
+// detector that closes that gap: package.json's real dependencies/devDependencies decide which
+// package names are devDependency-only, and a single anchored regex per candidate name (see
+// package-rules.ts) decides whether a given file's content actually imports one of them.
 describe("devDependencyOnlyPackages: package.json packages listed only in devDependencies, not also in dependencies", () => {
 	it("returns a package present in devDependencies but absent from dependencies", () => {
 		const pkg = {
@@ -282,6 +282,17 @@ describe("devDependencyOnlyPackages: package.json packages listed only in devDep
 			devDependencyOnlyPackages({ dependencies: { undici: "8.10.2" } }),
 		).toEqual([]);
 	});
+
+	it("returns a devDependencies-only package when package.json has no dependencies key at all", () => {
+		// Realistic, not a corner case: most of src/check-package.integration.test.ts's fixture
+		// package.json files (writeFixturePackageJson) write neither `dependencies` nor
+		// `devDependencies` at all, and a real package.json commonly omits `dependencies` when
+		// it has none. `pkg.dependencies ?? {}` must not throw when `dependencies` is absent - a
+		// careless `name in undefined` would.
+		expect(
+			devDependencyOnlyPackages({ devDependencies: { vitest: "5.0.1" } }),
+		).toEqual(["vitest"]);
+	});
 });
 
 describe("importsPackage: content-based import/require detection for one package name", () => {
@@ -290,9 +301,9 @@ describe("importsPackage: content-based import/require detection for one package
 	});
 
 	it("matches a named import", () => {
-		expect(
-			importsPackage('import { describe } from "vitest";', "vitest"),
-		).toBe(true);
+		expect(importsPackage('import { describe } from "vitest";', "vitest")).toBe(
+			true,
+		);
 	});
 
 	it("matches a bare side-effect import", () => {
@@ -300,15 +311,13 @@ describe("importsPackage: content-based import/require detection for one package
 	});
 
 	it("matches a require() call", () => {
-		expect(importsPackage('const v = require("vitest");', "vitest")).toBe(
-			true,
-		);
+		expect(importsPackage('const v = require("vitest");', "vitest")).toBe(true);
 	});
 
 	it("matches a dynamic import()", () => {
-		expect(
-			importsPackage('const v = await import("vitest");', "vitest"),
-		).toBe(true);
+		expect(importsPackage('const v = await import("vitest");', "vitest")).toBe(
+			true,
+		);
 	});
 
 	it("matches a subpath import as importing the base package", () => {
@@ -316,10 +325,7 @@ describe("importsPackage: content-based import/require detection for one package
 		// vitest.config.ts imports it) - importing the subpath still means the built file
 		// depends on vitest at runtime, so it must count as importing "vitest".
 		expect(
-			importsPackage(
-				'import { defineConfig } from "vitest/config";',
-				"vitest",
-			),
+			importsPackage('import { defineConfig } from "vitest/config";', "vitest"),
 		).toBe(true);
 	});
 
@@ -339,10 +345,7 @@ describe("importsPackage: content-based import/require detection for one package
 		// literal prefix of "vitest" - importing "vitest/config" must not be reported as
 		// importing "vite". Pins the anchored (not prefix-substring) matching this needs.
 		expect(
-			importsPackage(
-				'import { defineConfig } from "vitest/config";',
-				"vite",
-			),
+			importsPackage('import { defineConfig } from "vitest/config";', "vite"),
 		).toBe(false);
 	});
 
@@ -356,9 +359,7 @@ describe("findDevOnlyImports: the subset of candidate packages a file's content 
 		const content =
 			'import { defineConfig } from "vitest/config";\nimport "undici";\n';
 
-		expect(findDevOnlyImports(content, ["vitest", "tsx"])).toEqual([
-			"vitest",
-		]);
+		expect(findDevOnlyImports(content, ["vitest", "tsx"])).toEqual(["vitest"]);
 	});
 
 	it("returns an empty array when none of the candidate packages are imported", () => {

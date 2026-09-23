@@ -233,6 +233,19 @@ export interface ReadOptions {
 // type (`string | undefined`) directly: `Set.has` on an unknown-typed set never needs the
 // argument narrowed first, and `.has(undefined)` is simply false since undefined was never
 // added, which is exactly the "no .code at all" case below.
+//
+// EACCES/EPERM here means the data *directory itself* couldn't be enumerated (e.g. a
+// chmod'd-away ~/.local/share/opencode) - deliberately folded into the same "zero databases
+// discovered" bucket as a directory that's simply absent, not distinguished as its own
+// failure (myusage-4xu.102, reviewed against runCli's post-myusage-4xu.97 exit-code
+// contract: nothing discovered stays EXIT_OK with NO_DATA_HINT; only a discovered-but-
+// unreadable *database* can push the run to EXIT_FAILURE). Kept this way on purpose, not by
+// oversight: the same user who runs opencode also runs my-usage, so their own data directory
+// being unreadable to them is operationally implausible, and the one path where a user names
+// a location by hand (OPENCODE_DB) already gets a loud, actionable error above on any stat()
+// failure rather than falling through to this silent-empty-list branch. A chmod-based test
+// for this was tried and deliberately removed - see handleDiscoverError's own test for the
+// pure decision this comment describes.
 const IGNORABLE_DISCOVER_CODES: ReadonlySet<unknown> = new Set([
 	"ENOENT",
 	"ENOTDIR",

@@ -33,10 +33,42 @@ for (const relPath of [PACKAGE_JSON, RENOVATE_JSON]) {
 	}
 }
 
-const pkg = JSON.parse(readFileSync(join(process.cwd(), PACKAGE_JSON), "utf8"));
-const renovate = JSON.parse(
-	readFileSync(join(process.cwd(), RENOVATE_JSON), "utf8"),
-);
+// myusage-4xu.91: without this try/catch, JSON.parse's own SyntaxError surfaced as a raw,
+// uncaught stack trace instead of a clean, explicit refusal like the missing-file check above -
+// still fails closed either way (a raw stack trace also exits non-zero), just with a message that
+// names the actual problem instead of a stack of internal V8/JSON frames. Scoped narrowly to what
+// it actually covers: only JSON.parse's own SyntaxError (a genuinely malformed body, e.g. a stray
+// leading BOM byte JSON.parse rejects but a text editor happily writes - see
+// src/check-renovate-engines.integration.test.ts for the real proof, on both files). readFileSync
+// itself stays outside the try, so an fs-level failure (a directory in place of a file, a
+// permissions error) still raises unchanged - unlike check-branch-guard.mjs's explicit
+// statSync().isDirectory() guard for its own humble-object paths, this driver has no such guard,
+// and adding one is a deliberate non-goal here rather than an oversight: those inputs are out of
+// scope for this bead.
+//
+// For RENOVATE_JSON this closes the gap completely: nothing else touches that file before this
+// call. For PACKAGE_JSON, a syntactically-broken-enough body (e.g. truncated JSON, not just a
+// BOM) is intercepted earlier still: reproduced directly, tsx/Node's own CJS loader reads and
+// validates cwd's package.json during module resolution and crashes with its own raw,
+// Node-internal, Node-version-specific stack trace before this script's first line ever runs -
+// a failure this driver cannot intercept regardless of its own readFileSync/JSON.parse calls.
+// This catch still covers every malformed-but-Node-loader-tolerant case (the BOM example above)
+// that reaches this script's own code.
+function readJson(relPath) {
+	const raw = readFileSync(join(process.cwd(), relPath), "utf8");
+	try {
+		return JSON.parse(raw);
+	} catch (err) {
+		const reason = err instanceof Error ? err.message : String(err);
+		console.error(
+			`check-renovate-engines: ${relPath} is not valid JSON (${reason}); refusing to pass a check that scanned nothing.`,
+		);
+		process.exit(1);
+	}
+}
+
+const pkg = readJson(PACKAGE_JSON);
+const renovate = readJson(RENOVATE_JSON);
 
 const violations = checkRenovateEnginesGuard({
 	enginesNode: pkg.engines?.node,

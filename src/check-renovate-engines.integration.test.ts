@@ -110,7 +110,7 @@ describe("scripts/check-renovate-engines.mjs against a real scratch tree", () =>
 		expect(result.stderr).toMatch(/<22\.16\.0/);
 	});
 
-	it("fails with a clear message, not a raw stack trace, when renovate.json has no @types/node rule", async () => {
+	it("fails with a clear message when renovate.json has no @types/node rule", async () => {
 		const dir = await fixtureDir();
 		await writePackageJson(dir, ">=22.13.0");
 		await writeFile(
@@ -122,6 +122,57 @@ describe("scripts/check-renovate-engines.mjs against a real scratch tree", () =>
 
 		expect(result.status).toBe(1);
 		expect(result.stderr).toMatch(/no packageRules entry/);
+	});
+
+	// myusage-4xu.91: the "no @types/node rule" case above never approaches a raw-stack-trace
+	// path at all - `{packageRules: []}` is well-formed JSON that just fails
+	// checkRenovateEnginesGuard's own missing-rule check. Malformed JSON is the input that
+	// actually WOULD surface a raw SyntaxError stack trace if check-renovate-engines.mjs didn't
+	// catch it (see that script's readJson helper) - these are the tests that genuinely exercise
+	// that path, the same way check-branch-guard.integration.test.ts's own "not a raw stack trace"
+	// tests do for a missing/directory humble-object path.
+	it("fails with a clear message, not a raw stack trace, when renovate.json is not valid JSON", async () => {
+		const dir = await fixtureDir();
+		await writePackageJson(dir, ">=22.13.0");
+		await writeFile(`${dir}/renovate.json`, "{not valid json");
+
+		const result = runCheckRenovateEngines(dir);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(
+			/check-renovate-engines: renovate\.json is not valid JSON/,
+		);
+		expect(result.stderr).not.toMatch(/^\s+at /m);
+		expect(result.stderr).not.toMatch(/Node\.js v\d/);
+	});
+
+	// A BOM-prefixed package.json (a stray leading U+FEFF byte, which some Windows editors write
+	// unprompted) is the malformed-package.json case that DOES reach this script's own readJson:
+	// tsx/Node's own loader tolerates a leading BOM when resolving cwd's package.json for module
+	// resolution, but JSON.parse rejects it outright - reproduced directly against the unfixed
+	// driver, confirming a raw SyntaxError stack trace before this fix, and a clean message after.
+	// A more severely broken package.json (e.g. truncated JSON) is intercepted by Node's own
+	// loader before this script's code ever runs, with its own raw, Node-version-specific stack
+	// trace this driver cannot intercept either way - that case is deliberately not tested here:
+	// pinning that shape would make this suite's outcome depend on which Node version runs it,
+	// the same runtime-independence AGENTS.md's "Coverage must not depend on the runtime" rule
+	// asks for from coverage, applied here to a test that would have the identical problem.
+	it("fails with a clear message, not a raw stack trace, when package.json has a leading BOM that JSON.parse rejects but Node's own loader tolerates", async () => {
+		const dir = await fixtureDir();
+		await writeFile(
+			`${dir}/package.json`,
+			`\ufeff${JSON.stringify({ engines: { node: ">=22.13.0" } })}`,
+		);
+		await writeRenovateJson(dir, "<22.14.0");
+
+		const result = runCheckRenovateEngines(dir);
+
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(
+			/check-renovate-engines: package\.json is not valid JSON/,
+		);
+		expect(result.stderr).not.toMatch(/^\s+at /m);
+		expect(result.stderr).not.toMatch(/Node\.js v\d/);
 	});
 
 	it("fails with a clear error when package.json is missing from the current directory", async () => {

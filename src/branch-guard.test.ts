@@ -532,6 +532,19 @@ describe("checkBranchGuard", () => {
 		]);
 	});
 
+	it("still flags a real if statement that sits between a regex literal's unrecognized quote and a later real string literal, single-quote variant (myusage-4xu.146: PR #126's independent test-quality reviewer found the single-quote half of the myusage-4xu.141 fix was pinned only at the maskNonCode level, not at this checkBranchGuard level like its double-quote sibling above - so a regression that desyncs single-quote parity would only ever surface as a raw masked-string mismatch, never as the missed-violation failure mode this guard exists to prevent. Mirrors the test above exactly, substituting `'` for `\"` throughout: `return /'/g;`'s lookbehind sees \"n\" (from \"return\", skipping the space) immediately before the regex's opening `/`, a word character, so the regex-literal alternative does NOT match here, and the scan advances to the bare `'` right after it - which the single-quote branch's own newline exclusion stops from opening a phantom string that would otherwise run on to the next real `'` two lines down, swallowing the real `if (real) {}` line in between, exactly as the double-quote case above documents)", () => {
+		const files = [
+			{
+				path: "src/index.ts",
+				text: ["return /'/g;", "if (real) {}", "const s = 'text';"].join("\n"),
+			},
+		];
+
+		expect(checkBranchGuard(files)).toEqual([
+			{ path: "src/index.ts", kind: "if", line: 2, snippet: "if (" },
+		]);
+	});
+
 	it("normalizes a coverage.exclude-shaped path like ./src/index.ts to src/index.ts in a violation's reported path (myusage-4xu.65: posix.normalize's own effect was previously untested)", () => {
 		const files = [
 			{

@@ -293,25 +293,66 @@ describe("devDependencyOnlyPackages: package.json packages listed only in devDep
 			devDependencyOnlyPackages({ devDependencies: { vitest: "5.0.1" } }),
 		).toEqual(["vitest"]);
 	});
-});
 
-describe("importsPackage: content-based import/require detection for one package name", () => {
-	it("matches a default import", () => {
-		expect(importsPackage('import x from "vitest";', "vitest")).toBe(true);
+	it("flags a devDependencies-only package literally named 'constructor', 'toString', or 'hasOwnProperty' (myusage-4xu.122)", () => {
+		// `name in dependencies` on a plain JSON.parse'd object returns true for these three
+		// names even when `dependencies` is empty and never actually declares them - they exist
+		// on every plain object via Object.prototype. Reproduced against the pre-fix `in`
+		// check: all three were silently treated as "already a real dependency" and dropped
+		// from the result, even though "constructor" is a real, valid, published npm package
+		// name that could genuinely be devDependencies-only.
+		const pkg = {
+			dependencies: {},
+			devDependencies: {
+				constructor: "1.0.0",
+				toString: "2.0.0",
+				hasOwnProperty: "3.0.0",
+			},
+		};
+
+		expect(devDependencyOnlyPackages(pkg)).toEqual([
+			"constructor",
+			"toString",
+			"hasOwnProperty",
+		]);
 	});
 
-	it("matches a named import", () => {
-		expect(importsPackage('import { describe } from "vitest";', "vitest")).toBe(
-			true,
-		);
+	it("excludes a package listed in peerDependencies, even though it's not in dependencies (myusage-4xu.123)", () => {
+		// The standard peer-dep pattern: a package a consumer is expected to supply themselves
+		// is listed in both peerDependencies and devDependencies (so contributors can still run
+		// it locally), never in dependencies. This repo has no peerDependencies today, but a
+		// package listed there must not be flagged as a build-time offender if one is ever
+		// added.
+		const pkg = {
+			devDependencies: { react: "18.0.0", vitest: "5.0.1" },
+			peerDependencies: { react: "18.0.0" },
+		};
+
+		expect(devDependencyOnlyPackages(pkg)).toEqual(["vitest"]);
+	});
+
+	it("excludes a package listed in optionalDependencies, even though it's not in dependencies", () => {
+		const pkg = {
+			devDependencies: { fsevents: "2.0.0", vitest: "5.0.1" },
+			optionalDependencies: { fsevents: "2.0.0" },
+		};
+
+		expect(devDependencyOnlyPackages(pkg)).toEqual(["vitest"]);
+	});
+});
+
+describe("importsPackage: content-based import detection for one package name", () => {
+	it("matches a default import", () => {
+		// Also stands in for a named import (myusage-4xu.127): the regex only ever looks at
+		// `from "vitest"`, never at what's inside the import clause before it, so a dedicated
+		// "matches a named import" test using `import { describe } from "vitest"` was
+		// behaviorally identical to this one - no mutation could kill one without the other.
+		// Deleted as redundant rather than kept for its own sake.
+		expect(importsPackage('import x from "vitest";', "vitest")).toBe(true);
 	});
 
 	it("matches a bare side-effect import", () => {
 		expect(importsPackage('import "vitest";', "vitest")).toBe(true);
-	});
-
-	it("matches a require() call", () => {
-		expect(importsPackage('const v = require("vitest");', "vitest")).toBe(true);
 	});
 
 	it("matches a dynamic import()", () => {
@@ -331,7 +372,7 @@ describe("importsPackage: content-based import/require detection for one package
 
 	it("does not match a plain string literal that merely contains the package name as a substring", () => {
 		// A naive substring search would false-positive on this line. Nothing here is an
-		// import or require specifier - it's a plain string value.
+		// import specifier - it's a plain string value.
 		expect(
 			importsPackage(
 				'const msg = "please run vitest to check this";',
@@ -340,17 +381,30 @@ describe("importsPackage: content-based import/require detection for one package
 		).toBe(false);
 	});
 
+	it("does not match a bare quoted string literal exactly equal to the package name, with no import keyword before it (myusage-4xu.125)", () => {
+		// Every individual IMPORT_CONTEXT alternative (from/import/import() is pinned by its
+		// own positive test above, but nothing before this test discriminated the
+		// overarching anchor itself: that the specifier must actually follow one of those
+		// keywords, not just appear as a quoted string anywhere. The substring test right above
+		// this one doesn't do it either - "vitest" there sits mid-sentence, never immediately
+		// after the opening quote, so it stays false even with IMPORT_CONTEXT stripped down to
+		// an empty string. This fixture's quoted string is nothing BUT the package name, so an
+		// anchor-stripped mutant (IMPORT_CONTEXT replaced by "") would wrongly match it -
+		// verified by hand against that exact mutant before writing this test.
+		expect(importsPackage('const p = "vitest";', "vitest")).toBe(false);
+	});
+
 	it("does not match a different real package whose name is a literal prefix of the imported specifier", () => {
 		// "vite" and "vitest" are both real, separately-published packages, and "vite" is a
 		// literal prefix of "vitest" - importing "vitest/config" must not be reported as
-		// importing "vite". Pins the anchored (not prefix-substring) matching this needs.
+		// importing "vite". Pins the anchored (not prefix-substring) matching this needs, and -
+		// being a strictly harder case - subsumes a plainer "does not match when the package
+		// isn't referenced at all" test (myusage-4xu.127: deleted as redundant, since no
+		// mutation could weaken the match enough to pass that plainer case without also
+		// failing this one).
 		expect(
 			importsPackage('import { defineConfig } from "vitest/config";', "vite"),
 		).toBe(false);
-	});
-
-	it("does not match when the package is not referenced at all", () => {
-		expect(importsPackage('import { z } from "zod";', "vitest")).toBe(false);
 	});
 
 	it("treats a regex metacharacter in the package name literally, not as a wildcard", () => {
@@ -370,11 +424,59 @@ describe("importsPackage: content-based import/require detection for one package
 		);
 	});
 
-	it("matches a single-quoted specifier, not just double-quoted", () => {
-		// tsc/Biome always emit double-quoted specifiers in this repo's own dist/ output, so
-		// every other fixture here uses double quotes; single-quote support is carried
-		// defensively for content this repo doesn't itself produce.
-		expect(importsPackage("import x from 'vitest';", "vitest")).toBe(true);
+	it("does not match an import-shaped mention inside a // line comment (myusage-4xu.121)", () => {
+		// tsconfig.build.json does not set removeComments, so tsc preserves comments into
+		// dist/ - PR #117's independent reviewer found that a src/ comment merely mentioning a
+		// devDependency's name in import-shaped prose (this repo's own comment style is
+		// comment-heavy) false-positived, since a plain regex scan has no concept of "comment"
+		// on its own. Reproduced directly against the pre-fix regex: it matched `from
+		// "vitest/config"` here even though the whole line is a comment, not code.
+		expect(
+			importsPackage(
+				'// Historical note: this file used to import defineConfig from "vitest/config".',
+				"vitest",
+			),
+		).toBe(false);
+	});
+
+	it("does not match an import-shaped mention inside a /* block */ comment, including a JSDoc-style one", () => {
+		expect(
+			importsPackage(
+				'/** Old header: this once imported defineConfig from "vitest/config". */\nexport const x = 1;',
+				"vitest",
+			),
+		).toBe(false);
+	});
+
+	it("still matches a real import when a comment elsewhere in the same content merely mentions the same package", () => {
+		// Proves comment-stripping only removes the comment, not the real import that follows
+		// it - a fix that stripped too aggressively (e.g. from the first "//" to end of
+		// content) would wrongly hide this.
+		expect(
+			importsPackage(
+				'// mentions vitest in prose, not as an import\nimport { describe } from "vitest";',
+				"vitest",
+			),
+		).toBe(true);
+	});
+
+	it("matches a whitespace-free 'from\"pkg\"' specifier, as a minifier would emit it (myusage-4xu.124)", () => {
+		// IMPORT_CONTEXT required \bfrom\s+ (at least one whitespace char), so a minified
+		// specifier with no space between "from" and the quote slipped through undetected.
+		// Irrelevant to today's tsc-only, unminified build, but would matter if a bundler or
+		// minifier is ever introduced into the publish pipeline.
+		expect(importsPackage('import{describe}from"vitest";', "vitest")).toBe(
+			true,
+		);
+	});
+
+	it("matches a template-literal dynamic import specifier", () => {
+		// import(`vitest`) - a dynamic import whose specifier is a template literal with no
+		// interpolation - was missed entirely, since the specifier-quote capture group only
+		// recognized ' and ", never a backtick.
+		expect(importsPackage("const v = await import(`vitest`);", "vitest")).toBe(
+			true,
+		);
 	});
 });
 

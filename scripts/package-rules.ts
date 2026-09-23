@@ -135,25 +135,42 @@ export function packListCoversDist(
 // package.json, not a hardcoded package-name list.
 
 /** The subset of package.json this module reads: just enough to tell a devDependency-only
- * package apart from one the published package also lists as a real runtime dependency. Both
- * keys are optional, matching real package.json shapes that omit either or both - most of this
- * repo's own integration fixtures write neither key at all. */
+ * package apart from one the published package also lists as a real runtime dependency, whether
+ * that promise comes from `dependencies` itself or from the standard peer-dep pattern
+ * (`peerDependencies` plus a matching `devDependencies` entry so contributors can still run it
+ * locally) or from `optionalDependencies` (myusage-4xu.123). All four keys are optional,
+ * matching real package.json shapes that omit any or all of them - most of this repo's own
+ * integration fixtures write none of them at all. */
 export type PackageJsonDeps = {
 	dependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
+	peerDependencies?: Record<string, string>;
+	optionalDependencies?: Record<string, string>;
 };
 
-/** Package names listed in `devDependencies` but not also in `dependencies` - the packages a
- * built file must never depend on, since nothing in `dependencies` promises they'll be
- * installed for a consumer of the published package. A missing `dependencies` and/or
- * `devDependencies` key is treated as empty, not an error - most of this repo's own dist/
- * fixtures (and plenty of real package.json files) omit one or both keys entirely, so `pkg.x ??
- * {}` must not throw on either being absent. Order matches `Object.keys(devDependencies)`'s own
- * insertion order, not sorted or otherwise reshaped. */
+/** Package names listed in `devDependencies` but not also in `dependencies`,
+ * `peerDependencies`, or `optionalDependencies` - the packages a built file must never depend
+ * on, since nothing else in package.json promises they'll be installed for a consumer of the
+ * published package. A missing key among the four is treated as empty, not an error - most of
+ * this repo's own dist/ fixtures (and plenty of real package.json files) omit some or all of
+ * them entirely, so `pkg.x ?? {}` must not throw on any being absent. Order matches
+ * `Object.keys(devDependencies)`'s own insertion order, not sorted or otherwise reshaped. */
 export function devDependencyOnlyPackages(pkg: PackageJsonDeps): string[] {
 	const dependencies = pkg.dependencies ?? {};
 	const devDependencies = pkg.devDependencies ?? {};
-	return Object.keys(devDependencies).filter((name) => !(name in dependencies));
+	const peerDependencies = pkg.peerDependencies ?? {};
+	const optionalDependencies = pkg.optionalDependencies ?? {};
+	// Object.hasOwn, not `name in dependencies` (myusage-4xu.122): `in` also walks the
+	// prototype chain, so a devDependencies-only package literally named "constructor",
+	// "toString", or "hasOwnProperty" would silently read as "already in dependencies" - true
+	// for every plain object via Object.prototype, regardless of what `dependencies` itself
+	// actually declares.
+	return Object.keys(devDependencies).filter(
+		(name) =>
+			!Object.hasOwn(dependencies, name) &&
+			!Object.hasOwn(peerDependencies, name) &&
+			!Object.hasOwn(optionalDependencies, name),
+	);
 }
 
 function escapeRegExpLiteral(value: string): string {
@@ -164,26 +181,71 @@ function escapeRegExpLiteral(value: string): string {
 // tokenizing-scan precedent (myusage-4xu.115's pricing-cache doc-comment scan) for input where a
 // single regex genuinely cannot express the match; that precedent does not apply here, since a
 // single anchored regex is sufficient for this shape of input: a quoted specifier immediately
-// following `from`, a bare `import`, `import(`, or `require(`, where the specifier is exactly the
-// package name or the package name plus a `/subpath` - anchored so "vite" never matches a
+// following `from`, a bare `import`, or `import(`, where the specifier is exactly the package
+// name or the package name plus a `/subpath` - anchored so "vite" never matches a
 // "vitest/config" specifier just because it's a literal prefix of "vitest".
-const IMPORT_CONTEXT = String.raw`(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)`;
+//
+// `from\s*`, not `from\s+` (myusage-4xu.124): today's build never minifies, but a whitespace-free
+// specifier (e.g. `from"vitest"`, as a minifier would emit it) must still match if a bundler or
+// minifier is ever introduced into the publish pipeline. `\b` alone already keeps this from
+// matching mid-identifier (e.g. "xfrom") regardless of how much whitespace follows.
+//
+// No `require(` alternative (myusage-4xu.126 removed it): PR #117's independent test-quality
+// reviewer flagged that this scanner's only production caller, scripts/check-package.mjs, only
+// ever scans dist/, which is tsc ESM output ("module": "NodeNext") - `require(...)` cannot occur
+// there, so the alternative and its dedicated test were dead code, a test existing only to cover
+// it. Re-add it, with a test, if this scanner ever gains a caller that reads CommonJS output, or
+// if any src/ file ever uses `createRequire` to call `require()` from within ESM.
+const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 
-/** Whether `content` imports or requires `packageName` - a default import, a named import, a
- * bare side-effect import, `require(...)`, a dynamic `import(...)`, or a subpath import (e.g.
- * `"vitest/config"` counts as importing `"vitest"`, since the built file depends on the
- * `vitest` package at runtime either way). A plain mention of the package name inside a string
- * literal that isn't shaped like an import/require specifier does not count: the match is
- * anchored to a quoted specifier directly after one of the import/require keywords above, never
- * a bare substring search. This is a textual regex scan, not a parser, so it has no concept of
- * "comment" - text that happens to look like an import (e.g. `// import "vitest"` inside a
- * comment) still matches. */
+// A comment-and-string-aware regex scan (myusage-4xu.121) - the same technique
+// scripts/fixtures-guard.ts already uses for its own stripComments, mirrored here rather than
+// imported: importing it would create a circular dependency (fixtures-guard.ts already imports
+// filterTestOrSupportPaths from this file), and the two share no plumbing beyond this one
+// regex. See fixtures-guard.ts's STRING_OR_COMMENT for the technique's full reasoning and its
+// one accepted gap (a template literal's `${...}` interpolation can itself contain `//` or
+// `/*`, which this does not parse into - no specifier importsPackage cares about is ever built
+// from an interpolated template literal in this repo's own dist/ output).
+const STRING_OR_COMMENT =
+	/("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+
+/** Strips `//` and `/* *‍/` comments from `content` (including JSDoc), leaving every string and
+ * template literal byte-for-byte untouched, so importsPackage's regex scan below never mistakes
+ * a comment that merely mentions a package name in import-shaped prose (e.g. this repo's own
+ * comment-heavy style: "... imported defineConfig from \"vitest/config\" ...") for a real
+ * import specifier (myusage-4xu.121 - tsconfig.build.json does not set removeComments,
+ * so tsc preserves comments into dist/, and a plain regex scan otherwise has no concept of
+ * "comment" at all). */
+function stripComments(content: string): string {
+	return content.replace(
+		STRING_OR_COMMENT,
+		(_whole, stringLiteral: string | undefined) => stringLiteral ?? "",
+	);
+}
+
+/** Whether `content` imports `packageName` - a default import, a named import, a bare
+ * side-effect import, a dynamic `import(...)`, or a subpath import (e.g. `"vitest/config"`
+ * counts as importing `"vitest"`, since the built file depends on the `vitest` package at
+ * runtime either way). A plain mention of the package name inside a string literal that isn't
+ * shaped like an import specifier does not count: the match is anchored to a quoted specifier
+ * directly after one of the import keywords above, never a bare substring search. Comments are
+ * stripped first (stripComments, myusage-4xu.121), so text that merely looks like an import
+ * inside a `//` or `/* *‍/` comment - including JSDoc - never matches either; this is still a
+ * textual regex scan, not a parser, so anything shaped like a real import specifier in the code
+ * itself still counts. The specifier-quote group accepts `"` or a backtick (myusage-4xu.124), so
+ * a template-literal dynamic import with no interpolation (e.g. `` import(`vitest`) ``) matches
+ * too - not `'` (myusage-4xu.126 dropped single-quote support: tsc/Biome always emit
+ * double-quoted specifiers in this repo's own dist/ output, the only real input this scanner
+ * ever sees, so a single-quoted specifier cannot occur there either). This is asymmetric with
+ * `from\s*` above (myusage-4xu.124) on purpose: minifier resilience is kept as forward-looking
+ * robustness in case a bundler/minifier is ever introduced, whereas single-quote support was
+ * dropped because no comparable future trigger exists for it. */
 export function importsPackage(content: string, packageName: string): boolean {
 	const escaped = escapeRegExpLiteral(packageName);
 	const pattern = new RegExp(
-		`${IMPORT_CONTEXT}(['"])${escaped}(?:/[^'"]*)?\\1`,
+		`${IMPORT_CONTEXT}(["\`])${escaped}(?:/[^"\`]*)?\\1`,
 	);
-	return pattern.test(content);
+	return pattern.test(stripComments(content));
 }
 
 /** The subset of `devOnlyPackages` that `content` actually imports - what check-package.mjs

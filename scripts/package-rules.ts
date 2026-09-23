@@ -181,15 +181,21 @@ function escapeRegExpLiteral(value: string): string {
 // tokenizing-scan precedent (myusage-4xu.115's pricing-cache doc-comment scan) for input where a
 // single regex genuinely cannot express the match; that precedent does not apply here, since a
 // single anchored regex is sufficient for this shape of input: a quoted specifier immediately
-// following `from`, a bare `import`, `import(`, or `require(`, where the specifier is exactly the
-// package name or the package name plus a `/subpath` - anchored so "vite" never matches a
+// following `from`, a bare `import`, or `import(`, where the specifier is exactly the package
+// name or the package name plus a `/subpath` - anchored so "vite" never matches a
 // "vitest/config" specifier just because it's a literal prefix of "vitest".
 //
 // `from\s*`, not `from\s+` (myusage-4xu.124): today's build never minifies, but a whitespace-free
 // specifier (e.g. `from"vitest"`, as a minifier would emit it) must still match if a bundler or
 // minifier is ever introduced into the publish pipeline. `\b` alone already keeps this from
 // matching mid-identifier (e.g. "xfrom") regardless of how much whitespace follows.
-const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|\bimport\s+)`;
+//
+// No `require(` alternative (myusage-4xu.126 removed it): PR #117's independent test-quality
+// reviewer flagged that this scanner's only production caller, scripts/check-package.mjs, only
+// ever scans dist/, which is tsc ESM output ("module": "NodeNext") - `require(...)` cannot occur
+// there, so the alternative and its dedicated test were dead code, a test existing only to cover
+// it. Re-add it, with a test, if this scanner ever gains a caller that reads CommonJS output.
+const IMPORT_CONTEXT = String.raw`(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)`;
 
 // A comment-and-string-aware regex scan (myusage-4xu.121) - the same technique
 // scripts/fixtures-guard.ts already uses for its own stripComments, mirrored here rather than
@@ -206,7 +212,7 @@ const STRING_OR_COMMENT =
  * template literal byte-for-byte untouched, so importsPackage's regex scan below never mistakes
  * a comment that merely mentions a package name in import-shaped prose (e.g. this repo's own
  * comment-heavy style: "... imported defineConfig from \"vitest/config\" ...") for a real
- * import/require specifier (myusage-4xu.121 - tsconfig.build.json does not set removeComments,
+ * import specifier (myusage-4xu.121 - tsconfig.build.json does not set removeComments,
  * so tsc preserves comments into dist/, and a plain regex scan otherwise has no concept of
  * "comment" at all). */
 function stripComments(content: string): string {
@@ -216,22 +222,24 @@ function stripComments(content: string): string {
 	);
 }
 
-/** Whether `content` imports or requires `packageName` - a default import, a named import, a
- * bare side-effect import, `require(...)`, a dynamic `import(...)`, or a subpath import (e.g.
- * `"vitest/config"` counts as importing `"vitest"`, since the built file depends on the
- * `vitest` package at runtime either way). A plain mention of the package name inside a string
- * literal that isn't shaped like an import/require specifier does not count: the match is
- * anchored to a quoted specifier directly after one of the import/require keywords above, never
- * a bare substring search. Comments are stripped first (stripComments, myusage-4xu.121), so text
- * that merely looks like an import inside a `//` or `/* *‍/` comment - including JSDoc - never
- * matches either; this is still a textual regex scan, not a parser, so anything shaped like a
- * real import/require specifier in the code itself still counts. The specifier-quote group
- * accepts a backtick alongside `'`/`"` (myusage-4xu.124), so a template-literal dynamic import
- * with no interpolation (e.g. `` import(`vitest`) ``) matches too. */
+/** Whether `content` imports `packageName` - a default import, a named import, a bare
+ * side-effect import, a dynamic `import(...)`, or a subpath import (e.g. `"vitest/config"`
+ * counts as importing `"vitest"`, since the built file depends on the `vitest` package at
+ * runtime either way). A plain mention of the package name inside a string literal that isn't
+ * shaped like an import specifier does not count: the match is anchored to a quoted specifier
+ * directly after one of the import keywords above, never a bare substring search. Comments are
+ * stripped first (stripComments, myusage-4xu.121), so text that merely looks like an import
+ * inside a `//` or `/* *‍/` comment - including JSDoc - never matches either; this is still a
+ * textual regex scan, not a parser, so anything shaped like a real import specifier in the code
+ * itself still counts. The specifier-quote group accepts `"` or a backtick (myusage-4xu.124), so
+ * a template-literal dynamic import with no interpolation (e.g. `` import(`vitest`) ``) matches
+ * too - not `'` (myusage-4xu.126 dropped single-quote support: tsc/Biome always emit
+ * double-quoted specifiers in this repo's own dist/ output, the only real input this scanner
+ * ever sees, so a single-quoted specifier cannot occur there either). */
 export function importsPackage(content: string, packageName: string): boolean {
 	const escaped = escapeRegExpLiteral(packageName);
 	const pattern = new RegExp(
-		`${IMPORT_CONTEXT}(['"\`])${escaped}(?:/[^'"\`]*)?\\1`,
+		`${IMPORT_CONTEXT}(["\`])${escaped}(?:/[^"\`]*)?\\1`,
 	);
 	return pattern.test(stripComments(content));
 }

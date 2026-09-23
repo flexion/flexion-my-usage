@@ -341,7 +341,7 @@ describe("devDependencyOnlyPackages: package.json packages listed only in devDep
 	});
 });
 
-describe("importsPackage: content-based import/require detection for one package name", () => {
+describe("importsPackage: content-based import detection for one package name", () => {
 	it("matches a default import", () => {
 		expect(importsPackage('import x from "vitest";', "vitest")).toBe(true);
 	});
@@ -354,10 +354,6 @@ describe("importsPackage: content-based import/require detection for one package
 
 	it("matches a bare side-effect import", () => {
 		expect(importsPackage('import "vitest";', "vitest")).toBe(true);
-	});
-
-	it("matches a require() call", () => {
-		expect(importsPackage('const v = require("vitest");', "vitest")).toBe(true);
 	});
 
 	it("matches a dynamic import()", () => {
@@ -377,7 +373,7 @@ describe("importsPackage: content-based import/require detection for one package
 
 	it("does not match a plain string literal that merely contains the package name as a substring", () => {
 		// A naive substring search would false-positive on this line. Nothing here is an
-		// import or require specifier - it's a plain string value.
+		// import specifier - it's a plain string value.
 		expect(
 			importsPackage(
 				'const msg = "please run vitest to check this";',
@@ -386,9 +382,9 @@ describe("importsPackage: content-based import/require detection for one package
 		).toBe(false);
 	});
 
-	it("does not match a bare quoted string literal exactly equal to the package name, with no import/require keyword before it (myusage-4xu.125)", () => {
-		// Every individual IMPORT_CONTEXT alternative (from/import/import(/require() is pinned
-		// by its own positive test above, but nothing before this test discriminated the
+	it("does not match a bare quoted string literal exactly equal to the package name, with no import keyword before it (myusage-4xu.125)", () => {
+		// Every individual IMPORT_CONTEXT alternative (from/import/import() is pinned by its
+		// own positive test above, but nothing before this test discriminated the
 		// overarching anchor itself: that the specifier must actually follow one of those
 		// keywords, not just appear as a quoted string anywhere. The substring test right above
 		// this one doesn't do it either - "vitest" there sits mid-sentence, never immediately
@@ -427,13 +423,6 @@ describe("importsPackage: content-based import/require detection for one package
 		expect(importsPackage('import x from "socket.io";', "socket.io")).toBe(
 			true,
 		);
-	});
-
-	it("matches a single-quoted specifier, not just double-quoted", () => {
-		// tsc/Biome always emit double-quoted specifiers in this repo's own dist/ output, so
-		// every other fixture here uses double quotes; single-quote support is carried
-		// defensively for content this repo doesn't itself produce.
-		expect(importsPackage("import x from 'vitest';", "vitest")).toBe(true);
 	});
 
 	it("does not match an import-shaped mention inside a // line comment (myusage-4xu.121)", () => {
@@ -486,9 +475,9 @@ describe("importsPackage: content-based import/require detection for one package
 		// import(`vitest`) - a dynamic import whose specifier is a template literal with no
 		// interpolation - was missed entirely, since the specifier-quote capture group only
 		// recognized ' and ", never a backtick.
-		expect(
-			importsPackage("const v = await import(`vitest`);", "vitest"),
-		).toBe(true);
+		expect(importsPackage("const v = await import(`vitest`);", "vitest")).toBe(
+			true,
+		);
 	});
 });
 

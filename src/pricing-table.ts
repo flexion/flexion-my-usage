@@ -27,8 +27,9 @@ export const DEFAULT_TIMEOUT_MS = 15_000;
  * the order of days to weeks - new models land, rates get corrected - so 24 hours bounds how
  * long a newly-added or repriced model can stay unpriced to about a day, while keeping the
  * common case (rerunning within the same day) on the fast, no-fetch path this module is built
- * around. Overridable via `LoadOptions.maxCacheAgeMs` for callers - and tests - that need a
- * different bound.
+ * around. `LoadOptions.maxCacheAgeMs` overrides this default as an injected seam, the same
+ * shape as this file's `fetch`/`cacheDir`/`rm` options: the CLI never sets it; tests use it to
+ * shrink or force the cache-staleness window instead of waiting on real time.
  */
 export const DEFAULT_MAX_CACHE_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -77,6 +78,8 @@ export interface LoadOptions {
 	 * Maximum cache age, in milliseconds, before a stale cache triggers one refresh attempt on
 	 * the next run; defaults to `DEFAULT_MAX_CACHE_AGE_MS`. A cache within this age is returned
 	 * immediately, with no fetch, exactly like a cache hit today - unless `refresh` is also set.
+	 * An injected seam, the same shape as this file's `fetch`/`cacheDir`/`rm` options: the CLI
+	 * never sets it; tests use it to shrink or force the cache-staleness window.
 	 */
 	maxCacheAgeMs?: number;
 	/**

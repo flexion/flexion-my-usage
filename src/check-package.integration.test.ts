@@ -17,6 +17,29 @@
 // are removed afterward. `npm pack --dry-run --json --ignore-scripts` never touches the
 // network: verified locally (npm 11.19.1) against an isolated fixture directory with no
 // registry reachable.
+//
+// The fixture root is allocated per-run via `mkdtemp` (bead myusage-4xu.114). Originally
+// FIXTURE_BASE was one fixed literal path derived from import.meta.url - identical across
+// every process that runs this file against the same checkout. Two vitest processes running
+// this file at the same time - e.g. two overlapping `yarn test` invocations, or one
+// overlapping the tail of another - resolved to that same path, so afterAll's
+// `rm(FIXTURE_BASE, { recursive: true })` in one process deleted the other's still-in-flight
+// fixtures out from under it mid-test. Reproduced directly: 8 concurrent `yarn vitest run`
+// invocations of this file, repeated over several rounds, failed nearly every time - wrong
+// exit codes on the dist/.DS_Store fixture from files vanishing mid-run, and once an
+// `ENOTEMPTY: directory not empty, rmdir ...` from one process's recursive rm racing another
+// process's concurrent writes into the same tree.
+//
+// An earlier version of this fix namespaced the path by process.pid instead. That closes the
+// race between two *live* processes, but a pid is only unique among processes that are
+// currently running: a hard-killed process (SIGKILL, OOM) never reaches its afterAll, so
+// nothing sweeps its `pid-<n>/` directory, and the OS is free to reuse that pid later - at
+// which point a new run's "unique" path collides with the dead run's leftover tree. `mkdtemp`
+// (same idiom as `useTempCacheDirs` in src/pricing.fixtures.ts) instead asks the OS to
+// atomically allocate a directory guaranteed not to already exist, so the uniqueness guarantee
+// holds across time, not just among live processes - and a stale run's leftovers under
+// `check-package/run-*/` are still simple to spot and prune by hand if one is ever hard-killed
+// before cleanup.
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -28,21 +51,29 @@ const SCRIPT = fileURLToPath(
 
 const TSX = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 
-const FIXTURE_BASE = fileURLToPath(
+// Fixed parent directory, shared by every process that runs this file against this checkout.
+// Never removed directly - only the per-run directory allocated inside it (see fixtureDir
+// below) is ever passed to `rm`.
+const FIXTURE_PARENT = fileURLToPath(
 	new URL(
 		"../node_modules/.cache/my-usage-tests/check-package/",
 		import.meta.url,
 	),
 );
 
+let fixtureRoot: string | undefined;
+
 afterAll(async () => {
-	await rm(FIXTURE_BASE, { recursive: true, force: true });
+	if (fixtureRoot) await rm(fixtureRoot, { recursive: true, force: true });
 });
 
 /** A fresh, isolated fixture directory under node_modules/.cache/, removed after the run. */
 async function fixtureDir(): Promise<string> {
-	await mkdir(FIXTURE_BASE, { recursive: true });
-	return mkdtemp(`${FIXTURE_BASE}t-`);
+	if (!fixtureRoot) {
+		await mkdir(FIXTURE_PARENT, { recursive: true });
+		fixtureRoot = await mkdtemp(`${FIXTURE_PARENT}run-`);
+	}
+	return mkdtemp(`${fixtureRoot}/t-`);
 }
 
 /** A minimal package.json shaped like this repo's real one: a bin target under dist/. */

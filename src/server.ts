@@ -130,9 +130,15 @@ export interface RunningServer {
 	url: string;
 	port: number;
 	/**
-	 * Stops accepting connections, drops the open ones (a browser's keep-alive connection would
-	 * otherwise hold the server open for its idle timeout), and resolves once the listener is
-	 * closed. Idempotent: a second call just returns the same `closed` promise.
+	 * Stops accepting connections and drops the open ones, then resolves once the listener is
+	 * closed. An idle keep-alive connection - one that already finished a request - closes on
+	 * its own on every Node version this supports (>=22.13.0). What this actually forces shut is
+	 * a connection the client is still holding open without a finished response: a request
+	 * received but not yet finished on any version, or - on Node versions before 26, measured
+	 * directly on the 22.13.0 floor - even one that was accepted but never sent anything at all
+	 * (a browser's speculative preconnect, say). Without this call, close() would wait on that
+	 * connection instead of ending it. Idempotent: a second call just returns the same `closed`
+	 * promise.
 	 */
 	close(): Promise<void>;
 	/** Resolves once the server has stopped, whether through close() or a stop signal. */

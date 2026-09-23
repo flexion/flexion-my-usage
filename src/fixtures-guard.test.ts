@@ -58,6 +58,32 @@ describe("stripComments", () => {
 
 		expect(stripComments(source)).toBe(source);
 	});
+
+	it("still strips a real // comment that follows a regex literal with an unescaped quote character (myusage-4xu.131)", () => {
+		// package-rules.ts's identical STRING_OR_COMMENT technique has the same gap (see that
+		// file's test of the same name, in src/package-rules.test.ts) - this is the twin fix PR
+		// #119's independent reviewer asked for in both places. This scanner has no concept of a
+		// regex literal - it only tracks bare `"`, `'`, and backtick characters - so a regex
+		// literal containing an unescaped quote (this repo's own src/render.ts:43:
+		// `.replace(/"/g, "&quot;")`) contains a bare `"` inside `/.../` that the scanner reads
+		// as OPENING a phantom string. That flips string/comment parity for the rest of the
+		// file, so the real `//` comment on the next line is no longer recognized as a comment
+		// at all and survives untouched. REPRODUCED directly against the current regex: the
+		// comment line below is not removed from the output.
+		const source = [
+			'const html = value.replace(/"/g, "&quot;");',
+			'// import { helper } from "./thing.fixtures.js";',
+			"const real = 1;",
+		].join("\n");
+
+		expect(stripComments(source)).toBe(
+			[
+				'const html = value.replace(/"/g, "&quot;");',
+				"",
+				"const real = 1;",
+			].join("\n"),
+		);
+	});
 });
 
 describe("extractReferences", () => {

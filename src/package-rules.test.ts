@@ -448,6 +448,28 @@ describe("importsPackage: content-based import detection for one package name", 
 		).toBe(false);
 	});
 
+	it("does not false-positive on a comment following a regex literal with an unescaped quote character (myusage-4xu.131)", () => {
+		// PR #119's independent reviewer found: stripComments (this file's own STRING_OR_COMMENT
+		// scan) has no concept of a regex literal - it only tracks bare `"`, `'`, and backtick
+		// characters. A regex literal containing an unescaped quote (e.g. this repo's own
+		// src/render.ts:43: `.replace(/"/g, "&quot;")`) contains a bare `"` inside `/.../` that
+		// the scanner reads as OPENING a phantom string. That flips string/comment parity for
+		// the rest of the file, so a later real `//` comment is no longer recognized as a
+		// comment at all - it survives stripComments untouched, and an import-shaped mention
+		// inside it (this repo's own comment-heavy style, same as the myusage-4xu.121 tests
+		// above) then false-positives here. REPRODUCED directly against the current regex: it
+		// returns true for this exact input.
+		expect(
+			importsPackage(
+				[
+					'const escaped = value.replace(/"/g, "&quot;");',
+					'// Historical note: this file used to import defineConfig from "vitest/config".',
+				].join("\n"),
+				"vitest",
+			),
+		).toBe(false);
+	});
+
 	it("still matches a real import when a comment elsewhere in the same content merely mentions the same package", () => {
 		// Proves comment-stripping only removes the comment, not the real import that follows
 		// it - a fix that stripped too aggressively (e.g. from the first "//" to end of
@@ -468,6 +490,18 @@ describe("importsPackage: content-based import detection for one package name", 
 		expect(importsPackage('import{describe}from"vitest";', "vitest")).toBe(
 			true,
 		);
+	});
+
+	it("matches a whitespace-free bare side-effect import, as a minifier would emit it (myusage-4xu.132)", () => {
+		// myusage-4xu.124 (test right above) taught \bfrom\s* to tolerate a whitespace-free
+		// specifier, but \bimport\s+ - the bare-side-effect-import alternative - still requires
+		// at least one whitespace character after the "import" keyword. import"vitest"; is
+		// valid ESM (a whitespace-free bare side-effect import, exactly the shape a minifier
+		// would emit), and today's IMPORT_CONTEXT misses it even though the symmetric from-case
+		// is already covered. Zero live impact today (no bundler/minifier in this repo's build
+		// pipeline) - forward-looking hardening only, the same class as myusage-4xu.124's own
+		// fix.
+		expect(importsPackage('import"vitest";', "vitest")).toBe(true);
 	});
 
 	it("matches a template-literal dynamic import specifier", () => {

@@ -2,7 +2,7 @@
 
 A local, offline dashboard for your own AI coding-agent usage - the tokens you're burning over time, and what it'd notionally cost - built from the session data already on your machine.
 
-> **Status:** early. The first slice works end to end from a checkout (scan opencode, price, chart, serve, open), but it isn't published to npm yet.
+> **Status:** early. The first slice works end to end: scan opencode, price, chart, serve, open.
 
 ## Why
 
@@ -38,7 +38,22 @@ or, on any OS, to `$XDG_CACHE_HOME/my-usage/litellm-model-prices.json` if `XDG_C
 
 Needs Node 22.13.0 or newer (the opencode reader uses `node:sqlite`); an older Node gets a one-line upgrade message instead of a stack trace.
 
-Not on npm yet, so run it from a checkout:
+Run it straight from npm, no install needed:
+
+```
+npx @flexion.us/my-usage
+yarn dlx @flexion.us/my-usage
+pnpm dlx @flexion.us/my-usage
+```
+
+Or install it globally and run `my-usage`:
+
+```
+npm install -g @flexion.us/my-usage
+my-usage
+```
+
+From a checkout:
 
 ```
 yarn install --immutable

@@ -16,10 +16,17 @@ The tag must be `v` plus the exact `package.json` version - package `0.3.1` mean
 
 ## Enable npm publish (first release only)
 
-Publishing is gated so nothing ships by accident. Before the first real release:
+Publishing is gated so nothing ships by accident. The package is `@flexion.us/my-usage`, published public (`publishConfig.access` in `package.json`) under the `flexion.us` npm org.
 
-- Pick the npm package name and set it in `package.json` (it is a placeholder today), and remove `"private": true`.
-- Set up npm Trusted Publishing (OIDC) for the package, linked to this repo and the CI workflow - no long-lived token needed. The release job already requests `id-token: write` and runs `npm publish --provenance`.
-- Set the repo variable `NPM_PUBLISH_ENABLED` to `true`.
+npm can only attach a trusted publisher to a package that already exists, so the very first version goes out by hand:
+
+1. `npm login` as an owner of the `flexion.us` org.
+2. From a clean checkout of the release commit: `yarn install --immutable && yarn build && npm publish`. This version has no provenance - every CI release after it does.
+3. On npmjs.com, open the package's **Settings > Trusted Publisher**, choose GitHub Actions, and enter organization `flexion`, repository `flexion-my-usage`, workflow filename `ci.yml` (filename only, no path).
+4. Once Trusted Publishing works, set **Publishing access** on that same settings page to disallow tokens, so only CI can publish.
+5. Tag that commit `v<version>` and push the tag while `NPM_PUBLISH_ENABLED` is still unset. That creates the GitHub Release and skips the npm step, which would otherwise fail on a version already published by hand.
+6. Set the repo variable `NPM_PUBLISH_ENABLED` to `true`. The next version bump is the first one CI publishes.
+
+After that, releases follow [Cut a release](#cut-a-release): the `release` job authenticates via OIDC (no long-lived token) and npm attaches provenance automatically. It runs on Node 24 because Trusted Publishing needs npm 11.5.1 or newer, and it fails before publishing if npm is older.
 
 Until `NPM_PUBLISH_ENABLED` is `true`, a tag still builds and creates a GitHub Release but skips the npm publish - useful for a dry run.

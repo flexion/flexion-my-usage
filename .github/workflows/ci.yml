@@ -137,8 +137,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: "22"
+          # Not 22 like verify: npm Trusted Publishing (OIDC) needs npm >= 11.5.1, and Node 22
+          # bundles npm 10. Node 24 bundles npm 11; the step below fails the release if it doesn't.
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
+      - name: Check npm supports Trusted Publishing (>= 11.5.1)
+        run: |
+          v="$(npm --version)"
+          if [ "$(printf '%s\n' 11.5.1 "$v" | sort -V | head -n1)" != "11.5.1" ]; then
+            echo "::error::npm $v is older than 11.5.1, which Trusted Publishing requires"
+            exit 1
+          fi
+          echo "npm $v supports Trusted Publishing"
       - run: corepack enable
       - run: yarn install --immutable
       - name: Verify tag matches package.json version
@@ -151,9 +161,11 @@ jobs:
           fi
           echo "Releasing v$pkg_version"
       - run: yarn build
-      - name: Publish to npm (provenance via OIDC Trusted Publishing)
+      # No token: npm authenticates this job via OIDC, and attaches provenance automatically.
+      # Access is public via publishConfig in package.json (scoped packages default to restricted).
+      - name: Publish to npm (OIDC Trusted Publishing)
         if: ${{ vars.NPM_PUBLISH_ENABLED == 'true' }}
-        run: npm publish --provenance --access public
+        run: npm publish
       - name: Create GitHub Release (auto-generated notes)
         env:
           GH_TOKEN: ${{ github.token }}
